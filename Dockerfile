@@ -5,7 +5,7 @@
 #
 # ベースイメージは digest でピン留めする（要件定義 §4.2）。
 # python:3.12-slim（3.12.13-slim-trixie, linux/amd64, 2026-08-08 時点の最新タグ）
-FROM python:3.12-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36
+FROM python:3.12-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36 AS runtime
 
 # rclone / ffmpeg はバージョンを明示的に固定し、取得後に checksum で検証する（要件定義 §4.2, §3）。
 ARG RCLONE_VERSION=1.75.0
@@ -71,3 +71,12 @@ VOLUME ["/data"]
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["web"]
+
+# ---- test ステージ ----
+# `make test` 専用。本番イメージ（runtime）には dev 依存を焼き込まない（Phase 3 指示書 §0.1）。
+FROM runtime AS test
+
+COPY requirements-dev.lock ./
+RUN pip install --require-hashes -r requirements-dev.lock
+
+COPY tests ./tests
