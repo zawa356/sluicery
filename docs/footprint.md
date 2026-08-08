@@ -13,8 +13,9 @@ compose 変更時は必ず本ドキュメントを更新すること（CLAUDE.md
 
 ## イメージ
 
-- `sluicery:local`：`Dockerfile` からローカルビルド。ベースは `python:3.12-slim`（digest 固定）。
+- `sluicery:local`：`Dockerfile` の `runtime` ステージからローカルビルド。ベースは `python:3.12-slim`（digest 固定）。
 - ビルド時に外部から取得するもの：rclone（バージョン固定 + checksum 検証）、ffmpeg/ffprobe 静的ビルド（checksum 検証）
+- `sluicery:local-test`：`make test` 実行時にのみ `Dockerfile` の `test` ステージ（`runtime` + dev 依存 + `tests/`）からビルドされる。`docker compose` の管理下ではないため `make purge` では削除されない。手動で `docker rmi sluicery:local-test` すること
 
 ## ネットワーク
 
@@ -25,6 +26,16 @@ compose 変更時は必ず本ドキュメントを更新すること（CLAUDE.md
 | 名前 | マウント先 | 内容 |
 |---|---|---|
 | `data`（named volume） | `/data`（全サービス） | SQLite DB、yt-dlp venv、Staging 領域、ログ |
+
+`/data/ytdlp/` の内部構造（Phase 3）：
+
+```
+/data/ytdlp/
+├── versions/
+│   └── <version>/        # venv 本体（bin/yt-dlp を含む）。導入・削除は app のみ
+├── current -> versions/<version>   # symlink。worker はここ越しに読み取り専用でアクセス
+└── .lock                 # fcntl.flock 用。中身は空
+```
 
 ## Bind mount
 
