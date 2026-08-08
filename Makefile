@@ -1,4 +1,4 @@
-.PHONY: up down logs shell sync backup restore purge lock lint test
+.PHONY: up down logs shell sync backup restore purge lock migrate revision lint test
 
 COMPOSE := docker compose
 BACKUP_DIR := ./backups
@@ -47,6 +47,16 @@ purge:
 lock:
 	docker run --rm -v "$(CURDIR)":/work -w /work python:3.12-slim \
 		bash -c "pip install pip-tools && pip-compile --generate-hashes --output-file requirements.lock requirements.in"
+
+# 手動でマイグレーションを適用する（AUTO_MIGRATE=false の運用時、または
+# app サービス起動前に明示的に適用したい場合に使う）。
+migrate:
+	$(COMPOSE) exec app python3 -m sluicery.cli db upgrade
+
+# 例: make revision MSG="storage に last_check_result_json を追加"
+revision:
+	@if [ -z "$(MSG)" ]; then echo "使用法: make revision MSG=\"説明\""; exit 1; fi
+	$(COMPOSE) exec app python3 -m sluicery.cli db revision -m "$(MSG)"
 
 lint:
 	docker run --rm -v "$(CURDIR)":/work -w /work python:3.12-slim \
