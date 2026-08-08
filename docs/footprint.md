@@ -30,7 +30,7 @@ compose 変更時は必ず本ドキュメントを更新すること（CLAUDE.md
 
 | ホスト側 | コンテナ側 | 用途 |
 |---|---|---|
-| `${MEDIA_ROOT}`（既定 `/mnt/media`） | `/mnt/media`（全サービス） | `local` kind の Storage が書き込む最終保存先 |
+| `${MEDIA_ROOT}`（既定 `/mnt/media`） | `/mnt/media`（全サービス） | `local` kind の Storage が書き込む最終保存先。ホストに存在しない場合、Docker が **root 所有で**ディレクトリを自動作成する（要事前作成を推奨） |
 
 ## tmpfs
 
@@ -49,3 +49,5 @@ compose 変更時は必ず本ドキュメントを更新すること（CLAUDE.md
 削除される：`app` / `worker-network` / `worker-compute` コンテナ、ローカルビルドイメージ `sluicery:local`、named volume `data`、compose ネットワーク。
 
 削除されない：`${MEDIA_ROOT}` 配下の bind mount 実体（メディア本体）。`compose.privileged.yaml` を併用している場合はホスト側のマウントポイント自体の後始末は別途 `umount` が必要（要件定義 §6.6、実装順序 #19 以降）。
+
+**注意：** named volume `data` には Staging（ダウンロード・後処理の一時領域）も含まれる。`make purge` はこれも消すため、進行中のダウンロードがあれば中間ファイルが失われる。実行前は必ず `worker-network` / `worker-compute` が待機状態であることを確認すること。

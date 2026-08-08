@@ -10,10 +10,11 @@ cookies.txt
 *.cookies
 
 # ---- 実行時データ ----
-data/
-staging/
-media/
-logs/
+# 先頭に / を付け、ルート直下限定にする（任意階層の tests/data/ 等を誤って除外しないため）
+/data/
+/staging/
+/media/
+/logs/
 *.db
 *.db-shm
 *.db-wal
