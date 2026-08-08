@@ -13,7 +13,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cryptography.fernet import Fernet
@@ -76,6 +76,12 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # compose.yaml は常に `${MEDIA_ROOT}:/mnt/media` でマウントする（ホスト側
+    # bind mount のソースパス）。この定数はコンテナ内から実際に見えるマウント
+    # 先で、`MEDIA_ROOT` の値（ホスト側パス文字列）とは一致しない。書き込み
+    # 可否の検証はこちらに対して行う（後述 `_fill_computed_defaults`）。
+    MEDIA_MOUNT_PATH: ClassVar[Path] = Path("/mnt/media")
+
     SECRET_KEY: str
     ADMIN_USERNAME: str = "admin"
     ADMIN_PASSWORD: str | None = None
@@ -86,6 +92,9 @@ class Settings(BaseSettings):
     HTTP_PORT: int = 8080
     DATA_DIR: Path = Path("/data")
     STAGING_DIR: Path | None = None
+    # ホスト側の bind mount ソースパス（表示・記録用）。コンテナ内から
+    # このパス自体が見えるとは限らないため、存在・書き込み可否の検証対象には
+    # しない（実際に検証するのは MEDIA_MOUNT_PATH）。
     MEDIA_ROOT: Path = Path("/mnt/media")
     ALLOW_EXEC: bool = False
     AUTO_MIGRATE: bool = True
@@ -114,7 +123,7 @@ class Settings(BaseSettings):
             raise ValueError("1〜65535 の範囲で指定してください")
         return v
 
-    @field_validator("DATA_DIR", "MEDIA_ROOT")
+    @field_validator("DATA_DIR")
     @classmethod
     def _check_writable(cls, v: Path) -> Path:
         return validate_writable_dir(v)
@@ -126,6 +135,7 @@ class Settings(BaseSettings):
         if self.DB_PATH is None:
             self.DB_PATH = self.DATA_DIR / "sluicery.db"
         validate_writable_dir(self.STAGING_DIR)
+        validate_writable_dir(self.MEDIA_MOUNT_PATH)
         return self
 
 
@@ -197,7 +207,12 @@ def check_config() -> list[FieldCheckResult]:
 
 
 def _check_config_from_errors(exc: ValidationError) -> list[FieldCheckResult]:
-    error_by_field = {".".join(str(p) for p in e["loc"]): e["msg"] for e in exc.errors()}
+    error_by_field = {}
+    for e in exc.errors():
+        # モデル全体に対する検証（MEDIA_MOUNT_PATH の書き込み可否など）は
+        # loc が空になる。表示上は MEDIA_ROOT に紐づけて分かりやすくする。
+        key = ".".join(str(p) for p in e["loc"]) or "MEDIA_ROOT"
+        error_by_field[key] = e["msg"]
     raw = _read_raw_env()
 
     results = []

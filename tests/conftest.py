@@ -60,8 +60,13 @@ def env_data_dirs(tmp_path: Path) -> dict[str, Path]:
 @pytest.fixture
 def base_env(monkeypatch: pytest.MonkeyPatch, secret_key: str, env_data_dirs: dict[str, Path]):
     """Settings が読めるだけの最小限の環境変数を設定する。"""
+    from sluicery.config import Settings
+
     monkeypatch.setenv("SECRET_KEY", secret_key)
     for key, value in env_data_dirs.items():
         monkeypatch.setenv(key, str(value))
     # cwd の .env を誤って拾わないようにする
     monkeypatch.chdir(env_data_dirs["DATA_DIR"].parent)
+    # MEDIA_MOUNT_PATH はコンテナ内の固定マウント先（本番は /mnt/media）。
+    # テスト環境にそのパスは存在しないため、tmp_path 配下に差し替える。
+    monkeypatch.setattr(Settings, "MEDIA_MOUNT_PATH", env_data_dirs["MEDIA_ROOT"])
