@@ -56,13 +56,19 @@ def _utcnow() -> datetime:
 class TimestampMixin:
     """`created_at` / `updated_at` を持つ Mixin（§4.5）。"""
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
 
 
-def _enum_column(enum_cls: type[enum.Enum], *, name: str, nullable: bool = False, default: enum.Enum | None = None):
+def _enum_column(
+    enum_cls: type[enum.Enum],
+    *,
+    name: str,
+    nullable: bool = False,
+    default: enum.Enum | None = None,
+):
     return mapped_column(
         SAEnum(
             enum_cls,
@@ -80,35 +86,35 @@ def _enum_column(enum_cls: type[enum.Enum], *, name: str, nullable: bool = False
 # ---- Enum（値は要件定義 §7.2 から逐語で取る） ----
 
 
-class StorageKind(str, enum.Enum):
+class StorageKind(enum.StrEnum):
     LOCAL = "local"
     REMOTE = "remote"
     MOUNT = "mount"
 
 
-class ProfileKind(str, enum.Enum):
+class ProfileKind(enum.StrEnum):
     VIDEO = "video"
     MUSIC = "music"
     OTHER = "other"
 
 
-class LayoutStrategy(str, enum.Enum):
+class LayoutStrategy(enum.StrEnum):
     FLAT = "flat"
     CUSTOM = "custom"
 
 
-class PlaylistKindHint(str, enum.Enum):
+class PlaylistKindHint(enum.StrEnum):
     VIDEO = "video"
     MUSIC = "music"
     MIXED = "mixed"
 
 
-class ItemMembership(str, enum.Enum):
+class ItemMembership(enum.StrEnum):
     ACTIVE = "active"
     DELISTED = "delisted"
 
 
-class TargetStatus(str, enum.Enum):
+class TargetStatus(enum.StrEnum):
     PENDING = "pending"
     QUEUED = "queued"
     DOWNLOADING = "downloading"
@@ -121,12 +127,12 @@ class TargetStatus(str, enum.Enum):
     IGNORED = "ignored"
 
 
-class ArtifactRole(str, enum.Enum):
+class ArtifactRole(enum.StrEnum):
     SOURCE = "source"
     DERIVED = "derived"
 
 
-class TaskType(str, enum.Enum):
+class TaskType(enum.StrEnum):
     DISCOVER = "discover"
     DOWNLOAD = "download"
     VERIFY = "verify"
@@ -138,12 +144,12 @@ class TaskType(str, enum.Enum):
     UPDATE_YTDLP = "update_ytdlp"
 
 
-class WorkerClass(str, enum.Enum):
+class WorkerClass(enum.StrEnum):
     NETWORK = "network"
     COMPUTE = "compute"
 
 
-class TaskStatus(str, enum.Enum):
+class TaskStatus(enum.StrEnum):
     """要件定義に値の指定がないため実装時に確定（差分は基本設計 §3 に記録）。"""
 
     PENDING = "pending"
@@ -154,13 +160,13 @@ class TaskStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
-class RunTrigger(str, enum.Enum):
+class RunTrigger(enum.StrEnum):
     MANUAL = "manual"
     SCHEDULE = "schedule"
     API = "api"
 
 
-class RunStatus(str, enum.Enum):
+class RunStatus(enum.StrEnum):
     """要件定義に列挙の明記はないが `run.status` に必要なため追加（基本設計 §3 に記録）。"""
 
     RUNNING = "running"
@@ -179,70 +185,70 @@ class User(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("username"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    username: Mapped[str] = mapped_column(String(255), nullable=False)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    username: Mapped[str] = mapped_column(String(255))
+    password_hash: Mapped[str] = mapped_column(String(255))
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Storage(Base, TimestampMixin):
     __tablename__ = "storage"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255))
     kind: Mapped[StorageKind] = _enum_column(StorageKind, name="storage_kind")
-    enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
-    config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    credentials_encrypted: Mapped[dict | None] = mapped_column(EncryptedJSON(), nullable=True)
-    last_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_check_result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    config_json: Mapped[dict | None] = mapped_column(JSON)
+    credentials_encrypted: Mapped[dict | None] = mapped_column(EncryptedJSON())
+    last_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_check_result_json: Mapped[dict | None] = mapped_column(JSON)
 
 
 class Profile(Base, TimestampMixin):
     __tablename__ = "profile"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(String(1000))
     kind: Mapped[ProfileKind] = _enum_column(ProfileKind, name="profile_kind")
-    ytdlp_args: Mapped[str | None] = mapped_column(String(4000), nullable=True)
-    format_selector: Mapped[str | None] = mapped_column(String(1000), nullable=True)
-    output_template: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    ytdlp_args: Mapped[str | None] = mapped_column(String(4000))
+    format_selector: Mapped[str | None] = mapped_column(String(1000))
+    output_template: Mapped[str | None] = mapped_column(String(1000))
     layout_strategy: Mapped[LayoutStrategy] = _enum_column(
         LayoutStrategy, name="profile_layout_strategy", default=LayoutStrategy.FLAT
     )
-    audio_extract: Mapped[bool] = mapped_column(default=False, nullable=False)
-    audio_format: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    audio_quality: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    container: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    embed_metadata: Mapped[bool] = mapped_column(default=True, nullable=False)
-    embed_thumbnail: Mapped[bool] = mapped_column(default=True, nullable=False)
-    embed_chapters: Mapped[bool] = mapped_column(default=False, nullable=False)
-    subtitle_langs: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    subtitle_auto: Mapped[bool] = mapped_column(default=False, nullable=False)
-    subtitle_embed: Mapped[bool] = mapped_column(default=False, nullable=False)
-    expert_mode: Mapped[bool] = mapped_column(default=False, nullable=False)
-    allow_exec: Mapped[bool] = mapped_column(default=False, nullable=False)
-    concurrent_fragments: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    postprocess_chain_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    audio_extract: Mapped[bool] = mapped_column(default=False)
+    audio_format: Mapped[str | None] = mapped_column(String(50))
+    audio_quality: Mapped[str | None] = mapped_column(String(50))
+    container: Mapped[str | None] = mapped_column(String(50))
+    embed_metadata: Mapped[bool] = mapped_column(default=True)
+    embed_thumbnail: Mapped[bool] = mapped_column(default=True)
+    embed_chapters: Mapped[bool] = mapped_column(default=False)
+    subtitle_langs: Mapped[str | None] = mapped_column(String(255))
+    subtitle_auto: Mapped[bool] = mapped_column(default=False)
+    subtitle_embed: Mapped[bool] = mapped_column(default=False)
+    expert_mode: Mapped[bool] = mapped_column(default=False)
+    allow_exec: Mapped[bool] = mapped_column(default=False)
+    concurrent_fragments: Mapped[int | None] = mapped_column(Integer)
+    postprocess_chain_json: Mapped[dict | None] = mapped_column(JSON)
 
 
 class Playlist(Base, TimestampMixin):
     __tablename__ = "playlist"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    folder_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    url: Mapped[str] = mapped_column(String(2000), nullable=False)
-    enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255))
+    folder_name: Mapped[str] = mapped_column(String(255))
+    url: Mapped[str] = mapped_column(String(2000))
+    enabled: Mapped[bool] = mapped_column(default=True)
     kind_hint: Mapped[PlaylistKindHint] = _enum_column(PlaylistKindHint, name="playlist_kind_hint")
-    ytdlp_args: Mapped[str | None] = mapped_column(String(4000), nullable=True)
-    discover_cron: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    download_cron: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    paused: Mapped[bool] = mapped_column(default=False, nullable=False)
-    retention_policy_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    dedup_hardlink: Mapped[bool] = mapped_column(default=False, nullable=False)
-    last_discover_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_download_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ytdlp_args: Mapped[str | None] = mapped_column(String(4000))
+    discover_cron: Mapped[str | None] = mapped_column(String(100))
+    download_cron: Mapped[str | None] = mapped_column(String(100))
+    paused: Mapped[bool] = mapped_column(default=False)
+    retention_policy_json: Mapped[dict | None] = mapped_column(JSON)
+    dedup_hardlink: Mapped[bool] = mapped_column(default=False)
+    last_discover_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_download_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class PlaylistProfile(Base, TimestampMixin):
@@ -252,12 +258,12 @@ class PlaylistProfile(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("playlist_id", "profile_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    playlist_id: Mapped[int] = mapped_column(ForeignKey("playlist.id"), nullable=False)
-    profile_id: Mapped[int] = mapped_column(ForeignKey("profile.id"), nullable=False)
-    storage_id: Mapped[int] = mapped_column(ForeignKey("storage.id"), nullable=False)
-    subpath: Mapped[str] = mapped_column(String(1000), default="{playlist.folder_name}", nullable=False)
-    enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
-    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    playlist_id: Mapped[int] = mapped_column(ForeignKey("playlist.id"))
+    profile_id: Mapped[int] = mapped_column(ForeignKey("profile.id"))
+    storage_id: Mapped[int] = mapped_column(ForeignKey("storage.id"))
+    subpath: Mapped[str] = mapped_column(String(1000), default="{playlist.folder_name}")
+    enabled: Mapped[bool] = mapped_column(default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Item(Base, TimestampMixin):
@@ -271,21 +277,21 @@ class Item(Base, TimestampMixin):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    playlist_id: Mapped[int] = mapped_column(ForeignKey("playlist.id"), nullable=False)
-    source_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    source_url: Mapped[str] = mapped_column(String(2000), nullable=False)
-    title: Mapped[str | None] = mapped_column(String(1000), nullable=True)
-    uploader: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    duration: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    upload_date: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    playlist_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    playlist_id: Mapped[int] = mapped_column(ForeignKey("playlist.id"))
+    source_id: Mapped[str] = mapped_column(String(255))
+    source_url: Mapped[str] = mapped_column(String(2000))
+    title: Mapped[str | None] = mapped_column(String(1000))
+    uploader: Mapped[str | None] = mapped_column(String(500))
+    duration: Mapped[int | None] = mapped_column(Integer)
+    upload_date: Mapped[str | None] = mapped_column(String(20))
+    playlist_index: Mapped[int | None] = mapped_column(Integer)
     membership: Mapped[ItemMembership] = _enum_column(
         ItemMembership, name="item_membership", default=ItemMembership.ACTIVE
     )
-    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
-    delisted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    delisted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Target(Base, TimestampMixin):
@@ -299,14 +305,16 @@ class Target(Base, TimestampMixin):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    item_id: Mapped[int] = mapped_column(ForeignKey("item.id", ondelete="CASCADE"), nullable=False)
-    playlist_profile_id: Mapped[int] = mapped_column(ForeignKey("playlist_profile.id"), nullable=False)
-    status: Mapped[TargetStatus] = _enum_column(TargetStatus, name="target_status", default=TargetStatus.PENDING)
-    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    last_error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
-    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    blocked_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
-    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("item.id", ondelete="CASCADE"))
+    playlist_profile_id: Mapped[int] = mapped_column(ForeignKey("playlist_profile.id"))
+    status: Mapped[TargetStatus] = _enum_column(
+        TargetStatus, name="target_status", default=TargetStatus.PENDING
+    )
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(4000))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    blocked_reason: Mapped[str | None] = mapped_column(String(1000))
+    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Artifact(Base, TimestampMixin):
@@ -316,21 +324,23 @@ class Artifact(Base, TimestampMixin):
     __table_args__ = (Index("ix_artifact_storage_id", "storage_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    target_id: Mapped[int] = mapped_column(ForeignKey("target.id", ondelete="CASCADE"), nullable=False)
-    role: Mapped[ArtifactRole] = _enum_column(ArtifactRole, name="artifact_role", default=ArtifactRole.SOURCE)
-    storage_id: Mapped[int] = mapped_column(ForeignKey("storage.id"), nullable=False)
-    relative_path: Mapped[str] = mapped_column(String(2000), nullable=False)
-    absolute_path_cache: Mapped[str | None] = mapped_column(String(2000), nullable=True)
-    container: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    format_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    video_codec: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    audio_codec: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    filesize: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    duration: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    checksum: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    produced_by_task_id: Mapped[int | None] = mapped_column(ForeignKey("task.id"), nullable=True)
-    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    missing_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    target_id: Mapped[int] = mapped_column(ForeignKey("target.id", ondelete="CASCADE"))
+    role: Mapped[ArtifactRole] = _enum_column(
+        ArtifactRole, name="artifact_role", default=ArtifactRole.SOURCE
+    )
+    storage_id: Mapped[int] = mapped_column(ForeignKey("storage.id"))
+    relative_path: Mapped[str] = mapped_column(String(2000))
+    absolute_path_cache: Mapped[str | None] = mapped_column(String(2000))
+    container: Mapped[str | None] = mapped_column(String(50))
+    format_id: Mapped[str | None] = mapped_column(String(100))
+    video_codec: Mapped[str | None] = mapped_column(String(100))
+    audio_codec: Mapped[str | None] = mapped_column(String(100))
+    filesize: Mapped[int | None] = mapped_column(Integer)
+    duration: Mapped[int | None] = mapped_column(Integer)
+    checksum: Mapped[str | None] = mapped_column(String(255))
+    produced_by_task_id: Mapped[int | None] = mapped_column(ForeignKey("task.id"))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    missing_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Task(Base):
@@ -346,22 +356,24 @@ class Task(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     type: Mapped[TaskType] = _enum_column(TaskType, name="task_type")
-    target_ref_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    target_ref_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    target_ref_type: Mapped[str] = mapped_column(String(50))
+    target_ref_id: Mapped[int] = mapped_column(Integer)
+    payload_json: Mapped[dict | None] = mapped_column(JSON)
     worker_class: Mapped[WorkerClass] = _enum_column(WorkerClass, name="task_worker_class")
-    priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    status: Mapped[TaskStatus] = _enum_column(TaskStatus, name="task_status", default=TaskStatus.PENDING)
-    depends_on_task_id: Mapped[int | None] = mapped_column(ForeignKey("task.id"), nullable=True)
-    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    max_attempts: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
-    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    error_message: Mapped[str | None] = mapped_column(String(4000), nullable=True)
-    log_excerpt: Mapped[str | None] = mapped_column(String(4000), nullable=True)
-    run_id: Mapped[int | None] = mapped_column(ForeignKey("run.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[TaskStatus] = _enum_column(
+        TaskStatus, name="task_status", default=TaskStatus.PENDING
+    )
+    depends_on_task_id: Mapped[int | None] = mapped_column(ForeignKey("task.id"))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=5)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_message: Mapped[str | None] = mapped_column(String(4000))
+    log_excerpt: Mapped[str | None] = mapped_column(String(4000))
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("run.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class Run(Base):
@@ -370,13 +382,15 @@ class Run(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     trigger: Mapped[RunTrigger] = _enum_column(RunTrigger, name="run_trigger")
-    kind: Mapped[str] = mapped_column(String(50), nullable=False)
-    playlist_id: Mapped[int | None] = mapped_column(ForeignKey("playlist.id"), nullable=True)
-    status: Mapped[RunStatus] = _enum_column(RunStatus, name="run_status", default=RunStatus.RUNNING)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    stats_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    log_path: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    kind: Mapped[str] = mapped_column(String(50))
+    playlist_id: Mapped[int | None] = mapped_column(ForeignKey("playlist.id"))
+    status: Mapped[RunStatus] = _enum_column(
+        RunStatus, name="run_status", default=RunStatus.RUNNING
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stats_json: Mapped[dict | None] = mapped_column(JSON)
+    log_path: Mapped[str | None] = mapped_column(String(2000))
 
 
 class Setting(Base):
@@ -397,10 +411,10 @@ class EventLog(Base):
     __tablename__ = "event_log"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
-    delivered_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    event_type: Mapped[str] = mapped_column(String(100))
+    payload_json: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    delivered_json: Mapped[dict | None] = mapped_column(JSON)
 
 
 __all__ = [

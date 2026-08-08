@@ -15,11 +15,15 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# alembic autogenerate の出力はカラム定義が1行になりがちで、手で折り返すと
+# 差分が読みにくくなるため、生成後の versions/ は行長チェックの対象外にする。
+extend-exclude = ["migrations/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
+plugins = ["pydantic.mypy"]
 python_version = "3.12"
 warn_unused_ignores = true
 warn_redundant_casts = true

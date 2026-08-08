@@ -39,7 +39,12 @@ class EncryptedJSON(TypeDecorator):
     impl = Text
     cache_ok = True
 
-    def __init__(self, key_provider: Callable[[], str] = get_encryption_key, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        key_provider: Callable[[], str] = get_encryption_key,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._key_provider = key_provider
 
@@ -84,7 +89,13 @@ def check_secret_key_fingerprint(session: Session, secret_key: str) -> str | Non
     if row is None:
         from datetime import UTC, datetime
 
-        session.add(Setting(key=FINGERPRINT_SETTING_KEY, value_json=fingerprint, updated_at=datetime.now(UTC)))
+        session.add(
+            Setting(
+                key=FINGERPRINT_SETTING_KEY,
+                value_json=fingerprint,
+                updated_at=datetime.now(UTC),
+            )
+        )
         session.commit()
         return None
 
