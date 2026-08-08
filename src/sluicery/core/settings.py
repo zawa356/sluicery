@@ -14,6 +14,14 @@ Phase 2 では定義と読み書きのみを行う。実際に参照する処理
 
 キャッシュは持たない（マルチプロセス構成のためプロセス跨ぎの無効化が
 できない。§6.4 の「キャッシュなし」を選択。基本設計 §7 に記録）。
+
+`setting` テーブルにはユーザーが操作可能な運用パラメータ以外に、内部状態
+（`SECRET_KEY` の指紋など）も同居する。内部状態のキーは `_internal.*` の
+名前空間に置き、`CODE_DEFAULTS` に登録しない（`db/crypto.py` の
+`FINGERPRINT_SETTING_KEY` を参照）。この関数群（`get` / `set_override` /
+`unset_override` / `list_all`）は `CODE_DEFAULTS` に登録されたキーしか
+扱わないため、`_internal.*` は `sluicery settings list/get/set/unset` の
+対象や、将来実装する設定エクスポート（Phase 17）の対象に自動的に含まれない。
 """
 
 from __future__ import annotations
@@ -57,6 +65,13 @@ CODE_DEFAULTS: dict[str, SettingSpec] = {
     "download.retries": SettingSpec("download.retries", int, 5),
     "download.fragment_retries": SettingSpec("download.fragment_retries", int, 10),
     "retry.max_attempts": SettingSpec("retry.max_attempts", int, 5),
+    "ytdlp.auto_install": SettingSpec("ytdlp.auto_install", bool, True),
+    "ytdlp.keep_versions": SettingSpec("ytdlp.keep_versions", int, 3),
+    "ytdlp.idle_timeout_sec": SettingSpec("ytdlp.idle_timeout_sec", int, 300),
+    "ytdlp.absolute_timeout_sec": SettingSpec("ytdlp.absolute_timeout_sec", int, 21600),
+    "ytdlp.discover_timeout_sec": SettingSpec("ytdlp.discover_timeout_sec", int, 300),
+    "ytdlp.term_grace_sec": SettingSpec("ytdlp.term_grace_sec", int, 10),
+    "ytdlp.stderr_tail_kb": SettingSpec("ytdlp.stderr_tail_kb", int, 64),
 }
 
 
@@ -201,6 +216,34 @@ class OperationalSettings:
     @property
     def retry_max_attempts(self) -> int:
         return get(self._session, "retry.max_attempts")
+
+    @property
+    def ytdlp_auto_install(self) -> bool:
+        return get(self._session, "ytdlp.auto_install")
+
+    @property
+    def ytdlp_keep_versions(self) -> int:
+        return get(self._session, "ytdlp.keep_versions")
+
+    @property
+    def ytdlp_idle_timeout_sec(self) -> int:
+        return get(self._session, "ytdlp.idle_timeout_sec")
+
+    @property
+    def ytdlp_absolute_timeout_sec(self) -> int:
+        return get(self._session, "ytdlp.absolute_timeout_sec")
+
+    @property
+    def ytdlp_discover_timeout_sec(self) -> int:
+        return get(self._session, "ytdlp.discover_timeout_sec")
+
+    @property
+    def ytdlp_term_grace_sec(self) -> int:
+        return get(self._session, "ytdlp.term_grace_sec")
+
+    @property
+    def ytdlp_stderr_tail_kb(self) -> int:
+        return get(self._session, "ytdlp.stderr_tail_kb")
 
 
 __all__ = [
