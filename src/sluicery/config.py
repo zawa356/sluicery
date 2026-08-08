@@ -10,8 +10,10 @@ from __future__ import annotations
 import os
 import re
 import sys
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cryptography.fernet import Fernet
@@ -34,7 +36,8 @@ def validate_secret_key(value: str) -> str:
     except Exception as exc:  # noqa: BLE001 - Fernet の例外型は多岐にわたる
         raise ValueError(
             "Fernet 鍵として不正です。生成例: "
-            'python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
+            'python -c "from cryptography.fernet import Fernet; '
+            'print(Fernet.generate_key().decode())"'
         ) from exc
     return value
 
@@ -132,7 +135,7 @@ SECRET_KEY_MISSING_MESSAGE = """ERROR: SECRET_KEY が設定されていません
   この鍵を紛失すると、保存済みの認証情報を復号できなくなります。バックアップを取得してください。"""
 
 
-def _is_secret_key_missing(errors: list[dict]) -> bool:
+def _is_secret_key_missing(errors: Sequence[Mapping[str, Any]]) -> bool:
     return any(
         e["loc"] == ("SECRET_KEY",) and e["type"] in ("missing", "string_type")
         for e in errors
@@ -210,7 +213,8 @@ def _check_config_from_errors(exc: ValidationError) -> list[FieldCheckResult]:
                 )
             )
         else:
-            display = raw_value if raw_value is not None else field.get_default(call_default_factory=True)
+            default = field.get_default(call_default_factory=True)
+            display = raw_value if raw_value is not None else default
             results.append(FieldCheckResult(name=name, ok=True, display_value=_mask(name, display)))
     return results
 
