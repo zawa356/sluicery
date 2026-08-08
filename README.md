@@ -17,7 +17,16 @@ make lock              # requirements.lock を初回生成（要ネットワー�
 make up
 ```
 
-`SECRET_KEY` を設定しない場合、明確なエラーメッセージを出して起動を拒否します。
+`SECRET_KEY` を設定しない場合、明確なエラーメッセージを出して起動を拒否します。生成方法：
+
+```bash
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+`SECRET_KEY` は Storage の認証情報などを暗号化する鍵で、**ローテーションには対応していません。**
+紛失または変更すると保存済みの認証情報を復号できなくなり、各 Storage の認証情報を再入力する
+必要があります。バックアップ（`make backup`）を取得しておくことを推奨します。意図せず
+`SECRET_KEY` が変わった場合、起動時に警告が表示されます。
 
 初回起動時、`.env` の `ADMIN_USERNAME` / `ADMIN_PASSWORD` で管理者アカウントが作成されます。
 `ADMIN_PASSWORD` を空のままにした場合はランダムなパスワードが生成され、起動ログに一度だけ出力されます。
@@ -31,6 +40,8 @@ make up
 | `make logs` | ログ追跡 |
 | `make shell` | `app` コンテナにシェル接続 |
 | `make sync` | 全プレイリストの同期を即時実行 |
+| `make migrate` | DB マイグレーションを手動適用（`AUTO_MIGRATE=false` 運用時など） |
+| `make revision MSG="..."` | autogenerate でマイグレーションリビジョンを生成 |
 | `make backup` | DB + 設定 + シークレットを単一アーカイブに書き出し |
 | `make restore FILE=...` | バックアップから復元 |
 | `make purge` | 削除対象を表示して確認した上でコンテナ・イメージ・volume を削除（bind mount 先の実体は削除しない） |
