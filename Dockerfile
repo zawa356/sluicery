@@ -10,6 +10,14 @@ FROM python:3.12-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142
 # rclone / ffmpeg はバージョンを明示的に固定し、取得後に checksum で検証する（要件定義 §4.2, §3）。
 ARG RCLONE_VERSION=1.75.0
 ARG RCLONE_SHA256=aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
+
+# ffmpeg 静的ビルドの配布元（D-002）。johnvansickle は最新版を固定名で配布し、
+# 旧版はバージョン番号付きファイル名で old-releases/ 配下に保持し続ける。
+# 上流がローテーションして checksum 不一致でビルドが失敗した場合は、
+# https://johnvansickle.com/ffmpeg/old-releases/ から該当 checksum に合う
+# versioned な tar.xz の URL を調べ、FFMPEG_URL をそれに差し替えれば
+# 同一バージョンを再取得できる（例: ffmpeg-6.1.1-amd64-static.tar.xz）。
+ARG FFMPEG_URL=https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
 ARG FFMPEG_SHA256=abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -33,7 +41,7 @@ RUN curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE
     && rm -rf /tmp/rclone /tmp/rclone.zip
 
 # ---- ffmpeg / ffprobe（静的ビルド） ----
-RUN curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" -o /tmp/ffmpeg.tar.xz \
+RUN curl -fsSL "${FFMPEG_URL}" -o /tmp/ffmpeg.tar.xz \
     && echo "${FFMPEG_SHA256}  /tmp/ffmpeg.tar.xz" | sha256sum -c - \
     && mkdir -p /tmp/ffmpeg \
     && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1 \
