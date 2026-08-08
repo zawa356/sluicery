@@ -1,0 +1,69 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sluicery:local
+    restart: unless-stopped
+    command: ["web"]
+    env_file:
+      - .env
+    ports:
+      - "${HTTP_PORT:-8080}:${HTTP_PORT:-8080}"
+    volumes:
+      - data:/data
+      - ${MEDIA_ROOT:-/mnt/media}:/mnt/media
+    tmpfs:
+      - /run/sluicery:mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,os;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('HTTP_PORT','8080')+'/healthz',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  worker-network:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sluicery:local
+    restart: unless-stopped
+    command: ["worker-network"]
+    env_file:
+      - .env
+    volumes:
+      - data:/data
+      - ${MEDIA_ROOT:-/mnt/media}:/mnt/media
+    tmpfs:
+      - /run/sluicery:mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}
+    depends_on:
+      - app
+
+  worker-compute:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sluicery:local
+    restart: unless-stopped
+    command: ["worker-compute"]
+    env_file:
+      - .env
+    volumes:
+      - data:/data
+      - ${MEDIA_ROOT:-/mnt/media}:/mnt/media
+    tmpfs:
+      - /run/sluicery:mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}
+    depends_on:
+      - app
+    # NVENC 等の GPU ハードウェアエンコードを使う場合のみコメントを外す。
+    # 現バージョンでは postprocess は空実装のため未使用（要件定義 §14.3）。
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  data:

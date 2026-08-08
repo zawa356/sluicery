@@ -1,0 +1,51 @@
+# ホスト上に作られるものの一覧
+
+compose 変更時は必ず本ドキュメントを更新すること（CLAUDE.md §2.1）。
+アプリがホスト上に作成するのは、compose が宣言する volume と bind mount のみ（要件定義 §4.3）。
+
+## コンテナ
+
+| サービス | イメージ | 役割 |
+|---|---|---|
+| `app` | `sluicery:local`（ローカルビルド） | Web UI + REST API + スケジューラ |
+| `worker-network` | `sluicery:local`（同一イメージ） | discover / download / publish |
+| `worker-compute` | `sluicery:local`（同一イメージ） | postprocess / verify（現バージョンではほぼ待機） |
+
+## イメージ
+
+- `sluicery:local`：`Dockerfile` からローカルビルド。ベースは `python:3.12-slim`（digest 固定）。
+- ビルド時に外部から取得するもの：rclone（バージョン固定 + checksum 検証）、ffmpeg/ffprobe 静的ビルド（checksum 検証）
+
+## ネットワーク
+
+- compose のデフォルトネットワーク（`sluicery_default`）のみ。追加のネットワークは作成しない。
+
+## Volume
+
+| 名前 | マウント先 | 内容 |
+|---|---|---|
+| `data`（named volume） | `/data`（全サービス） | SQLite DB、yt-dlp venv、Staging 領域、ログ |
+
+## Bind mount
+
+| ホスト側 | コンテナ側 | 用途 |
+|---|---|---|
+| `${MEDIA_ROOT}`（既定 `/mnt/media`） | `/mnt/media`（全サービス） | `local` kind の Storage が書き込む最終保存先 |
+
+## tmpfs
+
+| マウント先 | 用途 |
+|---|---|
+| `/run/sluicery` | rclone 設定ファイル・Cookie の実行時展開先（平文をディスクに残さないため、要件定義 §6.5, §9.7） |
+
+## ポート
+
+| ポート | 用途 |
+|---|---|
+| `${HTTP_PORT}`（既定 8080） | `app` の Web UI / REST API（コンテナ⇔ホスト直結、HTTPS 終端はしない） |
+
+## `make purge` で削除されるもの／されないもの
+
+削除される：`app` / `worker-network` / `worker-compute` コンテナ、ローカルビルドイメージ `sluicery:local`、named volume `data`、compose ネットワーク。
+
+削除されない：`${MEDIA_ROOT}` 配下の bind mount 実体（メディア本体）。`compose.privileged.yaml` を併用している場合はホスト側のマウントポイント自体の後始末は別途 `umount` が必要（要件定義 §6.6、実装順序 #19 以降）。
