@@ -90,7 +90,42 @@ def _open_session():
     return create_session_factory(engine)()
 
 
+def _maybe_auto_install_ytdlp(settings: Settings) -> None:
+    """`ytdlp.auto_install` が true なら、起動後に非同期で yt-dlp の導入を試みる。
+
+    未実装処理を待つ worker と異なり、app は yt-dlp が無くても Web UI 自体は
+    提供できるため、このスレッドはベストエフォートで実行し、失敗してもアプリ
+    本体（uvicorn）には一切影響させない（degraded 起動。§2.5）。
+    """
+    from sluicery.core import settings as core_settings
+    from sluicery.db.models import YtdlpReleaseSource
+    from sluicery.db.session import create_engine_for, create_session_factory
+    from sluicery.downloader.version import InstallStatus, get_status, install, ytdlp_root
+
+    root = ytdlp_root(settings.DATA_DIR)
+    assert settings.DB_PATH is not None  # Settings のモデル検証で必ず補完される
+    engine = create_engine_for(settings.DB_PATH)
+    try:
+        session = create_session_factory(engine)()
+        try:
+            if not core_settings.OperationalSettings(session).ytdlp_auto_install:
+                return
+            if get_status(root).status == InstallStatus.READY:
+                return
+            print("[sluicery] yt-dlp を自動導入します...", flush=True)
+            release = install(root, session, source=YtdlpReleaseSource.AUTO)
+            print(f"[sluicery] yt-dlp {release.version} の自動導入が完了しました", flush=True)
+        finally:
+            session.close()
+    except Exception as exc:  # noqa: BLE001 - ベストエフォートであり app は落とさない
+        print(f"[sluicery] yt-dlp の自動導入に失敗しました: {exc}", file=sys.stderr, flush=True)
+    finally:
+        engine.dispose()
+
+
 def _run_web() -> int:
+    import threading
+
     import uvicorn
 
     from sluicery.config import load_settings
@@ -99,20 +134,57 @@ def _run_web() -> int:
     settings = load_settings()
     _ensure_migrations_for_web(settings)
 
+    threading.Thread(
+        target=_maybe_auto_install_ytdlp, args=(settings,), daemon=True, name="ytdlp-auto-install"
+    ).start()
+
     port = int(os.environ.get("HTTP_PORT", str(settings.HTTP_PORT)))
     uvicorn.run(create_app(), host="0.0.0.0", port=port, log_level="info")
     return 0
 
 
+def _wait_for_ytdlp_ready(root: Path, *, poll_interval_sec: float = 10.0) -> None:
+    """`current` が有効（`ready`）になるまで待機する。
+
+    ログは初回と状態変化時のみ出力し、毎回は出力しない（§2.5）。導入・切替・
+    削除は `app` サービスのみが行うため、ここでは読み取り専用でポーリングする
+    （§2.4）。
+    """
+    from sluicery.downloader.version import InstallStatus, get_status
+
+    last_status: InstallStatus | None = None
+    while True:
+        result = get_status(root)
+        if result.status != last_status:
+            if result.status == InstallStatus.READY:
+                msg = f"[sluicery] yt-dlp 準備完了（バージョン: {result.current_version}）"
+            else:
+                msg = f"[sluicery] yt-dlp 待機中（状態: {result.status.value}）"
+            print(msg, flush=True)
+            last_status = result.status
+        if result.status == InstallStatus.READY:
+            return
+        time.sleep(poll_interval_sec)
+
+
 def _run_worker(worker_class: str) -> int:
     from sluicery.config import load_settings
+    from sluicery.downloader.version import ytdlp_root
 
     settings = load_settings()
     _wait_for_migrations_for_worker(settings)
+    _wait_for_ytdlp_ready(ytdlp_root(settings.DATA_DIR))
 
-    # Task キュー・ワーカーの実装は実装順序 #6 で追加する。
-    print(f"[sluicery] worker-{worker_class}: 実装準備中（実装順序 #6 で追加）", flush=True)
-    return 0
+    # Task キュー・ワーカーの実装は実装順序 #6 で追加する。未実装の処理を持つ
+    # worker はここで終了せず待機ループへ入る。終了して restart: unless-stopped
+    # に任せると、Docker の restart backoff が効き始め、Phase 6 で実際の異常が
+    # 起きたときに区別できなくなる（docs/phase3_指示書.md §0.3）。
+    print(
+        f"[sluicery] worker-{worker_class}: 実装準備中（実装順序 #6 で追加）。以降は待機します",
+        flush=True,
+    )
+    while True:
+        time.sleep(3600)
 
 
 def _cmd_config_check() -> int:
@@ -214,6 +286,259 @@ def _cmd_settings_unset(key: str) -> int:
         session.close()
 
 
+def _ytdlp_root_from_settings():
+    from sluicery.config import load_settings
+    from sluicery.downloader.version import ytdlp_root
+
+    settings = load_settings()
+    return settings, ytdlp_root(settings.DATA_DIR)
+
+
+def _cmd_ytdlp_status() -> int:
+    from sluicery.downloader.version import get_status
+
+    _settings, root = _ytdlp_root_from_settings()
+    result = get_status(root)
+    print(f"status: {result.status.value}")
+    print(f"current_version: {result.current_version or '(なし)'}")
+    if result.version_output:
+        print(f"version_output: {result.version_output}")
+    return 0
+
+
+def _cmd_ytdlp_list() -> int:
+    from sluicery.downloader.version import list_versions, read_current_version
+
+    _settings, root = _ytdlp_root_from_settings()
+    current = read_current_version(root)
+    session = _open_session()
+    try:
+        releases = list_versions(session)
+        if not releases:
+            print("(導入済みのバージョンはありません)")
+            return 0
+        for release in releases:
+            marker = "*" if release.version == current else " "
+            print(
+                f"{marker} {release.version}  status={release.status.value}"
+                f"  installed_at={release.installed_at.isoformat()}"
+            )
+        return 0
+    finally:
+        session.close()
+
+
+def _cmd_ytdlp_install(version: str | None, force: bool) -> int:
+    from sluicery.db.models import YtdlpReleaseSource
+    from sluicery.downloader.version import YtdlpInstallError, install
+
+    _settings, root = _ytdlp_root_from_settings()
+    session = _open_session()
+    try:
+        try:
+            release = install(
+                root, session, version=version, source=YtdlpReleaseSource.MANUAL, force=force
+            )
+        except YtdlpInstallError as exc:
+            print(f"ERROR: yt-dlp の導入に失敗しました: {exc}", file=sys.stderr)
+            return 1
+        print(f"導入しました: {release.version}（status={release.status.value}）")
+        return 0
+    finally:
+        session.close()
+
+
+def _cmd_ytdlp_use(version: str) -> int:
+    from sluicery.downloader.version import UnknownVersionError, use
+
+    _settings, root = _ytdlp_root_from_settings()
+    session = _open_session()
+    try:
+        try:
+            release = use(root, session, version)
+        except UnknownVersionError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        print(f"切り替えました: {release.version}")
+        return 0
+    finally:
+        session.close()
+
+
+def _cmd_ytdlp_remove(version: str) -> int:
+    from sluicery.downloader.version import CurrentVersionRemovalError, UnknownVersionError, remove
+
+    _settings, root = _ytdlp_root_from_settings()
+    session = _open_session()
+    try:
+        try:
+            remove(root, session, version)
+        except (CurrentVersionRemovalError, UnknownVersionError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        print(f"削除しました: {version}")
+        return 0
+    finally:
+        session.close()
+
+
+def _ytdlp_timeout_and_bin():
+    """`ytdlp exec` / `probe` / `fetch` で共通の準備（導入確認・タイムアウト設定の取得）。"""
+    from sluicery.core import settings as core_settings
+    from sluicery.downloader.version import InstallStatus, current_ytdlp_bin, get_status
+    from sluicery.downloader.ytdlp import TimeoutPolicy
+
+    settings, root = _ytdlp_root_from_settings()
+    status = get_status(root)
+    if status.status != InstallStatus.READY:
+        print(f"ERROR: yt-dlp が利用できません（状態: {status.status.value}）", file=sys.stderr)
+        return None
+
+    session = _open_session()
+    try:
+        ops = core_settings.OperationalSettings(session)
+        timeout = TimeoutPolicy(
+            idle_sec=ops.ytdlp_idle_timeout_sec,
+            absolute_sec=ops.ytdlp_absolute_timeout_sec,
+            term_grace_sec=ops.ytdlp_term_grace_sec,
+        )
+        stderr_tail_kb = ops.ytdlp_stderr_tail_kb
+    finally:
+        session.close()
+
+    return settings, current_ytdlp_bin(root), timeout, stderr_tail_kb
+
+
+def _cmd_ytdlp_exec(args: list[str]) -> int:
+    from sluicery.downloader.ytdlp import YtdlpRunner, mask_command_line
+
+    prepared = _ytdlp_timeout_and_bin()
+    if prepared is None:
+        return 1
+    settings, bin_path, timeout, stderr_tail_kb = prepared
+
+    print(f"$ yt-dlp {' '.join(mask_command_line(args))}")
+    runner = YtdlpRunner(
+        bin_path, stderr_tail_kb=stderr_tail_kb, log_dir=settings.DATA_DIR / "logs"
+    )
+    result = runner.run(args, timeout=timeout)
+
+    for line in result.stdout_lines:
+        print(line)
+    if result.stderr_tail:
+        print(result.stderr_tail, file=sys.stderr)
+    print(
+        f"returncode={result.returncode} classification={result.classification.value}"
+        f" terminated_by={result.terminated_by}"
+    )
+    return result.returncode
+
+
+def _cmd_ytdlp_probe(url: str) -> int:
+    from sluicery.downloader.protocol import PRINT_PREFIX
+    from sluicery.downloader.ytdlp import YtdlpRunner
+
+    prepared = _ytdlp_timeout_and_bin()
+    if prepared is None:
+        return 1
+    settings, bin_path, timeout, stderr_tail_kb = prepared
+
+    args = [url, "--simulate", "--print", f"{PRINT_PREFIX}%()j"]
+    runner = YtdlpRunner(
+        bin_path, stderr_tail_kb=stderr_tail_kb, log_dir=settings.DATA_DIR / "logs"
+    )
+    result = runner.run(args, timeout=timeout)
+
+    if result.returncode != 0 or not result.stdout_lines:
+        print(
+            f"ERROR: 取得に失敗しました（classification={result.classification.value}）",
+            file=sys.stderr,
+        )
+        if result.stderr_tail:
+            print(result.stderr_tail, file=sys.stderr)
+        return 1
+
+    import json as _json
+
+    for line in result.stdout_lines:
+        try:
+            info = _json.loads(line)
+        except ValueError:
+            print(line)
+            continue
+        print(f"id: {info.get('id')}")
+        print(f"title: {info.get('title')}")
+        print(f"uploader: {info.get('uploader')}")
+        print(f"duration: {info.get('duration')}")
+        formats = info.get("formats") or []
+        print(f"formats: {len(formats)}件")
+        for fmt in formats:
+            print(
+                f"  - {fmt.get('format_id')}: {fmt.get('ext')} "
+                f"{fmt.get('resolution') or fmt.get('vcodec')} "
+                f"{fmt.get('filesize') or fmt.get('filesize_approx') or ''}"
+            )
+    return 0
+
+
+def _cmd_ytdlp_fetch(url: str, dest: str | None) -> int:
+    from sluicery.downloader.errors import Classification
+    from sluicery.downloader.progress import ProgressEvent
+    from sluicery.downloader.protocol import PRINT_PREFIX, PROGRESS_PREFIX
+    from sluicery.downloader.ytdlp import YtdlpRunner
+
+    prepared = _ytdlp_timeout_and_bin()
+    if prepared is None:
+        return 1
+    settings, bin_path, timeout, stderr_tail_kb = prepared
+
+    dest_dir = Path(dest) if dest else settings.STAGING_DIR
+    assert dest_dir is not None
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    args = [
+        url,
+        "--newline",
+        "--paths",
+        str(dest_dir),
+        "-o",
+        "%(id)s.%(ext)s",
+        "--progress-template",
+        f"download:{PROGRESS_PREFIX}%(progress)j",
+        "--print",
+        f"after_move:{PRINT_PREFIX}%(filepath)s",
+    ]
+
+    def on_progress(event: ProgressEvent) -> None:
+        if event.total_bytes and event.downloaded_bytes is not None:
+            pct = f"{event.downloaded_bytes / event.total_bytes * 100:5.1f}%"
+        else:
+            pct = "  ?  "
+        print(
+            f"\r[{pct}] {event.status} {event.downloaded_bytes or 0}/{event.total_bytes or '?'}",
+            end="",
+            flush=True,
+        )
+
+    runner = YtdlpRunner(
+        bin_path, stderr_tail_kb=stderr_tail_kb, log_dir=settings.DATA_DIR / "logs"
+    )
+    result = runner.run(args, timeout=timeout, on_progress=on_progress)
+    print()
+
+    for line in result.stdout_lines:
+        print(f"保存先: {line}")
+    print(
+        f"returncode={result.returncode} classification={result.classification.value}"
+        f" terminated_by={result.terminated_by}"
+    )
+    if result.classification != Classification.OK:
+        if result.stderr_tail:
+            print(result.stderr_tail, file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sluicery")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -247,6 +572,33 @@ def main(argv: list[str] | None = None) -> int:
     settings_unset_parser = settings_sub.add_parser("unset", help="上書きを削除し既定値に戻す")
     settings_unset_parser.add_argument("key")
 
+    ytdlp_parser = sub.add_parser("ytdlp", help="yt-dlp の venv を管理する")
+    ytdlp_sub = ytdlp_parser.add_subparsers(dest="ytdlp_command", required=True)
+    ytdlp_sub.add_parser("status", help="導入状態（ready/not_installed/broken）を表示する")
+    ytdlp_sub.add_parser("list", help="導入済みバージョン一覧を表示する")
+    ytdlp_install_parser = ytdlp_sub.add_parser(
+        "install", help="導入する（未指定なら最新。既に導入済みなら何もしない）"
+    )
+    ytdlp_install_parser.add_argument("--version", dest="version", default=None)
+    ytdlp_install_parser.add_argument("--force", action="store_true")
+    ytdlp_use_parser = ytdlp_sub.add_parser("use", help="導入済みバージョンへ切り替える")
+    ytdlp_use_parser.add_argument("version")
+    ytdlp_remove_parser = ytdlp_sub.add_parser("remove", help="導入済みバージョンを削除する")
+    ytdlp_remove_parser.add_argument("version")
+    ytdlp_exec_parser = ytdlp_sub.add_parser(
+        "exec", help="予約引数を注入せず生実行する（デバッグ用）"
+    )
+    ytdlp_exec_parser.add_argument("ytdlp_args", nargs=argparse.REMAINDER)
+    ytdlp_probe_parser = ytdlp_sub.add_parser(
+        "probe", help="個別試験用。メタデータとフォーマット一覧を表示する"
+    )
+    ytdlp_probe_parser.add_argument("url")
+    ytdlp_fetch_parser = ytdlp_sub.add_parser(
+        "fetch", help="個別試験用。Staging へ実際にダウンロードする"
+    )
+    ytdlp_fetch_parser.add_argument("url")
+    ytdlp_fetch_parser.add_argument("--dest", default=None)
+
     args = parser.parse_args(argv)
 
     if args.command == "web":
@@ -271,6 +623,26 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_settings_set(args.key, args.value)
         if args.settings_command == "unset":
             return _cmd_settings_unset(args.key)
+    if args.command == "ytdlp":
+        if args.ytdlp_command == "status":
+            return _cmd_ytdlp_status()
+        if args.ytdlp_command == "list":
+            return _cmd_ytdlp_list()
+        if args.ytdlp_command == "install":
+            return _cmd_ytdlp_install(args.version, args.force)
+        if args.ytdlp_command == "use":
+            return _cmd_ytdlp_use(args.version)
+        if args.ytdlp_command == "remove":
+            return _cmd_ytdlp_remove(args.version)
+        if args.ytdlp_command == "exec":
+            passthrough = args.ytdlp_args
+            if passthrough and passthrough[0] == "--":
+                passthrough = passthrough[1:]
+            return _cmd_ytdlp_exec(passthrough)
+        if args.ytdlp_command == "probe":
+            return _cmd_ytdlp_probe(args.url)
+        if args.ytdlp_command == "fetch":
+            return _cmd_ytdlp_fetch(args.url, args.dest)
 
     parser.error(f"未知のコマンド: {args.command}")
     return 2
