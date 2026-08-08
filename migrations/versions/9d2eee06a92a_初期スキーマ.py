@@ -1,8 +1,8 @@
 """初期スキーマ
 
-Revision ID: d6b6bd46ab8b
+Revision ID: 9d2eee06a92a
 Revises: 
-Create Date: 2026-08-08 22:38:13.921361
+Create Date: 2026-08-08 22:57:18.509476
 
 """
 from collections.abc import Sequence
@@ -11,9 +11,11 @@ import sqlalchemy as sa
 from alembic import op
 
 import sluicery.db.crypto
+import sluicery.db.models
+
 
 # revision identifiers, used by Alembic.
-revision: str = 'd6b6bd46ab8b'
+revision: str = '9d2eee06a92a'
 down_revision: str | Sequence[str] | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -26,7 +28,7 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('event_type', sa.String(length=100), nullable=False),
     sa.Column('payload_json', sa.JSON(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('created_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
     sa.Column('delivered_json', sa.JSON(), nullable=True),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_event_log'))
     )
@@ -43,10 +45,10 @@ def upgrade() -> None:
     sa.Column('paused', sa.Boolean(), nullable=False),
     sa.Column('retention_policy_json', sa.JSON(), nullable=True),
     sa.Column('dedup_hardlink', sa.Boolean(), nullable=False),
-    sa.Column('last_discover_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('last_download_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('last_discover_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=True),
+    sa.Column('last_download_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_playlist'))
     )
     op.create_table('profile',
@@ -72,14 +74,14 @@ def upgrade() -> None:
     sa.Column('allow_exec', sa.Boolean(), nullable=False),
     sa.Column('concurrent_fragments', sa.Integer(), nullable=True),
     sa.Column('postprocess_chain_json', sa.JSON(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('created_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_profile'))
     )
     op.create_table('setting',
     sa.Column('key', sa.String(length=255), nullable=False),
     sa.Column('value_json', sa.String(), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('key', name=op.f('pk_setting'))
     )
     op.create_table('storage',
@@ -89,19 +91,19 @@ def upgrade() -> None:
     sa.Column('enabled', sa.Boolean(), nullable=False),
     sa.Column('config_json', sa.JSON(), nullable=True),
     sa.Column('credentials_encrypted', sluicery.db.crypto.EncryptedJSON(), nullable=True),
-    sa.Column('last_check_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('last_check_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=True),
     sa.Column('last_check_result_json', sa.JSON(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('created_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_storage'))
     )
     op.create_table('user',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('username', sa.String(length=255), nullable=False),
     sa.Column('password_hash', sa.String(length=255), nullable=False),
-    sa.Column('last_login_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('last_login_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_user')),
     sa.UniqueConstraint('username', name=op.f('uq_user_username'))
     )
@@ -117,11 +119,11 @@ def upgrade() -> None:
     sa.Column('playlist_index', sa.Integer(), nullable=True),
     sa.Column('membership', sa.Enum('active', 'delisted', name='item_membership', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('metadata_json', sa.JSON(), nullable=True),
-    sa.Column('first_seen_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('last_seen_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('delisted_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('first_seen_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('last_seen_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('delisted_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['playlist_id'], ['playlist.id'], name=op.f('fk_item_playlist_id_playlist')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_item')),
     sa.UniqueConstraint('playlist_id', 'source_id', name=op.f('uq_item_playlist_id'))
@@ -138,8 +140,8 @@ def upgrade() -> None:
     sa.Column('subpath', sa.String(length=1000), nullable=False),
     sa.Column('enabled', sa.Boolean(), nullable=False),
     sa.Column('sort_order', sa.Integer(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('created_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['playlist_id'], ['playlist.id'], name=op.f('fk_playlist_profile_playlist_id_playlist')),
     sa.ForeignKeyConstraint(['profile_id'], ['profile.id'], name=op.f('fk_playlist_profile_profile_id_profile')),
     sa.ForeignKeyConstraint(['storage_id'], ['storage.id'], name=op.f('fk_playlist_profile_storage_id_storage')),
@@ -152,8 +154,8 @@ def upgrade() -> None:
     sa.Column('kind', sa.String(length=50), nullable=False),
     sa.Column('playlist_id', sa.Integer(), nullable=True),
     sa.Column('status', sa.Enum('running', 'succeeded', 'failed', 'cancelled', name='run_status', native_enum=False, create_constraint=True), nullable=False),
-    sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('started_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('finished_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=True),
     sa.Column('stats_json', sa.JSON(), nullable=True),
     sa.Column('log_path', sa.String(length=2000), nullable=True),
     sa.ForeignKeyConstraint(['playlist_id'], ['playlist.id'], name=op.f('fk_run_playlist_id_playlist')),
@@ -169,11 +171,11 @@ def upgrade() -> None:
     sa.Column('status', sa.Enum('pending', 'queued', 'downloading', 'processing', 'downloaded', 'failed', 'unavailable', 'blocked', 'missing', 'ignored', name='target_status', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('retry_count', sa.Integer(), nullable=False),
     sa.Column('last_error', sa.String(length=4000), nullable=True),
-    sa.Column('last_attempt_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('last_attempt_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=True),
     sa.Column('blocked_reason', sa.String(length=1000), nullable=True),
-    sa.Column('downloaded_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('downloaded_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['item_id'], ['item.id'], name=op.f('fk_target_item_id_item'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['playlist_profile_id'], ['playlist_profile.id'], name=op.f('fk_target_playlist_profile_id_playlist_profile')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_target')),
@@ -195,13 +197,13 @@ def upgrade() -> None:
     sa.Column('depends_on_task_id', sa.Integer(), nullable=True),
     sa.Column('attempts', sa.Integer(), nullable=False),
     sa.Column('max_attempts', sa.Integer(), nullable=False),
-    sa.Column('scheduled_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('scheduled_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=True),
+    sa.Column('started_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=True),
+    sa.Column('finished_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=True),
     sa.Column('error_message', sa.String(length=4000), nullable=True),
     sa.Column('log_excerpt', sa.String(length=4000), nullable=True),
     sa.Column('run_id', sa.Integer(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('created_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['depends_on_task_id'], ['task.id'], name=op.f('fk_task_depends_on_task_id_task')),
     sa.ForeignKeyConstraint(['run_id'], ['run.id'], name=op.f('fk_task_run_id_run')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_task'))
@@ -225,10 +227,10 @@ def upgrade() -> None:
     sa.Column('duration', sa.Integer(), nullable=True),
     sa.Column('checksum', sa.String(length=255), nullable=True),
     sa.Column('produced_by_task_id', sa.Integer(), nullable=True),
-    sa.Column('verified_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('missing_since', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('verified_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=True),
+    sa.Column('missing_since', sluicery.db.models.UTCDateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sluicery.db.models.UTCDateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['produced_by_task_id'], ['task.id'], name=op.f('fk_artifact_produced_by_task_id_task')),
     sa.ForeignKeyConstraint(['storage_id'], ['storage.id'], name=op.f('fk_artifact_storage_id_storage')),
     sa.ForeignKeyConstraint(['target_id'], ['target.id'], name=op.f('fk_artifact_target_id_target'), ondelete='CASCADE'),
