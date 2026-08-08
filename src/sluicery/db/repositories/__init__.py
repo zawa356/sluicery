@@ -17,6 +17,7 @@ from sluicery.db.repositories.storage import StorageRepository
 from sluicery.db.repositories.target import TargetRepository
 from sluicery.db.repositories.task import TaskRepository
 from sluicery.db.repositories.user import DuplicateUserError, UserRepository
+from sluicery.db.repositories.ytdlp_release import YtdlpReleaseRepository
 
 __all__ = [
     "ArtifactRepository",
@@ -33,4 +34,5 @@ __all__ = [
     "TargetRepository",
     "TaskRepository",
     "UserRepository",
+    "YtdlpReleaseRepository",
 ]

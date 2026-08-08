@@ -202,6 +202,20 @@ class RunStatus(enum.StrEnum):
     CANCELLED = "cancelled"
 
 
+class YtdlpReleaseSource(enum.StrEnum):
+    """Phase 3 で新設（要件定義 §5.3 の更新履歴記録に対応。基本設計 §3 に記録）。"""
+
+    INITIAL = "initial"
+    MANUAL = "manual"
+    AUTO = "auto"
+
+
+class YtdlpReleaseStatus(enum.StrEnum):
+    INSTALLED = "installed"
+    ACTIVE = "active"
+    REMOVED = "removed"
+
+
 # ---- テーブル ----
 
 
@@ -432,6 +446,35 @@ class Setting(Base):
     )
 
 
+class YtdlpRelease(Base, TimestampMixin):
+    """yt-dlp の venv 導入・切替履歴（要件定義 §5.3、Phase 3 で新設。基本設計 §3 に記録）。
+
+    `active` は高々1件（切替時に旧アクティブ行を `installed` に戻す）。この制約は
+    DB レベルでは強制せず、`downloader/version.py` の切替処理で担保する
+    （`user` の2件目禁止と同じ考え方、D-009）。
+    """
+
+    __tablename__ = "ytdlp_release"
+    __table_args__ = (
+        UniqueConstraint("version"),
+        Index("ix_ytdlp_release_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    version: Mapped[str] = mapped_column(String(100))
+    installed_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    source: Mapped[YtdlpReleaseSource] = _enum_column(
+        YtdlpReleaseSource, name="ytdlp_release_source"
+    )
+    status: Mapped[YtdlpReleaseStatus] = _enum_column(
+        YtdlpReleaseStatus, name="ytdlp_release_status", default=YtdlpReleaseStatus.INSTALLED
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    deactivated_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    smoketest_result_json: Mapped[dict | None] = mapped_column(JSON)
+    notes: Mapped[str | None] = mapped_column(String(1000))
+
+
 class EventLog(Base):
     """フック発火の記録（拡張点の動作確認用）。イミュータブルなので updated_at は持たない。"""
 
@@ -459,6 +502,8 @@ __all__ = [
     "TaskStatus",
     "TaskType",
     "WorkerClass",
+    "YtdlpReleaseSource",
+    "YtdlpReleaseStatus",
     "metadata_obj",
     # models
     "Artifact",
@@ -473,4 +518,5 @@ __all__ = [
     "Target",
     "Task",
     "User",
+    "YtdlpRelease",
 ]
