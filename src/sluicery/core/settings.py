@@ -20,12 +20,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from sluicery.db.models import Setting
+from sluicery.db.repositories.setting import SettingRepository
 
 
 @dataclass(frozen=True)
@@ -79,7 +78,7 @@ def get(session: Session, key: str) -> Any:
     if spec is None:
         raise UnknownSettingKeyError(key)
 
-    row = session.get(Setting, key)
+    row = SettingRepository(session).get(key)
     if row is None:
         return spec.default
     return _cast(spec.type_, json.loads(row.value_json))
@@ -88,7 +87,7 @@ def get(session: Session, key: str) -> Any:
 def is_overridden(session: Session, key: str) -> bool:
     if key not in CODE_DEFAULTS:
         raise UnknownSettingKeyError(key)
-    return session.get(Setting, key) is not None
+    return SettingRepository(session).get(key) is not None
 
 
 def set_override(session: Session, key: str, value: Any) -> None:
@@ -97,23 +96,14 @@ def set_override(session: Session, key: str, value: Any) -> None:
         raise UnknownSettingKeyError(key)
 
     casted = _cast(spec.type_, value)
-    row = session.get(Setting, key)
     encoded = json.dumps(casted, ensure_ascii=False)
-    if row is None:
-        session.add(Setting(key=key, value_json=encoded, updated_at=datetime.now(UTC)))
-    else:
-        row.value_json = encoded
-        row.updated_at = datetime.now(UTC)
-    session.commit()
+    SettingRepository(session).set_override(key, encoded)
 
 
 def unset_override(session: Session, key: str) -> None:
     if key not in CODE_DEFAULTS:
         raise UnknownSettingKeyError(key)
-    row = session.get(Setting, key)
-    if row is not None:
-        session.delete(row)
-        session.commit()
+    SettingRepository(session).delete_override(key)
 
 
 @dataclass(frozen=True)
