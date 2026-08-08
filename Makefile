@@ -42,11 +42,14 @@ purge:
 	if [ "$$ans" != "y" ] && [ "$$ans" != "Y" ]; then echo "中止しました"; exit 1; fi
 	$(COMPOSE) down --rmi local --volumes --remove-orphans
 
-# requirements.in / requirements-dev.in から requirements.lock を再生成する。
-# ネットワークアクセス可能な環境で実行すること。
+# requirements.in / requirements-dev.in から requirements.lock / requirements-dev.lock を
+# 再生成する。ネットワークアクセス可能な環境で実行すること。依存を更新したときのみ実行し、
+# 生成物はコミットする（README のセットアップ手順には含めない）。
 lock:
 	docker run --rm -v "$(CURDIR)":/work -w /work python:3.12-slim \
-		bash -c "pip install pip-tools && pip-compile --generate-hashes --output-file requirements.lock requirements.in"
+		bash -c "pip install pip-tools \
+			&& pip-compile --generate-hashes --output-file requirements.lock requirements.in \
+			&& pip-compile --generate-hashes --allow-unsafe --output-file requirements-dev.lock requirements-dev.in"
 
 # 手動でマイグレーションを適用する（AUTO_MIGRATE=false の運用時、または
 # app サービス起動前に明示的に適用したい場合に使う）。
@@ -62,5 +65,9 @@ lint:
 	docker run --rm -v "$(CURDIR)":/work -w /work python:3.12-slim \
 		bash -c "pip install -r requirements-dev.in && ruff check src tests && mypy src"
 
+# dev 依存込みの test ステージをビルドし、コンテナ内で pytest を実行する
+# （本番イメージに dev 依存を焼き込まないため、専用ステージを使う。sluicery:local
+# タグとは別名にし、`make up` の本番イメージを上書きしないようにする。Phase 3 指示書 §0.1）。
 test:
-	$(COMPOSE) exec app pytest
+	docker build --target test -t sluicery:local-test .
+	docker run --rm --entrypoint pytest sluicery:local-test

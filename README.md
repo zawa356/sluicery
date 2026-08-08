@@ -8,13 +8,21 @@ yt-dlp を用いた自己ホスト向けのプレイリスト同期サーバー�
 
 ## セットアップ
 
+`requirements.lock` / `requirements-dev.lock` はコミット済みのため、通常のセットアップに
+`make lock` は不要です。
+
 ```bash
 git clone <repo> sluicery
 cd sluicery
 cp .env.example .env
 $EDITOR .env          # 最低限 SECRET_KEY と保存先パスを設定する
-make lock              # requirements.lock を初回生成（要ネットワーク・要 Docker）
 make up
+```
+
+`make` が無い環境では、`docker compose` を直接使ってください。
+
+```bash
+docker compose up -d --build
 ```
 
 `SECRET_KEY` を設定しない場合、明確なエラーメッセージを出して起動を拒否します。生成方法：
@@ -40,6 +48,9 @@ python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().
 | `make logs` | ログ追跡 |
 | `make shell` | `app` コンテナにシェル接続 |
 | `make sync` | 全プレイリストの同期を即時実行 |
+| `make test` | dev 依存込みの test ステージをビルドし、コンテナ内で pytest を実行 |
+| `make lint` | ruff / mypy をコンテナ内で実行 |
+| `make lock` | `requirements.in` / `requirements-dev.in` から lock ファイルを再生成（依存を更新したときのみ） |
 | `make migrate` | DB マイグレーションを手動適用（`AUTO_MIGRATE=false` 運用時など） |
 | `make revision MSG="..."` | autogenerate でマイグレーションリビジョンを生成 |
 | `make backup` | DB + 設定 + シークレットを単一アーカイブに書き出し |
