@@ -3,19 +3,19 @@
 > このファイルはセッション間の引き継ぎ用です。
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
-最終更新: 2026-08-08 23:40
-対応コミット: e5f8349 docs: 基本設計・変更履歴を Phase 2 の実装内容に合わせて更新
+最終更新: 2026-08-08 23:55
+対応コミット: 7618e71 docs: docker compose 実地検証の結果を基本設計・変更履歴に反映
 
 ## プロジェクト概要
 
 sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サーバー。
-詳細は `docs/要件定義.md`。Phase 2 は `docs/phase2_指示書.md` の指示に基づき実施した。
+詳細は `docs/要件定義.md`。Phase 2 は `docs/phase2_指示書.md` の指示に基づき実施し、完了した。
 
 ## 現在の進捗
 
 要件定義 §20 の実装順序に対する現在地。
 
-- [x] 1. リポジトリ骨格・Docker 環境（requirements.lock 未生成、下記参照）
+- [x] 1. リポジトリ骨格・Docker 環境
 - [x] 2. 設定読み込み・DB スキーマ
 - [ ] 3. yt-dlp venv 管理と CLI ラッパ  ← 次の着手点
 - [ ] 4. オプション合成モデル
@@ -49,24 +49,29 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
   を実装し、テスト一式（`tests/`、28件）を追加。詳細は `docs/変更履歴.md` を参照
 - テスト作成中に SQLite + SQLAlchemy で `DateTime(timezone=True)` が tzinfo を
   保持しないバグを発見し、`UTCDateTime` 型で修正（`docs/基本設計.md` D-007）
-- 設計判断は `docs/基本設計.md` §7 に D-004〜D-009 として記録済み
+- **`requirements.lock` を生成し、`docker compose up -d --build` の実地検証を完了。**
+  この過程で `MEDIA_ROOT`（ホスト側パス）の書き込み検証がコンテナ内で誤った
+  パスを見ていたバグを発見・修正（D-010）。修正後、以下を実機で確認済み：
+  - app / worker-network / worker-compute の3コンテナ起動、`/healthz` が 200
+  - `AUTO_MIGRATE=true` で起動時にマイグレーション自動適用
+  - `AUTO_MIGRATE=false` では警告のみで起動継続、worker は head 追従まで待機し
+    タイムアウトでエラー終了、手動 `db upgrade` 後に自動復帰
+  - entrypoint.sh の setpriv 権限降格（PID 1 が uid/gid 1000）、tmpfs
+    `/run/sluicery` の所有者・パーミッション（700）
+- 設計判断は `docs/基本設計.md` §7 に D-004〜D-010 として記録済み
+- `docs/phase2_指示書.md` §11 の完了条件16項目、全て確認済み
 
 ## 次にすること
 
-1. **`make lock` と `docker compose up -d --build` の実行**（下記未解決 #1。
-   これが通るまで実装順序 #3 には着手しない方針だったが、ユーザーへの確認と
-   並行して Phase 2 のコード実装は完了させた。次セッション開始時、まずこれの
-   完了確認を最優先で行うこと）
-2. 完了していれば `docs/phase2_指示書.md` §11 の完了条件（1〜16）を一通り再確認
-3. 実装順序 #3（yt-dlp venv 管理と CLI ラッパ）に着手
+1. 実装順序 #3（yt-dlp venv 管理と CLI ラッパ）に着手
+2. 着手前に `docs/要件定義.md` §5（yt-dlp の扱い）を再読すること
 
 ## 未解決・保留
 
 | # | 内容 | 状態 |
 |---|---|---|
-| 1 | `requirements.lock` が未生成。本セッションの実行環境では docker daemon への権限がなく（socket が `root:docker` 所有でユーザーが未所属）、`make lock`（`docker run` 経由の pip-compile）も `docker compose up` も実行できなかった。ユーザーに `sudo usermod -aG docker $USER` を依頼済みだが、本セッション終了時点で未確認 | 未着手・要ユーザー環境での実行 |
-| 2 | 上記が未解決のため、`docker compose up -d --build` によるコンテナ起動・entrypoint.sh の実地動作（setpriv、tmpfs 所有権、MEDIA_ROOT/STAGING_DIR 事前チェック）は未検証。ローカルの venv（`/tmp` 配下、Git 管理外）で config/DB/CLI 層の動作とテストは確認済み | 未検証 |
-| 3 | Alembic の `revision --autogenerate` は、SQLite の CHECK 制約比較の既知の制限により、実際の変更がなくても「削除→再作成」の偽陽性 diff を出す（`docs/基本設計.md` D-008）。Phase 3 以降でマイグレーションを追加する際、生成物からこの偽陽性を手で取り除く必要がある | 恒常的な既知の制限（対応不要、注意事項） |
+| 1 | Alembic の `revision --autogenerate` は、SQLite の CHECK 制約比較の既知の制限により、実際の変更がなくても「削除→再作成」の偽陽性 diff を出す（`docs/基本設計.md` D-008）。Phase 3 以降でマイグレーションを追加する際、生成物からこの偽陽性を手で取り除く必要がある | 恒常的な既知の制限（対応不要、注意事項） |
+| 2 | ローカル実行環境に `make` コマンドが入っていない（開発コンテナ側の問題）。`docker compose` / `docker run` の直接コマンドで代替可能なことは確認済みだが、`make lock` 等の一発実行はできない環境がある | 環境依存・対応不要 |
 
 ## 重要な前提（忘れやすいもの）
 
@@ -79,23 +84,26 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
   `setting` テーブル側。既定値はコード側（`core/settings.py` の `CODE_DEFAULTS`）
 - DB のタイムスタンプは独自の `UTCDateTime` 型を使う。生の `DateTime(timezone=True)`
   を新しいカラムに使わないこと（SQLite で tzinfo が保持されないバグを踏む）
+- `MEDIA_ROOT` 環境変数の値をコンテナ内でファイルパスとして直接使わない
+  （ホスト側パスであり、コンテナ内では常に `/mnt/media` に固定。D-010）
 - リポジトリ層に状態遷移ロジックを書かない（Phase 7〜8 の `core/` に置く）
 - push などのリモート git 操作は禁止
 
 ## 環境メモ
 
-- 起動: `make up`（`make lock` を先に実行する必要あり。上記未解決 #1）
-- テスト: `make test` または `pytest`（ローカル venv で 28件パス確認済み。
-  Docker 経由では未確認）
-- DB: `data/sluicery.db`（volume 内）
-- マイグレーション: `alembic upgrade head` または `sluicery db upgrade`
-  （`AUTO_MIGRATE=true` なら `app` 起動時に自動実行）
+- 起動: `docker compose up -d --build`（`.env` は `.env.example` からコピーして作成。
+  リポジトリには含まれない）
+- テスト: `pytest`（28件パス確認済み）。`ruff check src tests` / `mypy src` もクリーン
+- DB: `data/sluicery.db`（named volume `data` 内）
+- マイグレーション: `sluicery db upgrade`（`AUTO_MIGRATE=true` なら `app` 起動時に自動実行）
 - ログ: `data/logs/`
-- CLI: `python -m sluicery.cli {config check | db ... | settings ...}`
+- CLI: `docker compose exec app python3 -m sluicery.cli {config check | db ... | settings ...}`
 
 ## 既知の落とし穴
 
 - SQLite の WAL モードでもワーカーとの同時書き込みが競合しないよう、書き込みトランザクションは短く保つ
 - `docker compose down -v` は volume を消す。開発中は使わない
 - `make purge` は Staging（`data` volume 内）も消す。進行中ダウンロードの中間ファイルを失う
-- Alembic の autogenerate は CHECK 制約の偽陽性 diff を出す（上記未解決 #3）
+- Alembic の autogenerate は CHECK 制約の偽陽性 diff を出す（上記未解決 #1）
+- worker は Phase 6 まで実処理を持たないため、コンテナは起動→即終了→`restart: unless-stopped`
+  で再起動、を繰り返す。異常ではない
