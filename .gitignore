@@ -1,0 +1,47 @@
+# ---- 機密 ----
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+rclone.conf
+cookies.txt
+*.cookies
+
+# ---- 実行時データ ----
+data/
+staging/
+media/
+logs/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# ---- エディタ / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ---- その他 ----
+*.log
+tmp/
+.tmp/

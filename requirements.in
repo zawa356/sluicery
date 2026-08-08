@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+jinja2
+python-multipart
+itsdangerous
+SQLAlchemy>=2.0,<3.0
+alembic
+APScheduler>=3.10,<4.0
+argon2-cffi
+cryptography
+PyYAML
