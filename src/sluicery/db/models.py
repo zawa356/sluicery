@@ -30,8 +30,35 @@ from sqlalchemy import (
     Enum as SAEnum,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
 
 from sluicery.db.crypto import EncryptedJSON
+
+
+class UTCDateTime(TypeDecorator):
+    """UTC aware な datetime を往復させる（§3.3）。
+
+    SQLite の DateTime(timezone=True) は書き込み時に tzinfo を無言で
+    捨て、読み出し時も naive datetime を返す（SQLAlchemy+SQLite の既知の
+    制約）。このカラム型はアプリ側で明示的に UTC を付け外しすることで、
+    要件定義 §3.3・テスト §9.2「保存した値が UTC aware で読み出せる」を
+    実際に満たす。
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: object) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("naive な datetime は保存できません（UTC aware にすること）")
+        return value.astimezone(UTC).replace(tzinfo=None)
+
+    def process_result_value(self, value: datetime | None, dialect: object) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC)
 
 # Alembic の batch モードで制約名が必要になるため、Phase 2 で必ず設定する（後から入れるのは困難）。
 NAMING_CONVENTION = {
@@ -56,9 +83,9 @@ def _utcnow() -> datetime:
 class TimestampMixin:
     """`created_at` / `updated_at` を持つ Mixin（§4.5）。"""
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+        UTCDateTime(), default=_utcnow, onupdate=_utcnow, nullable=False
     )
 
 
@@ -187,7 +214,7 @@ class User(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String(255))
     password_hash: Mapped[str] = mapped_column(String(255))
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class Storage(Base, TimestampMixin):
@@ -199,7 +226,7 @@ class Storage(Base, TimestampMixin):
     enabled: Mapped[bool] = mapped_column(default=True)
     config_json: Mapped[dict | None] = mapped_column(JSON)
     credentials_encrypted: Mapped[dict | None] = mapped_column(EncryptedJSON())
-    last_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_check_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     last_check_result_json: Mapped[dict | None] = mapped_column(JSON)
 
 
@@ -247,8 +274,8 @@ class Playlist(Base, TimestampMixin):
     paused: Mapped[bool] = mapped_column(default=False)
     retention_policy_json: Mapped[dict | None] = mapped_column(JSON)
     dedup_hardlink: Mapped[bool] = mapped_column(default=False)
-    last_discover_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_download_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_discover_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_download_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class PlaylistProfile(Base, TimestampMixin):
@@ -289,9 +316,9 @@ class Item(Base, TimestampMixin):
         ItemMembership, name="item_membership", default=ItemMembership.ACTIVE
     )
     metadata_json: Mapped[dict | None] = mapped_column(JSON)
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    delisted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    delisted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class Target(Base, TimestampMixin):
@@ -312,9 +339,9 @@ class Target(Base, TimestampMixin):
     )
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(String(4000))
-    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     blocked_reason: Mapped[str | None] = mapped_column(String(1000))
-    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    downloaded_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class Artifact(Base, TimestampMixin):
@@ -339,8 +366,8 @@ class Artifact(Base, TimestampMixin):
     duration: Mapped[int | None] = mapped_column(Integer)
     checksum: Mapped[str | None] = mapped_column(String(255))
     produced_by_task_id: Mapped[int | None] = mapped_column(ForeignKey("task.id"))
-    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    missing_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    missing_since: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class Task(Base):
@@ -367,13 +394,13 @@ class Task(Base):
     depends_on_task_id: Mapped[int | None] = mapped_column(ForeignKey("task.id"))
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=5)
-    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scheduled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     error_message: Mapped[str | None] = mapped_column(String(4000))
     log_excerpt: Mapped[str | None] = mapped_column(String(4000))
     run_id: Mapped[int | None] = mapped_column(ForeignKey("run.id"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class Run(Base):
@@ -387,8 +414,8 @@ class Run(Base):
     status: Mapped[RunStatus] = _enum_column(
         RunStatus, name="run_status", default=RunStatus.RUNNING
     )
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     stats_json: Mapped[dict | None] = mapped_column(JSON)
     log_path: Mapped[str | None] = mapped_column(String(2000))
 
@@ -401,7 +428,7 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(255), primary_key=True)
     value_json: Mapped[str] = mapped_column(nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+        UTCDateTime(), default=_utcnow, onupdate=_utcnow, nullable=False
     )
 
 
@@ -413,7 +440,7 @@ class EventLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     event_type: Mapped[str] = mapped_column(String(100))
     payload_json: Mapped[dict | None] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
     delivered_json: Mapped[dict | None] = mapped_column(JSON)
 
 
