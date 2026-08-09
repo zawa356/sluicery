@@ -5,6 +5,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import create_engine, inspect, text
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,3 +31,72 @@ def test_upgrade_downgrade_upgrade(tmp_path: Path) -> None:
     con.close()
 
     assert {"user", "storage", "item", "target", "task", "setting"} <= tables
+
+
+def test_profile_tristate_migration_preserves_values_and_round_trips(tmp_path: Path) -> None:
+    db_path = tmp_path / "profile-tristate.db"
+    cfg = _alembic_config(db_path)
+    command.upgrade(cfg, "01f4e2ff8faf")
+
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """INSERT INTO profile (
+                    name, kind, layout_strategy, audio_extract, embed_metadata,
+                    embed_thumbnail, embed_chapters, subtitle_auto, subtitle_embed,
+                    expert_mode, allow_exec, created_at, updated_at
+                ) VALUES (
+                    'legacy', 'video', 'flat', 0, 1, 1, 0, 0, 0,
+                    0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )"""
+            )
+        )
+
+    command.upgrade(cfg, "head")
+    columns = {column["name"]: column for column in inspect(engine).get_columns("profile")}
+    tristate_names = (
+        "audio_extract",
+        "embed_metadata",
+        "embed_thumbnail",
+        "embed_chapters",
+        "subtitle_auto",
+        "subtitle_embed",
+    )
+    for name in tristate_names:
+        assert columns[name]["nullable"] is True
+
+    with engine.begin() as conn:
+        values = conn.execute(
+            text(
+                """SELECT audio_extract, embed_metadata, embed_thumbnail,
+                          embed_chapters, subtitle_auto, subtitle_embed
+                   FROM profile WHERE name = 'legacy'"""
+            )
+        ).one()
+        assert tuple(values) == (0, 1, 1, 0, 0, 0)
+        conn.execute(
+            text(
+                """UPDATE profile SET audio_extract = NULL, embed_metadata = NULL,
+                          embed_thumbnail = NULL, embed_chapters = NULL,
+                          subtitle_auto = NULL, subtitle_embed = NULL
+                   WHERE name = 'legacy'"""
+            )
+        )
+
+    command.downgrade(cfg, "01f4e2ff8faf")
+    downgraded = {column["name"]: column for column in inspect(engine).get_columns("profile")}
+    for name in tristate_names:
+        assert downgraded[name]["nullable"] is False
+    with engine.connect() as conn:
+        downgraded_values = conn.execute(
+            text(
+                """SELECT audio_extract, embed_metadata, embed_thumbnail,
+                          embed_chapters, subtitle_auto, subtitle_embed
+                   FROM profile WHERE name = 'legacy'"""
+            )
+        ).one()
+    assert tuple(downgraded_values) == (0, 1, 1, 0, 0, 0)
+
+    command.upgrade(cfg, "head")
+    engine.dispose()
