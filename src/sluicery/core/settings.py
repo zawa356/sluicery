@@ -63,6 +63,7 @@ CODE_DEFAULTS: dict[str, SettingSpec] = {
     "download.limit_rate": SettingSpec("download.limit_rate", str, "8M"),
     "download.retries": SettingSpec("download.retries", int, 5),
     "download.fragment_retries": SettingSpec("download.fragment_retries", int, 10),
+    "download.trim_filenames": SettingSpec("download.trim_filenames", int, 180),
     "defaults.video.format_selector": SettingSpec(
         "defaults.video.format_selector", str, "bv*[height<=1080]+ba/b[height<=1080]/b"
     ),
