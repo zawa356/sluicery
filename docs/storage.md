@@ -10,8 +10,8 @@ Playlist × Profile の組ごとにどの Storage のどの subpath に書き込
 
 コンテナから直接見えるパス（`${MEDIA_ROOT}` の bind mount 配下）への書き込み。
 特権は不要。単一ホストで完結する運用に向く。コンテナ内の境界は常に `/mnt/media` で、
-その外を指す設定は拒否する。Staging と bind mount が異なる mount の場合は copy へ
-フォールバックし、保存先と同じディレクトリの一時名から最終化する。
+その外を指す設定は拒否する。Staging 元は最終化まで保持し、同一 filesystem では hardlink、
+mount 境界や hardlink 非対応時は copy で一時名を作る。
 
 ## remote（既定・推奨）
 
@@ -27,7 +27,8 @@ SMB の host / user / password 等は rclone 子プロセス限定の `RCLONE_CO
 ネットワークストレージ上で直接 yt-dlp / ffmpeg を動かすことは行わない。
 
 publish は最終名へ直接書かず、`<dest>.sluicery-tmp-<uuid>` へ転送してサイズ（local は加えて
-SHA-256）を検証し、同一ディレクトリ内で rename する。既存の最終名は既定で上書きしない。
+SHA-256）を検証し、同一ディレクトリ内で rename する。local は no-replace rename、remote は
+`--ignore-existing` と一時名消滅確認を使い、競合時も既存の最終名を上書きしない。
 失敗した一時ファイルは原因調査とデータ保護のため自動削除せず、呼び出し元へ相対パスを報告する。
 
 ## mount（オプトイン、非推奨）
