@@ -70,13 +70,15 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 | 項目 | 内容 |
 |---|---|
 | OS | Linux x86_64、cgroup v2 |
-| Docker | Docker Engine + Compose v2（最低バージョンは未検証。VM 実機検証後に反映予定） |
+| Docker | Docker Engine + Compose v2。検証環境では Docker 27.3.1 / Compose v2.29.7 で動作確認 |
 | ストレージドライバ | `overlay2` であることを推奨。確認コマンド：`docker info \| grep "Storage Driver"` |
 | ポート | 8080（`.env` の `HTTP_PORT` で変更可）が空いていること |
 
-**容量とリソース**
+**容量とリソース**（検証環境での実測値。詳細は [docs/deployment.md](docs/deployment.md) §7）
 
-- イメージサイズ・メモリ使用量・ビルド時間：**未計測**（VM 実機検証後に実測値を反映予定。[docs/deployment.md](docs/deployment.md) 参照）
+- イメージサイズ：591MB
+- ビルド時間：約3分（初回、ビルドキャッシュ無しの状態から）
+- メモリ使用量：起動直後で `app`/`worker-network`/`worker-compute` 合計 約190MiB
 - Staging 領域の必要量 = 取得する最大ファイルサイズ × 並列度 + 余裕。ここを見誤ると同期が詰まります
 
 **ネットワーク**
@@ -96,7 +98,7 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 
 | 環境 | 状況 |
 |---|---|
-| 一般的な Linux VM（Debian / Ubuntu） | 未検証（Phase 3.5 で検証予定。結果は本セクションと [docs/deployment.md](docs/deployment.md) に反映） |
+| 一般的な Linux VM（Debian / Ubuntu） | 検証済み（Ubuntu 22.04.5 LTS、2026-08-09。ただし検証環境は専用のクリーンな VM ではなく、他サービスと同居する共用ホストだった。詳細・注意点は [docs/deployment.md](docs/deployment.md) §7） |
 | Proxmox LXC | 未検証。`nesting=1,keyctl=1` 等の設定が必要になる見込み（参考情報。[docs/deployment.md](docs/deployment.md) §8 参照） |
 | WSL2 | 未検証 |
 | NAS（Synology / QNAP 等） | 未検証 |

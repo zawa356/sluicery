@@ -119,23 +119,40 @@ make purge
 
 ## 7. 検証環境の記録
 
-**未検証。** Phase 3.5 の VM 実機検証（開発機とは別の、汚れていない Linux VM への新規構築）を
-実施していません。実施後、以下の形式で環境情報と実測値をここに記録します。
+**検証日: 2026-08-09。** 開発機とは別の Ubuntu VM に、開発機からファイルをコピーせず
+`git bundle` 転送 → `git clone` の手順で新規構築し、`docs/phase3.5_指示書_改訂版.md` §5.2 の
+17項目をすべて実施した。
 
 ```
-- 検証日: YYYY-MM-DD
-- OS: <ディストリビューション名・バージョン>
-- カーネル: <uname -r>
-- Docker: <docker version>
-- ストレージドライバ: <overlay2 等>
-- cgroup バージョン: <v1/v2>
-- メモリ: <搭載量>
-- ディスク: <空き容量>
-- ビルド時間: <実測>
-- イメージサイズ: <docker images の実測>
-- 起動直後のメモリ使用量: <実測>
-- ダウンロード中のメモリ使用量: <実測>
+- OS: Ubuntu 22.04.5 LTS
+- カーネル: 5.15.0-142-generic
+- Docker: 27.3.1 / Compose v2.29.7
+- ストレージドライバ: overlay2
+- cgroup バージョン: v2
+- メモリ: 3.8GiB（搭載）
+- ディスク: 60GB（うち空き 45GB、検証開始時点）
+- ビルド時間: 3分1秒（初回、ビルドキャッシュ無しの状態から）
+- イメージサイズ: sluicery:local 591MB
+- 起動直後のメモリ使用量: app 80.7MiB / worker-network 53.8MiB / worker-compute 53.9MiB
+- ダウンロード中のメモリ使用量: app 88.4MiB（D-015 の検証用ファイル、約30MB。ファイルサイズが
+  小さく、起動直後との有意差は見られなかった）
 ```
+
+**注意（この検証環境固有の制約）**：このVMは本検証専用に用意された空のVMではなく、
+Immich・Portainer 等の既存サービスが同居する共用ホストだった（ポート 8080 の空きは確認済み）。
+「汚れていない環境」という意味では厳密な条件を満たしていないが、`git clone` からの新規構築・
+ビルド・起動・yt-dlp 導入・fetch・test/lint/purge がすべて成功したことは確認できている。
+compose はプロジェクト名でリソースを分離するため、他サービスへの影響は無かった。
+
+検証中に2件の実バグ、1件のホスト側環境要因を発見し、修正・記録済み：
+
+- Quick Start の `SECRET_KEY` 生成コマンドが `python:3.12-slim` に `cryptography` が無く失敗する
+  問題（[docs/troubleshooting.md](troubleshooting.md) 参照）
+- `MEDIA_ROOT` 未事前作成時に `app` が再起動ループに陥る問題。Quick Start に事前作成手順を追加
+- `docker compose exec app`（`--user` 無指定）がrootとして実行され、`ytdlp fetch` 等の生成物が
+  root 所有になる問題。CLI 例に `--user "$(id -u):$(id -g)"` を追加
+- （sluicery とは無関係）検証 VM 側で `systemd-resolved` が起動失敗しており DNS が引けなかった。
+  VM 側の `/etc/resolv.conf` を静的設定して復旧。sluicery のドキュメント・コードに変更は無い
 
 ## 8. LXC 環境について
 
