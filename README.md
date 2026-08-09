@@ -17,20 +17,35 @@ docker run --rm python:3.12-slim sh -c \
   "pip install -q --root-user-action=ignore cryptography && python3 -c \
   'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
 
-$EDITOR .env          # SECRET_KEY を貼り付ける（最低限これだけ設定すれば起動できる）
+$EDITOR .env          # SECRET_KEY を貼り付ける
+
+# MEDIA_ROOT を事前作成（Docker に作らせると root 所有になり、PUID/PGID で
+# 書き込めず起動時に落ちる。既定値は /mnt/media。.env で変更した場合はそちらに合わせる）
+mkdir -p /mnt/media
+sudo chown "$(id -u)":"$(id -g)" /mnt/media
+
 docker compose up -d --build
 
 # 起動確認
 curl http://localhost:8080/healthz
 ```
 
-`make` が使える環境では `cp .env.example .env && $EDITOR .env && make up` でも同じです。
+`make` が使える環境では `cp .env.example .env && $EDITOR .env && make up` でも同じです（`MEDIA_ROOT` の
+事前作成は別途必要）。
 
 yt-dlp は起動後にバックグラウンドで自動導入されます。導入完了は以下で確認できます。
 
 ```bash
 docker compose exec app python3 -m sluicery.cli ytdlp status
 # → ready になるまで数秒〜数十秒かかることがあります
+```
+
+CLI でファイルを生成する操作（`ytdlp fetch` 等）を手動実行する場合は `--user` でホスト側のユーザーと
+揃えること。揃えないと生成物が `root` 所有になります（PUID/PGID の既定値 1000/1000 とホスト側の
+`id` が一致している前提）。
+
+```bash
+docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp fetch <URL>
 ```
 
 ## これは何か / 何ではないか

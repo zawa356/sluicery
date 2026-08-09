@@ -148,7 +148,9 @@ deployment.md/troubleshooting.md/公開前チェックリスト.md 新設、CLAU
 - yt-dlp venv: `data/ytdlp/`（`versions/<version>/`、`current` symlink、`.lock`）
 - マイグレーション: `sluicery db upgrade`（`AUTO_MIGRATE=true` なら `app` 起動時に自動実行）
 - ログ: `data/logs/`（yt-dlp 実行の stderr 全文もここ、`ytdlp-<uuid>.log`）
-- CLI: `docker compose exec app python3 -m sluicery.cli {config check | db ... | settings ... | ytdlp ...}`
+- CLI: `docker compose exec app python3 -m sluicery.cli {config check | db ... | settings ... | ytdlp ...}`。
+  ファイルを生成する操作（`ytdlp fetch` 等）は `--user "$(id -u):$(id -g)"` を付けること。無指定だと
+  `docker compose exec` は root として実行され、生成物が root 所有になる（VM 実機検証で発見）
 - 実機検証で使った試験用 URL: `https://download.blender.org/peach/trailer/trailer_1080p.mov`
   （Blender Foundation、Creative Commons。D-015、`docs/基本設計.md` に記録）
 - 現在稼働中の実機検証環境: `docker compose up -d` 済み（`data` volume はクリーン状態から
