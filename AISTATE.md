@@ -3,8 +3,8 @@
 > このファイルはセッション間の引き継ぎ用です。
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
-最終更新: 2026-08-09 12:15
-対応コミット: d772801 docs: 変更履歴にPhase 3.5の作業内容を反映
+最終更新: 2026-08-09 13:10
+対応コミット: 3f00b56 docs: 変更履歴にVM実機検証の結果を反映
 
 ## プロジェクト概要
 
@@ -78,20 +78,22 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 **現在は Phase 3.5（`docs/phase3.5_指示書_改訂版.md`）作業中。** 実装順序 #4
 （オプション合成モデル、`core/options.py`）はその後に再開する。
 
-1. **VM 実機検証（§5、17項目）待ち。** ユーザーが VM を用意し、SSH 等の
-   アクセス手段をこのセッションに渡す予定（未着手）。アクセスを受け取り
-   次第、環境情報の採取 → `git clone` からの新規構築 → `ytdlp fetch` 成功
-   → `make test`/`make lint`/`make purge` の順に実施し、実測値を
-   `docs/deployment.md` §7、既知でない問題を `docs/troubleshooting.md` へ反映
-2. VM 検証完了後、README の前提条件（イメージサイズ・メモリ・ビルド時間・
-   検証状況の表）を実測値で更新
-3. その後 §7 履歴監査（`docs/公開前チェックリスト.md` の手順）を実行し、
-   結果をユーザーに報告してそこで停止。**ユーザーの明示的な承認を得るまで
-   push しない**
-4. 承認後、GitHub に private で作成・push・目視確認・public 化（§8）
-5. 完了後、`checkpoint/step-03.5` タグを打ち、AISTATE を Phase 4 着手点に
+1. **VM 実機検証（§5、17項目）は完了した。** ユーザー提供の Ubuntu 22.04.5 VM
+   （ユーザーのローカルネットワーク上、他サービスと同居する共用ホスト）に
+   `git bundle`/`clone` で新規構築し、全項目成功。過程で実バグ2件（Quick Start の SECRET_KEY
+   生成コマンド、MEDIA_ROOT 未事前作成時の再起動ループ）と、CLI の権限
+   ドキュメント不備1件（`docker compose exec` の `--user` 未指定問題）を
+   発見・修正・記録済み（詳細は `docs/変更履歴.md`、`docs/troubleshooting.md`、
+   `docs/deployment.md` §7）。VM 側にはリポジトリのクローンが残っている
+   （`~/sluicery`、`~/sluicery.bundle`、`~/alt-media`）。後片付けはユーザーに
+   委ねる（このセッションは片付け方法を伝える）
+2. **次は §7 履歴監査（`docs/公開前チェックリスト.md` の手順）を実行し、
+   結果をユーザーに報告してそこで停止する。** ユーザーの明示的な承認を
+   得るまで push しない
+3. 承認後、GitHub に private で作成・push・目視確認・public 化（§8）
+4. 完了後、`checkpoint/step-03.5` タグを打ち、AISTATE を Phase 4 着手点に
    書き換える
-6. Phase 3.5 完了後、実装順序 #4（オプション合成モデル）に着手。着手前に
+5. Phase 3.5 完了後、実装順序 #4（オプション合成モデル）に着手。着手前に
    `docs/要件定義.md` §9 を再読すること。`ytdlp probe`/`fetch` の暫定固定
    オプション（`downloader/ytdlp.py` 呼び出し元、`cli.py` の
    `_cmd_ytdlp_probe`/`_build_fetch_args`）を Phase 4 のレイヤー合成に
@@ -99,7 +101,7 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 
 **Phase 3.5 の完了済み分**（§0 P0是正6件、README全面改訂、LICENSE(MIT)、
 deployment.md/troubleshooting.md/公開前チェックリスト.md 新設、CLAUDE.md
-§4.1 改訂、D-016 記録）は `docs/変更履歴.md` 参照。
+§4.1 改訂、D-016 記録、VM実機検証17項目）は `docs/変更履歴.md` 参照。
 
 ## 未解決・保留
 
@@ -153,8 +155,13 @@ deployment.md/troubleshooting.md/公開前チェックリスト.md 新設、CLAU
   `docker compose exec` は root として実行され、生成物が root 所有になる（VM 実機検証で発見）
 - 実機検証で使った試験用 URL: `https://download.blender.org/peach/trailer/trailer_1080p.mov`
   （Blender Foundation、Creative Commons。D-015、`docs/基本設計.md` に記録）
-- 現在稼働中の実機検証環境: `docker compose up -d` 済み（`data` volume はクリーン状態から
+- 現在稼働中の実機検証環境（開発機側）: `docker compose up -d` 済み（`data` volume はクリーン状態から
   構築し直したもの）。`ytdlp.auto_install`/`ytdlp.idle_timeout_sec` は既定値に戻し済み
+- VM 実機検証環境（ユーザーのローカルネットワーク上、Ubuntu 22.04.5、ユーザー提供の共用ホスト）:
+  `~/sluicery` にクローン済み、`make purge` 済みでコンテナ・イメージ・volume は無い。
+  `/mnt/media`・`~/alt-media` ディレクトリと `~/sluicery.bundle` が残っている。
+  `/etc/resolv.conf` を静的設定に変更済み（`systemd-resolved` が起動失敗していたため、
+  sluicery とは無関係のVM側の問題）。片付け方法は「次にやること」参照
 
 ## 既知の落とし穴
 
