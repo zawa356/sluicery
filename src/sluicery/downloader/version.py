@@ -51,6 +51,10 @@ class UnknownVersionError(RuntimeError):
     """指定されたバージョンが導入済み一覧に存在しない。"""
 
 
+class BrokenVersionError(RuntimeError):
+    """指定された venv が現在の導入契約を満たしていない。"""
+
+
 class CurrentVersionRemovalError(RuntimeError):
     """`current` が指すバージョンを削除しようとした。"""
 
@@ -117,6 +121,30 @@ def read_current_version(root: Path) -> str | None:
     return Path(link.readlink()).name
 
 
+def _ready_version(venv_dir: Path) -> str | None:
+    """個別 venv の導入契約と実行可能性を確認し、実バージョンを返す。"""
+    try:
+        contract = _install_contract_path(venv_dir).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if contract != INSTALL_CONTRACT_VERSION:
+        return None
+    try:
+        proc = subprocess.run(
+            [str(venv_dir / "bin" / "yt-dlp"), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=VERSION_PROBE_TIMEOUT_SEC,
+            env={"LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    version = proc.stdout.strip()
+    return version or None
+
+
 def get_status(root: Path) -> StatusResult:
     """3値の導入状態を判定する(§2.5)。"""
     link = current_link(root)
@@ -124,28 +152,10 @@ def get_status(root: Path) -> StatusResult:
         return StatusResult(InstallStatus.NOT_INSTALLED, None, None)
 
     version = read_current_version(root)
-    try:
-        contract = _install_contract_path(link).read_text(encoding="utf-8").strip()
-    except OSError:
+    version_output = _ready_version(link)
+    if version_output is None or version_output != version:
         return StatusResult(InstallStatus.BROKEN, version, None)
-    if contract != INSTALL_CONTRACT_VERSION:
-        return StatusResult(InstallStatus.BROKEN, version, None)
-
-    bin_path = current_ytdlp_bin(root)
-    try:
-        proc = subprocess.run(
-            [str(bin_path), "--version"],
-            capture_output=True,
-            text=True,
-            timeout=VERSION_PROBE_TIMEOUT_SEC,
-            env={"LC_ALL": "C"},
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return StatusResult(InstallStatus.BROKEN, version, None)
-
-    if proc.returncode != 0:
-        return StatusResult(InstallStatus.BROKEN, version, None)
-    return StatusResult(InstallStatus.READY, version, proc.stdout.strip())
+    return StatusResult(InstallStatus.READY, version, version_output)
 
 
 def list_versions(session: Session) -> list[YtdlpRelease]:
@@ -291,12 +301,13 @@ def install(
                 repo = YtdlpReleaseRepository(session)
                 release = repo.get_by_version(version)
                 if release is not None and release.status != YtdlpReleaseStatus.REMOVED:
-                    status = get_status(root).status
-                    if status == InstallStatus.READY:
-                        return release
-                    if current_version_before != version:
-                        _activate(root, session, release)
-                        return release
+                    if _ready_version(existing_dir) == version:
+                        status = get_status(root).status
+                        if status == InstallStatus.READY:
+                            return release
+                        if current_version_before != version:
+                            _activate(root, session, release)
+                            return release
                     # current 自体が旧導入契約または破損状態なら、同じバージョンでも
                     # no-op にせず一時 venv を作り直す。
 
@@ -313,8 +324,8 @@ def install(
             raise YtdlpInstallError(_format_subprocess_error(exc)) from exc
 
         final_dir = versions_dir(root) / installed_version
-        repair_current = needs_activation and current_version_before == installed_version
-        if final_dir.is_dir() and not force and not repair_current:
+        existing_is_ready = _ready_version(final_dir) == installed_version
+        if final_dir.is_dir() and not force and existing_is_ready:
             # 既に同名のバージョンが存在する場合は、一時ディレクトリを破棄して
             # 既存を採用する(§2.2 手順5)。ただし --force のときは、broken
             # 状態からの復旧などで既存を明示的に上書きしたい場合があるため、
@@ -343,6 +354,11 @@ def use(root: Path, session: Session, version: str) -> YtdlpRelease:
         release = repo.get_by_version(version)
         if release is None or release.status == YtdlpReleaseStatus.REMOVED:
             raise UnknownVersionError(f"バージョン {version} は導入されていません")
+        if _ready_version(target_dir) != version:
+            raise BrokenVersionError(
+                f"バージョン {version} は現在の導入契約を満たしていません。"
+                f"`sluicery ytdlp install --version {version} --force` で再構築してください"
+            )
 
         _activate(root, session, release)
         return release

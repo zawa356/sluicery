@@ -9,6 +9,7 @@ from sluicery.core.options import (
     OptionValidationError,
     build_discover_args,
     build_download_args,
+    guard_raw_exec_args,
 )
 from sluicery.db.models import (
     LayoutStrategy,
@@ -143,6 +144,7 @@ def test_download_contains_staging_layout_protocol_and_progress_fix(db_session) 
     assert "--progress" in command.args  # --print が暗黙に付ける quiet を上書き
     assert "--windows-filenames" in command.args
     assert "--download-archive" not in command.args
+    assert command.args[-2:] == ("--", "https://example.com/item")
     assert command.resolved_output_path == Path(
         "/data/staging/work-1/動画/1080p/"
         "%(upload_date>%Y-%m-%d&{} |)s%(title).120B [%(id)s].%(ext)s"
@@ -182,6 +184,29 @@ def test_discover_has_identity_protocol_without_layout_arguments(db_session) -> 
     assert "--progress-template" not in command.args
     assert command.resolved_output_path is None
     assert command.timeout.idle_sec == 300
+    assert command.args[-2:] == ("--", "https://example.com/playlist")
+
+
+@pytest.mark.parametrize("source_url", ["--exec", "ftp://example.com/file", "not-a-url"])
+def test_source_url_must_be_complete_http_url(db_session, source_url: str) -> None:
+    playlist, profile, association = _records()
+    with pytest.raises(OptionValidationError, match="URL"):
+        build_download_args(
+            None,
+            source_url=source_url,
+            session=db_session,
+            staging_dir=Path("/data/staging"),
+            work_id="work-1",
+            playlist=playlist,
+            profile=profile,
+            playlist_profile=association,
+        )
+
+
+@pytest.mark.parametrize("option", ["--exec", "--exec-before-download", "-oresult"])
+def test_raw_exec_rejects_reserved_options(option: str) -> None:
+    with pytest.raises(OptionValidationError, match="ytdlp exec"):
+        guard_raw_exec_args([option, "value"])
 
 
 def test_unknown_temporary_structured_field_is_rejected(db_session) -> None:

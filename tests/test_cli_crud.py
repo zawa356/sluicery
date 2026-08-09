@@ -269,7 +269,16 @@ def test_show_masks_credentials(
             config_json={"path": "/mnt/media", "api_token": "token-value"},
             credentials_encrypted={"password": "plain-password"},
         )
-        session.add(storage)
+        playlist = Playlist(
+            name="secret-playlist",
+            folder_name="secret-playlist",
+            url="https://url-user:url-password@example.com/list?token=url-token",
+            enabled=True,
+            kind_hint="video",
+            paused=False,
+            dedup_hardlink=False,
+        )
+        session.add_all([storage, playlist])
         session.commit()
     finally:
         session.close()
@@ -279,3 +288,187 @@ def test_show_masks_credentials(
     assert "token-value" not in output
     assert "plain-password" not in output
     assert "********" in output
+
+    assert cli.main(["playlist", "show", "secret-playlist"]) == 0
+    output = capsys.readouterr().out
+    for secret in ("url-user", "url-password", "url-token"):
+        assert secret not in output
+    assert "********" in output
+
+
+def test_profile_and_playlist_values_can_return_to_inheritance(
+    monkeypatch,
+    session_factory,
+    base_env,
+    capsys,
+) -> None:
+    _patch_sessions(monkeypatch, session_factory)
+    assert (
+        cli.main(
+            [
+                "profile",
+                "add",
+                "--name",
+                "clearable",
+                "--kind",
+                "video",
+                "--description",
+                "説明",
+                "--ytdlp-args=--limit-rate 1M",
+                "--format-selector",
+                "best",
+                "--container",
+                "mkv",
+                "--audio-format",
+                "opus",
+                "--audio-quality",
+                "5",
+                "--subtitle-langs",
+                "ja,en",
+                "--concurrent-fragments",
+                "4",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert cli.main(["profile", "show", "clearable"]) == 0
+    detail = capsys.readouterr().out
+    for field in (
+        "description",
+        "format_selector",
+        "container",
+        "audio_format",
+        "audio_quality",
+        "subtitle_langs",
+        "concurrent_fragments",
+        "postprocess_chain",
+    ):
+        assert f"{field}:" in detail
+
+    assert (
+        cli.main(
+            [
+                "profile",
+                "edit",
+                "clearable",
+                "--clear-description",
+                "--clear-ytdlp-args",
+                "--inherit-format-selector",
+                "--inherit-container",
+                "--inherit-audio-format",
+                "--inherit-audio-quality",
+                "--inherit-subtitle-langs",
+                "--inherit-concurrent-fragments",
+            ]
+        )
+        == 0
+    )
+    assert (
+        cli.main(
+            [
+                "playlist",
+                "add",
+                "--name",
+                "clearable-list",
+                "--folder-name",
+                "clearable-list",
+                "--url",
+                "https://example.com/list",
+                "--ytdlp-args=--limit-rate 1M",
+            ]
+        )
+        == 0
+    )
+    assert (
+        cli.main(["playlist", "edit", "clearable-list", "--clear-ytdlp-args"])
+        == 0
+    )
+
+    session = session_factory()
+    try:
+        profile = session.scalar(select(Profile).where(Profile.name == "clearable"))
+        playlist = session.scalar(select(Playlist).where(Playlist.name == "clearable-list"))
+        assert profile is not None
+        assert playlist is not None
+        for field in (
+            "description",
+            "ytdlp_args",
+            "format_selector",
+            "container",
+            "audio_format",
+            "audio_quality",
+            "subtitle_langs",
+            "concurrent_fragments",
+        ):
+            assert getattr(profile, field) is None
+        assert playlist.ytdlp_args is None
+    finally:
+        session.close()
+
+
+def test_options_preview_reports_validation_error_without_traceback(
+    monkeypatch,
+    session_factory,
+    base_env,
+    capsys,
+) -> None:
+    _patch_sessions(monkeypatch, session_factory)
+    session = session_factory()
+    try:
+        storage = Storage(
+            name="preview-storage",
+            kind="local",
+            enabled=True,
+            config_json={"path": "/mnt/media"},
+        )
+        profile = Profile(
+            name="preview-profile",
+            kind="video",
+            layout_strategy="flat",
+            expert_mode=False,
+            allow_exec=False,
+            postprocess_chain_json=[],
+        )
+        playlist = Playlist(
+            name="preview-list",
+            folder_name="preview-list",
+            url="https://example.com/list",
+            enabled=True,
+            kind_hint="video",
+            ytdlp_args="--output escaped",
+            paused=False,
+            dedup_hardlink=False,
+        )
+        session.add_all([storage, profile, playlist])
+        session.flush()
+        session.add(
+            PlaylistProfile(
+                playlist_id=playlist.id,
+                profile_id=profile.id,
+                storage_id=storage.id,
+                subpath="preview-list",
+                enabled=True,
+                sort_order=0,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    assert (
+        cli.main(
+            [
+                "options",
+                "preview",
+                "--playlist",
+                "preview-list",
+                "--profile",
+                "preview-profile",
+            ]
+        )
+        == 1
+    )
+    error = capsys.readouterr().err
+    assert "ERROR:" in error
+    assert "Traceback" not in error

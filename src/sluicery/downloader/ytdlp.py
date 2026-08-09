@@ -22,6 +22,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 from uuid import uuid4
 
 from sluicery.downloader.errors import Classification, classify
@@ -32,15 +33,79 @@ from sluicery.downloader.protocol import PRINT_PREFIX, PROGRESS_PREFIX
 # Cookie ファイルパス・パスワード等、値そのものが機密になりうる引数の
 # 直後の値を伏せる。呼び出し側での付け忘れが起きないよう、この層に集約する。
 _SENSITIVE_VALUE_FLAGS = frozenset(
-    {"--password", "--video-password", "--ap-password", "--cookies", "--proxy"}
+    {
+        "-u",
+        "--username",
+        "-p",
+        "--password",
+        "-2",
+        "--twofactor",
+        "--video-password",
+        "--ap-username",
+        "--ap-password",
+        "--cookies",
+        "--cookies-from-browser",
+        "--proxy",
+        "--add-header",
+        "--add-headers",
+        "--client-certificate",
+        "--client-certificate-key",
+        "--client-certificate-password",
+        "--netrc-location",
+    }
 )
-_SENSITIVE_INLINE_PREFIXES = (
-    "--password=",
-    "--video-password=",
-    "--ap-password=",
-    "--cookies=",
-    "--proxy=",
+_SENSITIVE_INLINE_PREFIXES = tuple(
+    f"{flag}=" for flag in _SENSITIVE_VALUE_FLAGS if flag.startswith("--")
 )
+_SENSITIVE_SHORT_PREFIXES = ("-u", "-p", "-2")
+_SENSITIVE_QUERY_FRAGMENTS = (
+    "api_key",
+    "apikey",
+    "auth",
+    "credential",
+    "key",
+    "pass",
+    "policy",
+    "secret",
+    "sig",
+    "token",
+    "user",
+)
+
+
+def _mask_url_parameters(value: str) -> str:
+    parts: list[str] = []
+    for component in value.split("&") if value else []:
+        key, separator, _parameter_value = component.partition("=")
+        normalized = unquote_plus(key).lower().replace("-", "_")
+        if separator and any(fragment in normalized for fragment in _SENSITIVE_QUERY_FRAGMENTS):
+            parts.append(f"{key}=********")
+        else:
+            parts.append(component)
+    return "&".join(parts)
+
+
+def _mask_url(value: str) -> str:
+    """URL の userinfo と認証用途の query 値を伏せる。"""
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            return value
+        netloc = parsed.netloc
+        if parsed.username is not None:
+            netloc = f"********@{netloc.rsplit('@', 1)[1]}"
+    except ValueError:
+        return value
+
+    return urlunsplit(
+        (
+            parsed.scheme,
+            netloc,
+            parsed.path,
+            _mask_url_parameters(parsed.query),
+            _mask_url_parameters(parsed.fragment),
+        )
+    )
 
 
 def mask_command_line(args: Sequence[str]) -> list[str]:
@@ -59,7 +124,18 @@ def mask_command_line(args: Sequence[str]) -> list[str]:
         if inline_prefix is not None:
             masked.append(f"{inline_prefix}********")
             continue
-        masked.append(arg)
+        short_prefix = next(
+            (
+                prefix
+                for prefix in _SENSITIVE_SHORT_PREFIXES
+                if arg.startswith(prefix) and len(arg) > len(prefix) and not arg.startswith("--")
+            ),
+            None,
+        )
+        if short_prefix is not None:
+            masked.append(f"{short_prefix}********")
+            continue
+        masked.append(_mask_url(arg))
     return masked
 
 

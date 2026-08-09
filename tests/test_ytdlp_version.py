@@ -7,6 +7,7 @@ import pytest
 from sluicery.db.models import YtdlpReleaseSource, YtdlpReleaseStatus
 from sluicery.downloader import version as version_mod
 from sluicery.downloader.version import (
+    BrokenVersionError,
     CurrentVersionRemovalError,
     InstallStatus,
     UnknownVersionError,
@@ -166,6 +167,29 @@ def test_use_unknown_version_raises(root: Path, db_session) -> None:
     install(root, db_session, version="2026.01.01", source=YtdlpReleaseSource.MANUAL)
     with pytest.raises(UnknownVersionError):
         use(root, db_session, "9999.99.99")
+
+
+def test_use_rejects_non_current_version_with_old_contract(root: Path, db_session) -> None:
+    install(root, db_session, version="2026.02.01", source=YtdlpReleaseSource.MANUAL)
+    install(root, db_session, version="2026.01.01", source=YtdlpReleaseSource.MANUAL)
+    target = version_mod.versions_dir(root) / "2026.01.01"
+    version_mod._install_contract_path(target).unlink()
+
+    with pytest.raises(BrokenVersionError, match="再構築"):
+        use(root, db_session, "2026.01.01")
+    assert read_current_version(root) == "2026.02.01"
+
+
+def test_install_rebuilds_non_current_version_with_old_contract(root: Path, db_session) -> None:
+    install(root, db_session, version="2026.02.01", source=YtdlpReleaseSource.MANUAL)
+    install(root, db_session, version="2026.01.01", source=YtdlpReleaseSource.MANUAL)
+    target = version_mod.versions_dir(root) / "2026.01.01"
+    version_mod._install_contract_path(target).unlink()
+
+    install(root, db_session, version="2026.01.01", source=YtdlpReleaseSource.MANUAL)
+
+    assert version_mod._ready_version(target) == "2026.01.01"
+    assert read_current_version(root) == "2026.02.01"
 
 
 def test_remove_refuses_current_version(root: Path, db_session) -> None:

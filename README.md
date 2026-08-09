@@ -113,8 +113,8 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 `SECRET_KEY` が変わった場合、起動時に警告が表示されます。バックアップ / リストアは Phase 20 で
 実装予定であり、現時点の `make backup` / `make restore` は実行できません。
 
-初回起動時、`.env` の `ADMIN_USERNAME` / `ADMIN_PASSWORD` で管理者アカウントが作成されます。
-`ADMIN_PASSWORD` を空のままにした場合はランダムなパスワードが生成され、起動ログに一度だけ出力されます。
+管理者アカウントの初期作成と認証は Phase 9 で実装予定です。現時点では `.env` の
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` を読み込みますが、アカウント作成やパスワード生成は行いません。
 
 ## 運用コマンド
 

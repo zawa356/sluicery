@@ -157,6 +157,23 @@ def _add_bool_pair(
     parser.set_defaults(**{dest: _MISSING})
 
 
+def _add_clearable_value(
+    parser: argparse.ArgumentParser,
+    dest: str,
+    option: str,
+    clear_option: str,
+    *,
+    value_type: type[Any] | None = None,
+) -> None:
+    group = parser.add_mutually_exclusive_group()
+    kwargs: dict[str, Any] = {"dest": dest}
+    if value_type is not None:
+        kwargs["type"] = value_type
+    group.add_argument(option, **kwargs)
+    group.add_argument(clear_option, dest=dest, action="store_const", const=None)
+    parser.set_defaults(**{dest: _MISSING})
+
+
 def _add_profile_fields(parser: argparse.ArgumentParser, *, require_identity: bool) -> None:
     parser.add_argument("--name", required=require_identity)
     parser.add_argument(
@@ -164,16 +181,32 @@ def _add_profile_fields(parser: argparse.ArgumentParser, *, require_identity: bo
         choices=[kind.value for kind in ProfileKind],
         required=require_identity,
     )
-    parser.add_argument("--description")
-    parser.add_argument("--ytdlp-args")
-    parser.add_argument("--format-selector")
-    parser.add_argument("--container")
-    parser.add_argument("--audio-format")
-    parser.add_argument("--audio-quality")
-    parser.add_argument("--subtitle-langs")
-    parser.add_argument("--concurrent-fragments", type=int)
+    _add_clearable_value(parser, "description", "--description", "--clear-description")
+    _add_clearable_value(parser, "ytdlp_args", "--ytdlp-args", "--clear-ytdlp-args")
+    _add_clearable_value(
+        parser, "format_selector", "--format-selector", "--inherit-format-selector"
+    )
+    _add_clearable_value(parser, "container", "--container", "--inherit-container")
+    _add_clearable_value(
+        parser, "audio_format", "--audio-format", "--inherit-audio-format"
+    )
+    _add_clearable_value(
+        parser, "audio_quality", "--audio-quality", "--inherit-audio-quality"
+    )
+    _add_clearable_value(
+        parser, "subtitle_langs", "--subtitle-langs", "--inherit-subtitle-langs"
+    )
+    _add_clearable_value(
+        parser,
+        "concurrent_fragments",
+        "--concurrent-fragments",
+        "--inherit-concurrent-fragments",
+        value_type=int,
+    )
     parser.add_argument("--layout-strategy", choices=[item.value for item in LayoutStrategy])
-    parser.add_argument("--output-template")
+    _add_clearable_value(
+        parser, "output_template", "--output-template", "--clear-output-template"
+    )
     _add_bool_pair(
         parser,
         "audio_extract",
@@ -278,7 +311,9 @@ def configure_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
     playlist_edit.add_argument("--folder-name")
     playlist_edit.add_argument("--url")
     playlist_edit.add_argument("--kind-hint", choices=[item.value for item in PlaylistKindHint])
-    playlist_edit.add_argument("--ytdlp-args")
+    _add_clearable_value(
+        playlist_edit, "ytdlp_args", "--ytdlp-args", "--clear-ytdlp-args"
+    )
     _add_enable_pair(playlist_edit)
     _add_bool_pair(playlist_edit, "paused", "--pause", "--resume")
     playlist_remove = playlist_sub.add_parser("remove")
@@ -365,7 +400,16 @@ def _profile_values(args: argparse.Namespace, existing: Profile | None = None) -
         "expert_mode",
         "allow_exec",
     )
-    tristate_names = {
+    nullable_names = {
+        "description",
+        "ytdlp_args",
+        "format_selector",
+        "container",
+        "audio_format",
+        "audio_quality",
+        "subtitle_langs",
+        "concurrent_fragments",
+        "output_template",
         "audio_extract",
         "embed_metadata",
         "embed_thumbnail",
@@ -376,7 +420,7 @@ def _profile_values(args: argparse.Namespace, existing: Profile | None = None) -
     values: dict[str, Any] = {}
     for name in names:
         value = getattr(args, name)
-        if name in tristate_names:
+        if name in nullable_names:
             if value is not _MISSING:
                 values[name] = value
         elif value is not None and value is not _MISSING:
@@ -539,11 +583,22 @@ def _profile_command(args: argparse.Namespace, session: Session, settings: Any) 
             (
                 ("id", profile.id),
                 ("name", profile.name),
+                ("description", profile.description or "(なし)"),
                 ("kind", profile.kind.value),
                 ("layout_strategy", profile.layout_strategy.value),
                 ("output_template", profile.output_template or "(なし)"),
                 ("ytdlp_args", _masked_args(profile.ytdlp_args)),
-                ("format_selector", profile.format_selector),
+                ("format_selector", profile.format_selector or "(継承)"),
+                ("container", profile.container or "(継承)"),
+                ("audio_format", profile.audio_format or "(継承)"),
+                ("audio_quality", profile.audio_quality or "(継承)"),
+                ("subtitle_langs", profile.subtitle_langs or "(継承)"),
+                (
+                    "concurrent_fragments",
+                    profile.concurrent_fragments
+                    if profile.concurrent_fragments is not None
+                    else "(継承)",
+                ),
                 ("audio_extract", profile.audio_extract),
                 ("embed_metadata", profile.embed_metadata),
                 ("embed_thumbnail", profile.embed_thumbnail),
@@ -552,6 +607,7 @@ def _profile_command(args: argparse.Namespace, session: Session, settings: Any) 
                 ("subtitle_embed", profile.subtitle_embed),
                 ("expert_mode", profile.expert_mode),
                 ("allow_exec", profile.allow_exec),
+                ("postprocess_chain", _masked_json(profile.postprocess_chain_json or [])),
             )
         )
         return 0
@@ -619,7 +675,7 @@ def _playlist_command(args: argparse.Namespace, session: Session) -> int:
                 ("id", playlist.id),
                 ("name", playlist.name),
                 ("folder_name", playlist.folder_name),
-                ("url", playlist.url),
+                ("url", mask_command_line([playlist.url])[0]),
                 ("kind_hint", playlist.kind_hint.value),
                 ("enabled", playlist.enabled),
                 ("paused", playlist.paused),
@@ -637,10 +693,12 @@ def _playlist_command(args: argparse.Namespace, session: Session) -> int:
         return 0
     if command == "edit":
         updates: dict[str, Any] = {}
-        for name in ("name", "ytdlp_args", "enabled", "paused"):
+        for name in ("name", "enabled", "paused"):
             value = getattr(args, name)
             if value is not None and value is not _MISSING:
                 updates[name] = value
+        if args.ytdlp_args is not _MISSING:
+            updates["ytdlp_args"] = args.ytdlp_args
         if args.folder_name is not None:
             try:
                 updates["folder_name"] = sanitize_component(args.folder_name)
@@ -738,27 +796,30 @@ def _options_command(args: argparse.Namespace, session: Session, settings: Any) 
     if association is None:
         raise CliValidationError("Playlist に Profile が割り当てられていません")
     overrides = OptionOverrides(ytdlp_args=args.override_args)
-    if args.kind == "discover":
-        built = build_discover_args(
-            playlist,
-            session=session,
-            profile=profile,
-            overrides=overrides,
-            env_allow_exec=bool(settings.ALLOW_EXEC),
-        )
-    else:
-        built = build_download_args(
-            None,
-            source_url="<target.source_url>",
-            session=session,
-            staging_dir=settings.STAGING_DIR,
-            work_id="<work-id>",
-            playlist=playlist,
-            profile=profile,
-            playlist_profile=association,
-            overrides=overrides,
-            env_allow_exec=bool(settings.ALLOW_EXEC),
-        )
+    try:
+        if args.kind == "discover":
+            built = build_discover_args(
+                playlist,
+                session=session,
+                profile=profile,
+                overrides=overrides,
+                env_allow_exec=bool(settings.ALLOW_EXEC),
+            )
+        else:
+            built = build_download_args(
+                None,
+                source_url=playlist.url,
+                session=session,
+                staging_dir=settings.STAGING_DIR,
+                work_id="<work-id>",
+                playlist=playlist,
+                profile=profile,
+                playlist_profile=association,
+                overrides=overrides,
+                env_allow_exec=bool(settings.ALLOW_EXEC),
+            )
+    except (OptionValidationError, LayoutValidationError) as exc:
+        raise CliValidationError(str(exc)) from exc
 
     print(f"コマンド: {shlex.join(['yt-dlp', *mask_command_line(built.args)])}")
     print("由来:")
