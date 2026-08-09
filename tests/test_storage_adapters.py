@@ -1,0 +1,356 @@
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from sluicery.db.models import Storage, StorageKind
+from sluicery.runner.base import TimeoutPolicy
+from sluicery.storage import create_storage_adapter
+from sluicery.storage.base import (
+    CapacityState,
+    ConnectionStage,
+    MountStorageNotImplementedError,
+    StageStatus,
+    StoragePathError,
+    evaluate_capacity,
+    validate_relative_path,
+)
+from sluicery.storage.errors import StorageClassification
+from sluicery.storage.local import LocalStorageAdapter
+from sluicery.storage.rclone import RcloneRunResult
+from sluicery.storage.remote_rclone import RcloneStorageAdapter, remote_name_for_storage
+
+
+def _result(
+    *,
+    returncode: int = 0,
+    classification: StorageClassification = StorageClassification.OK,
+    reason_code: str = "ok",
+    stdout: list[str] | None = None,
+    stderr_tail: str = "",
+) -> RcloneRunResult:
+    return RcloneRunResult(
+        returncode=returncode,
+        classification=classification,
+        reason_code=reason_code,
+        stdout_lines=stdout or [],
+        stderr_tail=stderr_tail,
+    )
+
+
+class ScriptedRunner:
+    def __init__(self, results: Sequence[RcloneRunResult]) -> None:
+        self.results = list(results)
+        self.calls: list[tuple[list[str], dict[str, str]]] = []
+        self.obscured_inputs: list[str] = []
+
+    def obscure_password(self, password: str, *, timeout_sec: int = 30) -> str:
+        self.obscured_inputs.append(password)
+        return "obscured-password"
+
+    def run(
+        self,
+        args: Sequence[str],
+        *,
+        timeout: TimeoutPolicy,
+        config_env: Mapping[str, str] | None = None,
+        retries: int = 1,
+        stats_interval: str | None = None,
+        on_progress: Any = None,
+        cwd: Path | None = None,
+    ) -> RcloneRunResult:
+        self.calls.append((list(args), dict(config_env or {})))
+        return self.results.pop(0)
+
+
+class ConnectionRunner(ScriptedRunner):
+    def __init__(self, *, delete_fails: bool = False) -> None:
+        super().__init__([])
+        self.payload = ""
+        self.delete_fails = delete_fails
+
+    def run(self, args: Sequence[str], **kwargs: Any) -> RcloneRunResult:
+        self.calls.append((list(args), dict(kwargs.get("config_env") or {})))
+        if args[0] == "copyto":
+            self.payload = Path(args[1]).read_text()
+        if args[0] == "cat":
+            return _result(stdout=[self.payload])
+        if args[0] == "deletefile" and self.delete_fails:
+            return _result(
+                returncode=1,
+                classification=StorageClassification.PERMISSION_DENIED,
+                reason_code="permission_denied",
+            )
+        return _result(stdout=["[]"] if args[0] == "lsjson" else [])
+
+
+def _remote_adapter(runner: Any) -> RcloneStorageAdapter:
+    return RcloneStorageAdapter(
+        42,
+        {
+            "protocol": "smb",
+            "host": "smb.example.invalid",
+            "share": "test-share",
+            "path": "library",
+        },
+        {"user": "test-user", "password": "test-password", "domain": "TEST"},
+        runner=runner,
+    )
+
+
+@pytest.mark.parametrize("path", ["../escape", "a/../../escape", "/absolute", "..\\escape"])
+def test_relative_path_rejects_traversal_and_absolute(path: str) -> None:
+    with pytest.raises(StoragePathError):
+        validate_relative_path(path)
+
+
+def test_local_root_must_stay_under_media_boundary(tmp_path: Path) -> None:
+    media_root = tmp_path / "media"
+    media_root.mkdir()
+    adapter = LocalStorageAdapter("library", media_root=media_root)
+    assert adapter.root == media_root / "library"
+    with pytest.raises(StoragePathError):
+        LocalStorageAdapter(str(tmp_path / "outside"), media_root=media_root)
+
+
+def test_local_connection_has_four_distinct_stages(tmp_path: Path) -> None:
+    media_root = tmp_path / "media"
+    storage_root = media_root / "library"
+    storage_root.mkdir(parents=True)
+    result = LocalStorageAdapter("library", media_root=media_root).test_connection()
+    assert result.ok
+    assert [stage.stage for stage in result.stages] == list(ConnectionStage)
+    assert result.stages[1].status == StageStatus.NOT_APPLICABLE
+    assert not list(storage_root.glob(".sluicery-connection-test-*"))
+
+
+def test_local_connection_reports_cleanup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_root = tmp_path / "media"
+    (media_root / "library").mkdir(parents=True)
+    original_unlink = Path.unlink
+
+    def fail_test_file_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path.name.startswith(".sluicery-connection-test-"):
+            raise PermissionError("synthetic cleanup failure")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_test_file_unlink)
+    result = LocalStorageAdapter("library", media_root=media_root).test_connection()
+    assert not result.ok
+    assert result.cleanup_warning is not None
+    assert result.stages[-1].status == StageStatus.FAILED
+
+
+def test_local_publish_uses_temporary_name_then_final(tmp_path: Path) -> None:
+    media_root = tmp_path / "media"
+    (media_root / "library").mkdir(parents=True)
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"complete-content")
+    adapter = LocalStorageAdapter("library", media_root=media_root)
+    result = adapter.publish(source, "folder/final.bin")
+    assert result.success
+    assert not source.exists()
+    assert (adapter.root / "folder/final.bin").read_bytes() == b"complete-content"
+    assert not list(adapter.root.rglob("*.sluicery-tmp-*"))
+
+
+def test_local_publish_interruption_never_creates_final(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_root = tmp_path / "media"
+    (media_root / "library").mkdir(parents=True)
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"complete-content")
+    adapter = LocalStorageAdapter("library", media_root=media_root)
+    original_replace = os.replace
+    call_count = 0
+
+    def interrupt_second_replace(src: Any, dest: Any) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise OSError("synthetic interruption")
+        original_replace(src, dest)
+
+    monkeypatch.setattr(os, "replace", interrupt_second_replace)
+    result = adapter.publish(source, "folder/final.bin")
+    assert not result.success
+    assert not (adapter.root / "folder/final.bin").exists()
+    assert result.temporary_rel is not None
+    assert (adapter.root / result.temporary_rel).exists()
+
+
+def test_local_publish_does_not_overwrite_existing_file(tmp_path: Path) -> None:
+    media_root = tmp_path / "media"
+    destination = media_root / "library/final.bin"
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"keep-me")
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"new-content")
+    result = LocalStorageAdapter("library", media_root=media_root).publish(source, "final.bin")
+    assert not result.success
+    assert result.reason_code == "destination_exists"
+    assert destination.read_bytes() == b"keep-me"
+    assert source.exists()
+
+
+def test_local_exists_list_move_and_free_space(tmp_path: Path) -> None:
+    media_root = tmp_path / "media"
+    original = media_root / "library/folder/original.bin"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(b"abc")
+    adapter = LocalStorageAdapter("library", media_root=media_root)
+    assert adapter.exists("folder/original.bin")
+    assert [item.relative_path for item in adapter.list_recursive("")] == [
+        "folder/original.bin"
+    ]
+    adapter.move("folder/original.bin", "moved/final.bin")
+    assert not adapter.exists("folder/original.bin")
+    assert adapter.exists("moved/final.bin")
+    assert adapter.free_space() is not None
+
+
+def test_remote_name_is_derived_only_from_storage_id() -> None:
+    assert remote_name_for_storage(42) == "st42"
+
+
+def test_remote_publish_orders_temp_verify_and_moveto(tmp_path: Path) -> None:
+    not_found = _result(
+        returncode=1,
+        classification=StorageClassification.FAILED,
+        reason_code="unknown_error",
+        stderr_tail="object not found",
+    )
+    runner = ScriptedRunner(
+        [
+            not_found,
+            _result(),
+            _result(),
+            _result(stdout=[json.dumps({"Size": 3})]),
+            not_found,
+            _result(),
+        ]
+    )
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"abc")
+    result = _remote_adapter(runner).publish(source, "folder/final.bin")
+    assert result.success
+    assert not source.exists()
+    commands = [call[0][0] for call in runner.calls]
+    assert commands == ["lsjson", "mkdir", "copyto", "lsjson", "lsjson", "moveto"]
+    copy_destination = runner.calls[2][0][2]
+    assert ".sluicery-tmp-" in copy_destination
+    assert runner.calls[-1][0][-1].endswith("folder/final.bin")
+    assert all("test-password" not in argument for call, _env in runner.calls for argument in call)
+    assert runner.obscured_inputs == ["test-password"]
+    assert "RCLONE_CONFIG_ST42_PASS" in runner.calls[0][1]
+
+
+def test_remote_publish_failure_leaves_only_reported_temp(tmp_path: Path) -> None:
+    not_found = _result(returncode=1, stderr_tail="object not found")
+    transfer_failed = _result(
+        returncode=1,
+        classification=StorageClassification.UNREACHABLE,
+        reason_code="unreachable",
+    )
+    runner = ScriptedRunner([not_found, _result(), transfer_failed])
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"abc")
+    result = _remote_adapter(runner).publish(source, "folder/final.bin")
+    assert not result.success
+    assert result.temporary_rel is not None
+    assert result.classification == StorageClassification.UNREACHABLE
+    assert "moveto" not in [call[0][0] for call in runner.calls]
+    assert source.exists()
+
+
+def test_remote_connection_has_four_successful_stages_and_cleans_up() -> None:
+    runner = ConnectionRunner()
+    result = _remote_adapter(runner).test_connection()
+    assert result.ok
+    assert [stage.stage for stage in result.stages] == list(ConnectionStage)
+    assert all(stage.status == StageStatus.SUCCESS for stage in result.stages)
+    assert [call[0][0] for call in runner.calls] == ["lsjson", "copyto", "cat", "deletefile"]
+
+
+def test_remote_connection_reports_delete_failure() -> None:
+    result = _remote_adapter(ConnectionRunner(delete_fails=True)).test_connection()
+    assert not result.ok
+    assert result.cleanup_warning is not None
+    assert result.stages[-1].classification == StorageClassification.PERMISSION_DENIED
+
+
+def test_remote_exists_list_move_and_free_space() -> None:
+    not_found = _result(returncode=1, stderr_tail="object not found")
+    runner = ScriptedRunner(
+        [
+            _result(),
+            _result(
+                stdout=[
+                    json.dumps(
+                        [
+                            {
+                                "Path": "file.bin",
+                                "Size": 7,
+                                "ModTime": "2026-08-09T00:00:00Z",
+                                "Hashes": {"md5": "abc"},
+                            }
+                        ]
+                    )
+                ]
+            ),
+            not_found,
+            _result(),
+            _result(stdout=[json.dumps({"free": 12345})]),
+        ]
+    )
+    adapter = _remote_adapter(runner)
+    assert adapter.exists("existing.bin")
+    files = list(adapter.list_recursive("folder"))
+    assert files[0].relative_path == "folder/file.bin"
+    assert files[0].size == 7
+    adapter.move("source.bin", "destination.bin")
+    assert adapter.free_space() == 12345
+
+
+def test_remote_connection_distinguishes_auth_failure() -> None:
+    runner = ScriptedRunner(
+        [
+            _result(
+                returncode=1,
+                classification=StorageClassification.AUTH_FAILED,
+                reason_code="authentication_failed",
+            )
+        ]
+    )
+    result = _remote_adapter(runner).test_connection()
+    assert result.stages[0].status == StageStatus.SUCCESS
+    assert result.stages[1].status == StageStatus.FAILED
+    assert result.stages[1].classification == StorageClassification.AUTH_FAILED
+    assert result.stages[2].status == StageStatus.SKIPPED
+    assert result.stages[3].status == StageStatus.SKIPPED
+
+
+def test_capacity_none_skips_blocking() -> None:
+    result = evaluate_capacity(None, warn_bytes=100, stop_bytes=20)
+    assert result.state == CapacityState.UNKNOWN
+    assert not result.should_block
+
+
+def test_mount_factory_is_explicitly_unimplemented() -> None:
+    storage = Storage(
+        id=1,
+        name="future-mount",
+        kind=StorageKind.MOUNT,
+        enabled=True,
+        config_json={},
+    )
+    with pytest.raises(MountStorageNotImplementedError, match="Phase 19"):
+        create_storage_adapter(storage, None)  # type: ignore[arg-type]
