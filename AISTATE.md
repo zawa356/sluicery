@@ -3,8 +3,8 @@
 > このファイルはセッション間の引き継ぎ用です。
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
-最終更新: 2026-08-09 22:12
-対応コミット: fb6874b docs: Phase 4レビュー対応と完了状態を記録
+最終更新: 2026-08-09 23:05
+対応コミット: 399337d feat: RcloneRunnerを追加
 
 ## プロジェクト概要
 
@@ -19,7 +19,7 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 - [x] 2. 設定読み込み、`SECRET_KEY` 検証、DB スキーマ + Alembic マイグレーション
 - [x] 3. yt-dlp venv 管理（インストール、バージョン取得）と CLI ラッパ
 - [x] 4. オプション合成モデル、ガード、コマンドラインプレビュー
-- [ ] 5. Storage アダプタ（local / remote-rclone）、接続テスト、クレデンシャル暗号化  ← 次の着手点
+- [ ] 5. Storage アダプタ（local / remote-rclone）、接続テスト、クレデンシャル暗号化  ← 作業中
 - [ ] 6. Task キューとワーカー（network / compute の2クラス）
 - [ ] 7. パイプライン（download → verify → postprocess(空) → publish → index）
 - [ ] 8. 二相同期（discover / download）、状態遷移
@@ -38,6 +38,12 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 
 ## 直近の作業
 
+- Phase 5 の P0 を是正。公開前監査のホームパス・IPv4/IPv6・ローカルホスト名パターンを
+  修正し、75コミットを再監査した。gitleaks 漏えい0件、環境情報一致は正規表現例だけだった
+- 外部プロセス実行を `runner/base.py` へ切り出し、既存 `YtdlpRunner` を継承化した。
+  回帰テスト21件、Ruff、mypy は成功
+- `RcloneRunner`、JSON stats パーサ、Storage エラー分類、子プロセス限定の設定環境変数、
+  stdin password obscure を実装。対象テスト39件が成功（D-024, D-025）
 - Phase 4 を実装。Profile 継承フィールドの三状態化、6層オプション合成、予約引数・
   `--exec` 二重ゲート、引数由来、`flat` / `custom` レイアウト、命名・欠損値方針を追加した
 - Phase 9 までの暫定 Storage / Profile / Playlist CRUD と `options preview` を追加。
@@ -60,9 +66,9 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 
 ## 次にやること
 
-1. 監査結果をユーザーへ報告し、明示的な承認があるまで push しない
-2. 公開可否、指示書 / AISTATE の公開、Issues / Wiki / Projects、Dependabot の判断を待つ
-3. 次セッションでは Phase 5 の指示書を読み、Storage アダプタの現状と要件を着手前確認する
+1. `StorageAdapter` と factory、local / remote-rclone の6メソッドを実装する
+2. 4段階接続テスト、原子的 publish、容量判定と暫定 Storage CLI を追加する
+3. ユニットテスト後、専用 SMB 共有で Phase 5 の実機検証20項目を実施する
 
 ## 未解決・保留
 
