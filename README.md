@@ -12,9 +12,10 @@ git clone <repo> sluicery
 cd sluicery
 cp .env.example .env
 
-# SECRET_KEY を生成
-docker run --rm python:3.12-slim python3 -c \
-  "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# SECRET_KEY を生成（python:3.12-slim には cryptography が入っていないため、その場で入れる）
+docker run --rm python:3.12-slim sh -c \
+  "pip install -q --root-user-action=ignore cryptography && python3 -c \
+  'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
 
 $EDITOR .env          # SECRET_KEY を貼り付ける（最低限これだけ設定すれば起動できる）
 docker compose up -d --build
