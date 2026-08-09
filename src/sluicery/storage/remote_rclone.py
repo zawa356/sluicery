@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import time
 from collections.abc import Iterator, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -28,6 +29,7 @@ from sluicery.storage.rclone import RcloneRunner, RcloneRunResult
 _OPTION_KEY = re.compile(r"[a-z][a-z0-9_]*\Z")
 _MANAGED_OPTIONS = {"type", "host", "user", "pass", "domain", "port"}
 _NOT_FOUND = re.compile(r"not found|does not exist|directory not found|object not found", re.I)
+_DESTINATION_EXISTS = re.compile(r"already exists|destination exists|immutable file", re.I)
 
 
 class UnsupportedRemoteProtocolError(ValueError):
@@ -58,7 +60,7 @@ class RcloneStorageAdapter:
         runner: RcloneRunner | None = None,
         idle_timeout_sec: int = 300,
         absolute_timeout_sec: int = 21600,
-        test_timeout_sec: int = 30,
+        test_timeout_sec: float = 30,
         retries: int = 1,
     ) -> None:
         protocol = config.get("protocol")
@@ -79,7 +81,6 @@ class RcloneStorageAdapter:
         self._credentials = dict(credentials or {})
         self._runner = runner or RcloneRunner()
         self._normal_timeout = TimeoutPolicy(idle_timeout_sec, absolute_timeout_sec, 10)
-        self._test_timeout = TimeoutPolicy(test_timeout_sec, test_timeout_sec, 2)
         self._test_timeout_sec = test_timeout_sec
         self._retries = retries
         self._config_env_cache: dict[str, str] | None = None
@@ -91,7 +92,7 @@ class RcloneStorageAdapter:
     def remote_name(self) -> str:
         return self._remote_name
 
-    def _config_env(self) -> dict[str, str]:
+    def _config_env(self, *, timeout_sec: float | None = None) -> dict[str, str]:
         if self._config_env_cache is not None:
             return dict(self._config_env_cache)
         prefix = f"RCLONE_CONFIG_{self._remote_name.upper()}_"
@@ -107,7 +108,8 @@ class RcloneStorageAdapter:
             env[f"{prefix}USER"] = user
         if isinstance(password, str) and password:
             env[f"{prefix}PASS"] = self._runner.obscure_password(
-                password, timeout_sec=self._test_timeout_sec
+                password,
+                timeout_sec=(self._test_timeout_sec if timeout_sec is None else timeout_sec),
             )
         if isinstance(domain, str) and domain:
             env[f"{prefix}DOMAIN"] = domain
@@ -129,15 +131,27 @@ class RcloneStorageAdapter:
         self,
         args: list[str],
         *,
-        test: bool = False,
         stats_interval: str | None = None,
     ) -> RcloneRunResult:
         return self._runner.run(
             args,
-            timeout=self._test_timeout if test else self._normal_timeout,
+            timeout=self._normal_timeout,
             config_env=self._config_env(),
             retries=self._retries,
             stats_interval=stats_interval,
+        )
+
+    @staticmethod
+    def _remaining_timeout(deadline: float) -> float:
+        return max(0.01, deadline - time.monotonic())
+
+    def _run_test(self, args: list[str], *, deadline: float) -> RcloneRunResult:
+        remaining = self._remaining_timeout(deadline)
+        return self._runner.run(
+            args,
+            timeout=TimeoutPolicy(remaining, remaining, min(2.0, remaining)),
+            config_env=self._config_env(),
+            retries=self._retries,
         )
 
     @staticmethod
@@ -159,8 +173,12 @@ class RcloneStorageAdapter:
 
     def test_connection(self) -> ConnectionTestResult:
         stages: list[ConnectionStageResult] = []
-        listing = self._run(
-            ["lsjson", self._remote_path(), "--max-depth", "1", "--dirs-only"], test=True
+        deadline = time.monotonic() + self._test_timeout_sec
+        # 初回の password obscure も接続テスト全体の deadline に含める。
+        self._config_env(timeout_sec=self._remaining_timeout(deadline))
+        listing = self._run_test(
+            ["lsjson", self._remote_path(), "--max-depth", "1", "--dirs-only"],
+            deadline=deadline,
         )
         if listing.returncode != 0:
             classification = listing.classification
@@ -263,22 +281,31 @@ class RcloneStorageAdapter:
         with tempfile.TemporaryDirectory(prefix="sluicery-storage-test-") as temp_dir:
             source = Path(temp_dir) / "payload"
             source.write_bytes(payload)
-            copy_result = self._run(["copyto", str(source), remote_test], test=True)
+            copy_result = self._run_test(
+                ["copyto", str(source), remote_test], deadline=deadline
+            )
             if copy_result.returncode == 0:
                 uploaded = True
-                read_result = self._run(["cat", remote_test], test=True)
+                read_result = self._run_test(["cat", remote_test], deadline=deadline)
             else:
                 read_result = copy_result
             if copy_result.returncode == 0 and read_result.returncode == 0:
                 read_back = "\n".join(read_result.stdout_lines).encode()
                 write_ok = read_back == payload
-                result_for_error = read_result
+                if write_ok:
+                    result_for_error = read_result
+                else:
+                    result_for_error = RcloneRunResult(
+                        returncode=1,
+                        classification=StorageClassification.FAILED,
+                        reason_code="content_mismatch",
+                    )
             else:
                 write_ok = False
                 result_for_error = copy_result if copy_result.returncode != 0 else read_result
 
         if uploaded:
-            delete_result = self._run(["deletefile", remote_test], test=True)
+            delete_result = self._run_test(["deletefile", remote_test], deadline=deadline)
             if delete_result.returncode != 0:
                 cleanup_warning = (
                     "接続テストの一時ファイルを削除できませんでした: " + test_name
@@ -387,10 +414,21 @@ class RcloneStorageAdapter:
                 "最終化前に同名ファイルが作成されたため上書きしません",
                 temporary_rel=temp_rel,
             )
-        move_result = self._run(
-            ["moveto", self._remote_path(temp_rel), self._remote_path(normalized)]
-        )
+        move_args = ["moveto", self._remote_path(temp_rel), self._remote_path(normalized)]
+        if not overwrite:
+            move_args.append("--ignore-existing")
+        move_result = self._run(move_args)
         if move_result.returncode != 0:
+            if not overwrite and _DESTINATION_EXISTS.search(move_result.stderr_tail):
+                return PublishResult(
+                    False,
+                    normalized,
+                    int(remote_size),
+                    StorageClassification.FAILED,
+                    "destination_exists",
+                    "最終化時に同名ファイルが作成されたため上書きしません",
+                    temporary_rel=temp_rel,
+                )
             return PublishResult(
                 False,
                 normalized,
@@ -398,6 +436,16 @@ class RcloneStorageAdapter:
                 move_result.classification,
                 move_result.reason_code,
                 "一時ファイルを最終名へ移動できません",
+                temporary_rel=temp_rel,
+            )
+        if not overwrite and self.exists(temp_rel):
+            return PublishResult(
+                False,
+                normalized,
+                int(remote_size),
+                StorageClassification.FAILED,
+                "destination_exists",
+                "最終化時に同名ファイルが作成されたため上書きしません",
                 temporary_rel=temp_rel,
             )
         try:
