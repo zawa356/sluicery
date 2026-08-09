@@ -45,6 +45,8 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 - 履歴全体の機密監査を実施し、GitHub `zawa356/sluicery` に private で push 済み。
   public 化は見送った
 - `checkpoint/step-03.5` タグを Phase 3.5 完了コミットに付与した
+- Phase 4 の最初の実装として、Profile の継承対象フラグ6項目を三状態化する
+  Alembic マイグレーションと往復テストを追加した（D-017）
 
 ## 次にやること
 
