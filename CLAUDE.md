@@ -181,7 +181,7 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 - `blocked` はリトライ回数を消費しない
 - ファイル名の `[<source_id>]` は末尾（拡張子直前）に固定。relink がこれに依存している
 - `SECRET_KEY` 未設定時は起動を拒否する
-- push などのリモート git 操作は禁止
+- `git push` は `docs/公開前チェックリスト.md` の監査完了とユーザー承認後にのみ許可（§4.1）
 
 ## 環境メモ
 
@@ -201,17 +201,21 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 
 # 4. Git 運用
 
-## 4.1 禁止事項
+## 4.1 禁止事項・条件付き許可事項
 
-**以下のコマンドは実行しない。**
+**引き続き禁止するもの**
 
-- `git push`（およびあらゆるリモートへの送信）
-- `git remote add` / `git remote set-url`
-- `git fetch` / `git pull` / `git clone`（外部リポジトリからの取得）
 - `git push --force` を含む一切の force 操作
-- `git reset --hard`（ユーザーの明示的な指示がある場合のみ可）
-- `git clean -fdx`（同上）
-- `git rebase` によるコミット済み履歴の書き換え（同上）
+- 外部リポジトリからの `git clone` / `fetch` / `pull`（自リポジトリを除く）
+- `git remote add` / `git remote set-url`
+- `git reset --hard` / `git clean -fdx` / コミット済み履歴の `rebase`（ユーザーの明示的な指示がある場合のみ可）
+
+**条件付きで許可するもの**
+
+- `git push`：**`docs/公開前チェックリスト.md` の監査を完了し、ユーザーの明示的な承認を得た後にのみ実行する**
+- `gh repo create` / `gh repo edit`：同上
+
+改訂の根拠は `docs/phase3.5_指示書_改訂版.md` §6.2 と `docs/公開前チェックリスト.md`。監査手順は履歴全体を対象とし、監査後はユーザーの承認を得るまでプッシュしないこと。
 
 **ローカルで完結する操作は自由に使ってよい。** `add` / `commit` / `status` / `diff` / `log` / `branch` / `checkout` / `switch` / `stash` / `tag` / `restore` などは自由。
 
@@ -314,6 +318,10 @@ logs/
 *.sqlite
 *.sqlite3
 
+# ---- バックアップ（Storage の認証情報を暗号化された形で含む） ----
+backups/
+*.tar.gz
+
 # ---- Python ----
 __pycache__/
 *.py[cod]
@@ -334,6 +342,7 @@ build/
 .DS_Store
 Thumbs.db
 *.swp
+*:Zone.Identifier
 
 # ---- その他 ----
 *.log
@@ -429,7 +438,7 @@ git status --ignored          # 除外されているファイルの一覧
 
 # 9. やってはいけないこと（再掲）
 
-- リモートへの git 操作（push / fetch / pull / remote 設定）
+- 監査・承認を経ない `git push` / `gh repo create` / `gh repo edit`、外部リポジトリへの `fetch` / `pull`、`remote` 設定変更（§4.1）
 - 要件定義に反する実装を、確認なしに進めること
 - 機密情報のコミット
 - `AISTATE.md` の更新を怠ったままセッションを終えること
