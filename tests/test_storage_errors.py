@@ -10,6 +10,10 @@ from sluicery.storage.errors import StorageClassification, classify, classify_st
     [
         ("dial tcp: connection refused", StorageClassification.UNREACHABLE),
         ("NT_STATUS_LOGON_FAILURE", StorageClassification.AUTH_FAILED),
+        (
+            "The attempted logon is invalid due to a bad username or authentication information",
+            StorageClassification.AUTH_FAILED,
+        ),
         ("no space left on device", StorageClassification.NO_SPACE),
         ("NT_STATUS_ACCESS_DENIED", StorageClassification.PERMISSION_DENIED),
     ],

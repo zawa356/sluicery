@@ -26,7 +26,8 @@ ERROR_RULES: list[tuple[re.Pattern[str], StorageClassification, str]] = [
     (
         re.compile(
             r"NT_STATUS_LOGON_FAILURE|LOGON_FAILURE|user name or password is incorrect|"
-            r"authentication failed|invalid credentials|authorization failed",
+            r"authentication failed|invalid credentials|authorization failed|"
+            r"attempted logon is invalid|bad username or authentication information",
             re.I,
         ),
         StorageClassification.AUTH_FAILED,
