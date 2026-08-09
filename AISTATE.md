@@ -51,6 +51,8 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
   `defaults.video.*` / `defaults.music.*` の種別既定を追加した
 - `flat` / `custom` レイアウト、subpath テンプレート、NFC・Windows 予約語・
   traversal を扱うユーザー入力由来パスの検証を追加した
+- 6層の構造化フィールド解決・自由文字列連結・由来追跡と、discover / download
+  のコマンドビルダーを `core/options.py` に実装した
 
 ## 次にやること
 
