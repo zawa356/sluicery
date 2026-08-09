@@ -31,6 +31,8 @@ from sluicery.db.repositories.ytdlp_release import YtdlpReleaseRepository
 # 固定値とする。§3.4 の `ytdlp.*_timeout_sec` 系は yt-dlp 本体の実行用)。
 INSTALL_TIMEOUT_SEC = 600
 VERSION_PROBE_TIMEOUT_SEC = 30
+INSTALL_CONTRACT_FILE = ".sluicery-install-contract"
+INSTALL_CONTRACT_VERSION = "yt-dlp-default-extras-v1"
 
 
 class InstallStatus(StrEnum):
@@ -81,6 +83,16 @@ def current_ytdlp_bin(root: Path) -> Path:
     return current_link(root) / "bin" / "yt-dlp"
 
 
+def _install_contract_path(venv_dir: Path) -> Path:
+    return venv_dir / INSTALL_CONTRACT_FILE
+
+
+def _write_install_contract(venv_dir: Path) -> None:
+    _install_contract_path(venv_dir).write_text(
+        f"{INSTALL_CONTRACT_VERSION}\n", encoding="utf-8"
+    )
+
+
 @contextmanager
 def _locked(root: Path) -> Iterator[None]:
     """3サービス同時実行下でも venv 操作を直列化する(§2.4)。"""
@@ -112,6 +124,13 @@ def get_status(root: Path) -> StatusResult:
         return StatusResult(InstallStatus.NOT_INSTALLED, None, None)
 
     version = read_current_version(root)
+    try:
+        contract = _install_contract_path(link).read_text(encoding="utf-8").strip()
+    except OSError:
+        return StatusResult(InstallStatus.BROKEN, version, None)
+    if contract != INSTALL_CONTRACT_VERSION:
+        return StatusResult(InstallStatus.BROKEN, version, None)
+
     bin_path = current_ytdlp_bin(root)
     try:
         proc = subprocess.run(
@@ -264,6 +283,7 @@ def install(
     """
     with _locked(root):
         versions_dir(root).mkdir(parents=True, exist_ok=True)
+        current_version_before = read_current_version(root)
 
         if version is not None and not force:
             existing_dir = versions_dir(root) / version
@@ -271,9 +291,14 @@ def install(
                 repo = YtdlpReleaseRepository(session)
                 release = repo.get_by_version(version)
                 if release is not None and release.status != YtdlpReleaseStatus.REMOVED:
-                    if get_status(root).status != InstallStatus.READY:
+                    status = get_status(root).status
+                    if status == InstallStatus.READY:
+                        return release
+                    if current_version_before != version:
                         _activate(root, session, release)
-                    return release
+                        return release
+                    # current 自体が旧導入契約または破損状態なら、同じバージョンでも
+                    # no-op にせず一時 venv を作り直す。
 
         needs_activation = get_status(root).status != InstallStatus.READY
 
@@ -281,13 +306,15 @@ def install(
         try:
             _create_venv(tmp_dir)
             _pip_install_ytdlp(tmp_dir, version)
+            _write_install_contract(tmp_dir)
             installed_version = _probe_version(tmp_dir)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise YtdlpInstallError(_format_subprocess_error(exc)) from exc
 
         final_dir = versions_dir(root) / installed_version
-        if final_dir.is_dir() and not force:
+        repair_current = needs_activation and current_version_before == installed_version
+        if final_dir.is_dir() and not force and not repair_current:
             # 既に同名のバージョンが存在する場合は、一時ディレクトリを破棄して
             # 既存を採用する(§2.2 手順5)。ただし --force のときは、broken
             # 状態からの復旧などで既存を明示的に上書きしたい場合があるため、

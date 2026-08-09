@@ -80,6 +80,28 @@ def test_status_not_installed_when_no_current(root: Path) -> None:
     assert result.current_version is None
 
 
+def test_status_broken_when_install_contract_is_missing(root: Path, db_session) -> None:
+    install(root, db_session, version="2026.01.01", source=YtdlpReleaseSource.MANUAL)
+    version_mod._install_contract_path(version_mod.current_link(root)).unlink()
+
+    result = get_status(root)
+
+    assert result.status == InstallStatus.BROKEN
+    assert result.current_version == "2026.01.01"
+
+
+def test_install_repairs_current_with_old_contract(root: Path, db_session) -> None:
+    install(root, db_session, version="2026.01.01", source=YtdlpReleaseSource.MANUAL)
+    contract = version_mod._install_contract_path(version_mod.current_link(root))
+    contract.unlink()
+    assert get_status(root).status == InstallStatus.BROKEN
+
+    install(root, db_session, version="2026.01.01", source=YtdlpReleaseSource.MANUAL)
+
+    assert get_status(root).status == InstallStatus.READY
+    assert contract.read_text(encoding="utf-8").strip() == version_mod.INSTALL_CONTRACT_VERSION
+
+
 def test_first_install_bootstraps_and_activates(root: Path, db_session) -> None:
     release = install(root, db_session, version="2026.01.01", source=YtdlpReleaseSource.MANUAL)
     assert release.status == YtdlpReleaseStatus.ACTIVE
