@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 from collections.abc import Mapping, Sequence
@@ -159,6 +160,29 @@ def test_local_publish_uses_temporary_name_then_final(tmp_path: Path) -> None:
     assert not source.exists()
     assert (adapter.root / "folder/final.bin").read_bytes() == b"complete-content"
     assert not list(adapter.root.rglob("*.sluicery-tmp-*"))
+
+
+def test_local_publish_falls_back_to_copy_on_cross_device_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_root = tmp_path / "media"
+    (media_root / "library").mkdir(parents=True)
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"cross-device-content")
+    adapter = LocalStorageAdapter("library", media_root=media_root)
+    original_replace = os.replace
+
+    def cross_device_for_source(src: Any, dest: Any) -> None:
+        if Path(src) == source:
+            raise OSError(errno.EXDEV, "synthetic cross-device rename")
+        original_replace(src, dest)
+
+    monkeypatch.setattr(os, "replace", cross_device_for_source)
+    result = adapter.publish(source, "folder/final.bin")
+
+    assert result.success
+    assert not source.exists()
+    assert (adapter.root / "folder/final.bin").read_bytes() == b"cross-device-content"
 
 
 def test_local_publish_interruption_never_creates_final(
