@@ -3,8 +3,8 @@
 > このファイルはセッション間の引き継ぎ用です。
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
-最終更新: 2026-08-09 11:30
-対応コミット: 26d80fb chore: .dockerignore を追加
+最終更新: 2026-08-09 12:15
+対応コミット: d772801 docs: 変更履歴にPhase 3.5の作業内容を反映
 
 ## プロジェクト概要
 
@@ -75,19 +75,31 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 
 ## 次にやること
 
-1. 実装順序 #4（オプション合成モデル、`core/options.py`）に着手
-2. 着手前に `docs/要件定義.md` §9（yt-dlp オプションの合成モデル）を再読すること
-3. `ytdlp probe`/`fetch` の暫定固定オプション（`downloader/ytdlp.py` の
-   呼び出し元、`cli.py` の `_cmd_ytdlp_probe`/`_build_fetch_args`）を
-   Phase 4 のレイヤー合成に置き換えること（`docs/phase3_指示書.md` §9.1）
-4. **Phase 3.5（`docs/phase3.5_指示書_改訂版.md`、要件定義 §20 の実装順序
-   には含まれない独立タスク）に、ユーザーの明示的な指示により着手済み。**
-   §0 の P0 是正6件のうち5件が完了（詳細は `docs/変更履歴.md`）。残るは
-   §0.6/§6.2 由来の `docs/公開前チェックリスト.md` 新設。この後 §2〜§5
-   （README 改訂・deployment.md・troubleshooting.md 新設・VM 実機検証）に
-   進むには、ライセンス選定（§6.1、着手前にユーザー確認が必須）と VM
-   実機検証環境へのアクセス方法をユーザーに確認する必要がある（未確認）。
-   §7 の履歴監査で一度停止し、ユーザーの承認を得るまで push しない
+**現在は Phase 3.5（`docs/phase3.5_指示書_改訂版.md`）作業中。** 実装順序 #4
+（オプション合成モデル、`core/options.py`）はその後に再開する。
+
+1. **VM 実機検証（§5、17項目）待ち。** ユーザーが VM を用意し、SSH 等の
+   アクセス手段をこのセッションに渡す予定（未着手）。アクセスを受け取り
+   次第、環境情報の採取 → `git clone` からの新規構築 → `ytdlp fetch` 成功
+   → `make test`/`make lint`/`make purge` の順に実施し、実測値を
+   `docs/deployment.md` §7、既知でない問題を `docs/troubleshooting.md` へ反映
+2. VM 検証完了後、README の前提条件（イメージサイズ・メモリ・ビルド時間・
+   検証状況の表）を実測値で更新
+3. その後 §7 履歴監査（`docs/公開前チェックリスト.md` の手順）を実行し、
+   結果をユーザーに報告してそこで停止。**ユーザーの明示的な承認を得るまで
+   push しない**
+4. 承認後、GitHub に private で作成・push・目視確認・public 化（§8）
+5. 完了後、`checkpoint/step-03.5` タグを打ち、AISTATE を Phase 4 着手点に
+   書き換える
+6. Phase 3.5 完了後、実装順序 #4（オプション合成モデル）に着手。着手前に
+   `docs/要件定義.md` §9 を再読すること。`ytdlp probe`/`fetch` の暫定固定
+   オプション（`downloader/ytdlp.py` 呼び出し元、`cli.py` の
+   `_cmd_ytdlp_probe`/`_build_fetch_args`）を Phase 4 のレイヤー合成に
+   置き換える（`docs/phase3_指示書.md` §9.1）
+
+**Phase 3.5 の完了済み分**（§0 P0是正6件、README全面改訂、LICENSE(MIT)、
+deployment.md/troubleshooting.md/公開前チェックリスト.md 新設、CLAUDE.md
+§4.1 改訂、D-016 記録）は `docs/変更履歴.md` 参照。
 
 ## 未解決・保留
 
