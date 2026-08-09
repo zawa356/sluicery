@@ -126,7 +126,7 @@ def test_minimal_crud_attach_preview_and_safe_remove(
         session.close()
 
 
-def test_remote_storage_and_invalid_custom_profile_are_rejected(
+def test_incomplete_remote_storage_and_invalid_custom_profile_are_rejected(
     monkeypatch,
     session_factory,
     base_env,
@@ -142,13 +142,11 @@ def test_remote_storage_and_invalid_custom_profile_are_rejected(
                 "remote",
                 "--name",
                 "remote",
-                "--path",
-                "/unused",
             ]
         )
         == 1
     )
-    assert "Phase 5" in capsys.readouterr().err
+    assert "必要な項目" in capsys.readouterr().err
 
     assert (
         cli.main(
