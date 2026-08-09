@@ -58,7 +58,8 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 - `ytdlp probe` / `fetch` の暫定固定引数を削除し、discover / download の
   合成ビルダー経由へ置換した。`--print` の進捗抑制補償もビルダーに集約した
 - 実機の音楽 fetch で判明した `mutagen` 不足を修正し、yt-dlp venv は公式
-  `default` extras 付きで導入するようにした。opus のタグと埋め込み画像を確認済み
+  `default` extras 付きで導入するようにした。導入契約マーカーで Phase 3 までの旧 venv も
+  同一バージョンのまま自動修復し、opus のタグと埋め込み画像を確認済み
 
 ## 次にやること
 
