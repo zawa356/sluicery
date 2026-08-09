@@ -802,4 +802,10 @@ def dispatch(
         session.close()
 
 
-__all__ = ["CliValidationError", "configure_parsers", "dispatch", "resolve_record"]
+__all__ = [
+    "CliValidationError",
+    "configure_parsers",
+    "dispatch",
+    "find_playlist_profile",
+    "resolve_record",
+]

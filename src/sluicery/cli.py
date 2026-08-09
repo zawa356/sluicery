@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from alembic.config import Config as AlembicConfig
@@ -434,20 +436,61 @@ def _cmd_ytdlp_exec(args: list[str]) -> int:
     return result.returncode
 
 
-def _cmd_ytdlp_probe(url: str) -> int:
-    from sluicery.downloader.protocol import PRINT_PREFIX
+def _built_timeout_policy(spec):
+    from sluicery.downloader.ytdlp import TimeoutPolicy
+
+    return TimeoutPolicy(
+        idle_sec=spec.idle_sec,
+        absolute_sec=spec.absolute_sec,
+        term_grace_sec=spec.term_grace_sec,
+    )
+
+
+def _report_built_command(built) -> None:
+    from sluicery.downloader.ytdlp import mask_command_line
+
+    print(f"$ {shlex.join(['yt-dlp', *mask_command_line(built.args)])}")
+    for warning in built.warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
+
+
+def _cmd_ytdlp_probe(url: str, override_args: str | None) -> int:
+    from sluicery.core.options import OptionOverrides, OptionValidationError, build_discover_args
+    from sluicery.db.models import Playlist, PlaylistKindHint
     from sluicery.downloader.ytdlp import YtdlpRunner
 
     prepared = _ytdlp_timeout_and_bin()
     if prepared is None:
         return 1
-    settings, bin_path, timeout, stderr_tail_kb = prepared
+    settings, bin_path, _exec_timeout, stderr_tail_kb = prepared
+    session = _open_session()
+    try:
+        transient = Playlist(
+            name="probe",
+            folder_name="probe",
+            url=url,
+            enabled=True,
+            kind_hint=PlaylistKindHint.VIDEO,
+            paused=False,
+            dedup_hardlink=False,
+        )
+        built = build_discover_args(
+            transient,
+            session=session,
+            overrides=OptionOverrides(ytdlp_args=override_args),
+            env_allow_exec=bool(settings.ALLOW_EXEC),
+        )
+    except OptionValidationError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        session.close()
 
-    args = [url, "--simulate", "--print", f"{PRINT_PREFIX}%()j"]
+    _report_built_command(built)
     runner = YtdlpRunner(
         bin_path, stderr_tail_kb=stderr_tail_kb, log_dir=settings.DATA_DIR / "logs"
     )
-    result = runner.run(args, timeout=timeout)
+    result = runner.run(list(built.args), timeout=_built_timeout_policy(built.timeout))
 
     if result.returncode != 0 or not result.stdout_lines:
         print(
@@ -481,45 +524,84 @@ def _cmd_ytdlp_probe(url: str) -> int:
     return 0
 
 
-def _build_fetch_args(url: str, dest_dir: Path) -> list[str]:
-    """`ytdlp fetch` の固定引数を組み立てる（テストしやすいよう純粋関数として分離）。
-
-    `--print` は既定で `--quiet` を暗黙付与し、`--progress-template` による
-    進捗出力も抑制してしまう（yt-dlp 実機で確認済み）。`--progress` で
-    明示的に上書きする。
-    """
-    from sluicery.downloader.protocol import PRINT_PREFIX, PROGRESS_PREFIX
-
-    return [
-        url,
-        "--newline",
-        "--progress",
-        "--paths",
-        str(dest_dir),
-        "-o",
-        "%(id)s.%(ext)s",
-        "--progress-template",
-        f"download:{PROGRESS_PREFIX}%(progress)j",
-        "--print",
-        f"after_move:{PRINT_PREFIX}%(filepath)s",
-    ]
-
-
-def _cmd_ytdlp_fetch(url: str, dest: str | None) -> int:
+def _cmd_ytdlp_fetch(
+    url: str,
+    dest: str | None,
+    playlist_identifier: str | None,
+    profile_identifier: str | None,
+    kind: str | None,
+    override_args: str | None,
+) -> int:
+    from sluicery.cli_crud import (
+        CliValidationError,
+        find_playlist_profile,
+        resolve_record,
+    )
+    from sluicery.core.options import OptionOverrides, OptionValidationError, build_download_args
+    from sluicery.db.models import Playlist, Profile
     from sluicery.downloader.errors import Classification
     from sluicery.downloader.progress import ProgressEvent
     from sluicery.downloader.ytdlp import YtdlpRunner
+    from sluicery.layout import LayoutValidationError
 
     prepared = _ytdlp_timeout_and_bin()
     if prepared is None:
         return 1
-    settings, bin_path, timeout, stderr_tail_kb = prepared
+    settings, bin_path, _exec_timeout, stderr_tail_kb = prepared
 
     dest_dir = Path(dest) if dest else settings.STAGING_DIR
     assert dest_dir is not None
+    if not dest_dir.is_absolute() or ".." in dest_dir.parts:
+        print("ERROR: --dest は traversal を含まない絶対パスにしてください", file=sys.stderr)
+        return 1
     dest_dir.mkdir(parents=True, exist_ok=True)
+    work_id = f"fetch-{uuid4().hex[:12]}"
 
-    args = _build_fetch_args(url, dest_dir)
+    session = _open_session()
+    try:
+        playlist = (
+            resolve_record(session, Playlist, playlist_identifier, label="Playlist")
+            if playlist_identifier
+            else None
+        )
+        profile = (
+            resolve_record(session, Profile, profile_identifier, label="Profile")
+            if profile_identifier
+            else None
+        )
+        association = None
+        if playlist is not None and profile is not None:
+            association = find_playlist_profile(session, playlist.id, profile.id)
+            if association is None:
+                raise CliValidationError("Playlist に Profile が割り当てられていません")
+        selected_kind = kind
+        if profile is not None:
+            selected_kind = profile.kind.value
+        elif selected_kind is None and playlist is not None:
+            selected_kind = (
+                playlist.kind_hint.value if playlist.kind_hint.value != "mixed" else "video"
+            )
+        built = build_download_args(
+            None,
+            source_url=url,
+            session=session,
+            staging_dir=dest_dir,
+            work_id=work_id,
+            playlist=playlist,
+            profile=profile,
+            playlist_profile=association,
+            kind=selected_kind or "video",
+            overrides=OptionOverrides(ytdlp_args=override_args),
+            env_allow_exec=bool(settings.ALLOW_EXEC),
+        )
+    except (CliValidationError, OptionValidationError, LayoutValidationError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        session.close()
+
+    (dest_dir / work_id / ".tmp").mkdir(parents=True, exist_ok=True)
+    _report_built_command(built)
 
     def on_progress(event: ProgressEvent) -> None:
         if event.total_bytes and event.downloaded_bytes is not None:
@@ -535,7 +617,11 @@ def _cmd_ytdlp_fetch(url: str, dest: str | None) -> int:
     runner = YtdlpRunner(
         bin_path, stderr_tail_kb=stderr_tail_kb, log_dir=settings.DATA_DIR / "logs"
     )
-    result = runner.run(args, timeout=timeout, on_progress=on_progress)
+    result = runner.run(
+        list(built.args),
+        timeout=_built_timeout_policy(built.timeout),
+        on_progress=on_progress,
+    )
     print()
 
     for line in result.stdout_lines:
@@ -609,11 +695,16 @@ def main(argv: list[str] | None = None) -> int:
         "probe", help="個別試験用。メタデータとフォーマット一覧を表示する"
     )
     ytdlp_probe_parser.add_argument("url")
+    ytdlp_probe_parser.add_argument("--args", dest="override_args")
     ytdlp_fetch_parser = ytdlp_sub.add_parser(
         "fetch", help="個別試験用。Staging へ実際にダウンロードする"
     )
     ytdlp_fetch_parser.add_argument("url")
     ytdlp_fetch_parser.add_argument("--dest", default=None)
+    ytdlp_fetch_parser.add_argument("--playlist")
+    ytdlp_fetch_parser.add_argument("--profile")
+    ytdlp_fetch_parser.add_argument("--kind", choices=["video", "music"], default=None)
+    ytdlp_fetch_parser.add_argument("--args", dest="override_args")
 
     args = parser.parse_args(argv)
 
@@ -663,9 +754,16 @@ def main(argv: list[str] | None = None) -> int:
                 passthrough = passthrough[1:]
             return _cmd_ytdlp_exec(passthrough)
         if args.ytdlp_command == "probe":
-            return _cmd_ytdlp_probe(args.url)
+            return _cmd_ytdlp_probe(args.url, args.override_args)
         if args.ytdlp_command == "fetch":
-            return _cmd_ytdlp_fetch(args.url, args.dest)
+            return _cmd_ytdlp_fetch(
+                args.url,
+                args.dest,
+                args.playlist,
+                args.profile,
+                args.kind,
+                args.override_args,
+            )
 
     parser.error(f"未知のコマンド: {args.command}")
     return 2

@@ -55,6 +55,8 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
   のコマンドビルダーを `core/options.py` に実装した
 - Phase 9 までの暫定 Storage / Profile / Playlist CRUD、Profile 割当、
   `options preview` を CLI に追加した。削除は実ファイルを操作しない（D-021）
+- `ytdlp probe` / `fetch` の暫定固定引数を削除し、discover / download の
+  合成ビルダー経由へ置換した。`--print` の進捗抑制補償もビルダーに集約した
 
 ## 次にやること
 
