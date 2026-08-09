@@ -84,6 +84,19 @@ def test_config_value_on_command_line_is_rejected(tmp_path: Path) -> None:
         )
 
 
+def test_non_sensitive_config_value_may_match_command_argument(tmp_path: Path) -> None:
+    result = _runner(tmp_path).run(
+        ["noop", "1"],
+        timeout=_timeout(),
+        config_env={
+            "RCLONE_CONFIG_ST42_TYPE": "smb",
+            "RCLONE_CONFIG_ST42_PORT": "1",
+        },
+    )
+
+    assert result.returncode == 0
+
+
 def test_obscure_password_uses_stdin(tmp_path: Path) -> None:
     assert (
         _runner(tmp_path).obscure_password("synthetic-plain-password")
