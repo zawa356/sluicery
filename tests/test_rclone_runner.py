@@ -100,3 +100,25 @@ def test_rclone_runner_terminates_entire_process_group(tmp_path: Path) -> None:
     while time.monotonic() < deadline and _process_still_running(child_pid):
         time.sleep(0.05)
     assert not _process_still_running(child_pid)
+
+
+def test_caller_interruption_terminates_process_group(tmp_path: Path) -> None:
+    class InterruptingTimeout:
+        idle_sec = None
+        term_grace_sec = 1
+
+        @property
+        def absolute_sec(self) -> int:
+            raise KeyboardInterrupt
+
+    pid_file = tmp_path / "interrupted-child.pid"
+    with pytest.raises(KeyboardInterrupt):
+        _runner(tmp_path).run(
+            ["spawn_child_and_sleep", str(pid_file)],
+            timeout=InterruptingTimeout(),  # type: ignore[arg-type]
+        )
+    child_pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and _process_still_running(child_pid):
+        time.sleep(0.05)
+    assert not _process_still_running(child_pid)
