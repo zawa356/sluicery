@@ -49,6 +49,8 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
   Alembic マイグレーションと往復テストを追加した（D-017）
 - 予約引数・警告対象だけを認識する最小オプションパーサとガード、および
   `defaults.video.*` / `defaults.music.*` の種別既定を追加した
+- `flat` / `custom` レイアウト、subpath テンプレート、NFC・Windows 予約語・
+  traversal を扱うユーザー入力由来パスの検証を追加した
 
 ## 次にやること
 
