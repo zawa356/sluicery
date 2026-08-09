@@ -1,0 +1,19 @@
+# Dockerfile は個別 COPY のみを使うため、ここでの除外がイメージの中身に
+# 影響することはない。ビルドコンテキスト送信を減らすためだけの設定
+# （Phase 3.5 指示書 §0.5）。
+
+.git
+.gitignore
+backups/
+data/
+staging/
+media/
+logs/
+docs/
+*.md
+!README.md
+__pycache__/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
