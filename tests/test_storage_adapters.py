@@ -12,6 +12,8 @@ import pytest
 from sluicery.db.models import Storage, StorageKind
 from sluicery.runner.base import TimeoutPolicy
 from sluicery.storage import create_storage_adapter
+from sluicery.storage import local as local_module
+from sluicery.storage import remote_rclone as remote_module
 from sluicery.storage.base import (
     CapacityState,
     ConnectionStage,
@@ -49,9 +51,12 @@ class ScriptedRunner:
         self.results = list(results)
         self.calls: list[tuple[list[str], dict[str, str]]] = []
         self.obscured_inputs: list[str] = []
+        self.obscure_timeouts: list[float] = []
+        self.timeouts: list[TimeoutPolicy] = []
 
-    def obscure_password(self, password: str, *, timeout_sec: int = 30) -> str:
+    def obscure_password(self, password: str, *, timeout_sec: float = 30) -> str:
         self.obscured_inputs.append(password)
+        self.obscure_timeouts.append(timeout_sec)
         return "obscured-password"
 
     def run(
@@ -66,21 +71,24 @@ class ScriptedRunner:
         cwd: Path | None = None,
     ) -> RcloneRunResult:
         self.calls.append((list(args), dict(config_env or {})))
+        self.timeouts.append(timeout)
         return self.results.pop(0)
 
 
 class ConnectionRunner(ScriptedRunner):
-    def __init__(self, *, delete_fails: bool = False) -> None:
+    def __init__(self, *, delete_fails: bool = False, corrupt_read: bool = False) -> None:
         super().__init__([])
         self.payload = ""
         self.delete_fails = delete_fails
+        self.corrupt_read = corrupt_read
 
     def run(self, args: Sequence[str], **kwargs: Any) -> RcloneRunResult:
         self.calls.append((list(args), dict(kwargs.get("config_env") or {})))
+        self.timeouts.append(kwargs["timeout"])
         if args[0] == "copyto":
             self.payload = Path(args[1]).read_text()
         if args[0] == "cat":
-            return _result(stdout=[self.payload])
+            return _result(stdout=["corrupted" if self.corrupt_read else self.payload])
         if args[0] == "deletefile" and self.delete_fails:
             return _result(
                 returncode=1,
@@ -90,7 +98,7 @@ class ConnectionRunner(ScriptedRunner):
         return _result(stdout=["[]"] if args[0] == "lsjson" else [])
 
 
-def _remote_adapter(runner: Any) -> RcloneStorageAdapter:
+def _remote_adapter(runner: Any, *, test_timeout_sec: float = 30) -> RcloneStorageAdapter:
     return RcloneStorageAdapter(
         42,
         {
@@ -101,6 +109,7 @@ def _remote_adapter(runner: Any) -> RcloneStorageAdapter:
         },
         {"user": "test-user", "password": "test-password", "domain": "TEST"},
         runner=runner,
+        test_timeout_sec=test_timeout_sec,
     )
 
 
@@ -162,7 +171,7 @@ def test_local_publish_uses_temporary_name_then_final(tmp_path: Path) -> None:
     assert not list(adapter.root.rglob("*.sluicery-tmp-*"))
 
 
-def test_local_publish_falls_back_to_copy_on_cross_device_rename(
+def test_local_publish_falls_back_to_copy_when_hardlink_is_cross_device(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     media_root = tmp_path / "media"
@@ -170,14 +179,14 @@ def test_local_publish_falls_back_to_copy_on_cross_device_rename(
     source = tmp_path / "source.bin"
     source.write_bytes(b"cross-device-content")
     adapter = LocalStorageAdapter("library", media_root=media_root)
-    original_replace = os.replace
+    original_link = os.link
 
     def cross_device_for_source(src: Any, dest: Any) -> None:
         if Path(src) == source:
-            raise OSError(errno.EXDEV, "synthetic cross-device rename")
-        original_replace(src, dest)
+            raise OSError(errno.EXDEV, "synthetic cross-device hardlink")
+        original_link(src, dest)
 
-    monkeypatch.setattr(os, "replace", cross_device_for_source)
+    monkeypatch.setattr(os, "link", cross_device_for_source)
     result = adapter.publish(source, "folder/final.bin")
 
     assert result.success
@@ -193,20 +202,61 @@ def test_local_publish_interruption_never_creates_final(
     source = tmp_path / "source.bin"
     source.write_bytes(b"complete-content")
     adapter = LocalStorageAdapter("library", media_root=media_root)
-    original_replace = os.replace
-    call_count = 0
+    def interrupt_finalization(src: Path, dest: Path) -> None:
+        raise OSError("synthetic interruption")
 
-    def interrupt_second_replace(src: Any, dest: Any) -> None:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            raise OSError("synthetic interruption")
-        original_replace(src, dest)
-
-    monkeypatch.setattr(os, "replace", interrupt_second_replace)
+    monkeypatch.setattr(local_module, "_rename_noreplace", interrupt_finalization)
     result = adapter.publish(source, "folder/final.bin")
     assert not result.success
+    assert source.exists()
     assert not (adapter.root / "folder/final.bin").exists()
+    assert result.temporary_rel is not None
+    assert (adapter.root / result.temporary_rel).exists()
+
+
+def test_local_publish_base_exception_keeps_source_and_final_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_root = tmp_path / "media"
+    (media_root / "library").mkdir(parents=True)
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"complete-content")
+    adapter = LocalStorageAdapter("library", media_root=media_root)
+
+    def interrupt_finalization(src: Path, dest: Path) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(local_module, "_rename_noreplace", interrupt_finalization)
+    with pytest.raises(KeyboardInterrupt):
+        adapter.publish(source, "folder/final.bin")
+
+    assert source.exists()
+    assert not (adapter.root / "folder/final.bin").exists()
+    assert list(adapter.root.rglob("*.sluicery-tmp-*"))
+
+
+def test_local_publish_race_does_not_replace_competing_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_root = tmp_path / "media"
+    destination = media_root / "library/final.bin"
+    destination.parent.mkdir(parents=True)
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"new-content")
+    adapter = LocalStorageAdapter("library", media_root=media_root)
+    original_rename = local_module._rename_noreplace
+
+    def create_competitor_then_rename(src: Path, dest: Path) -> None:
+        dest.write_bytes(b"keep-competitor")
+        original_rename(src, dest)
+
+    monkeypatch.setattr(local_module, "_rename_noreplace", create_competitor_then_rename)
+    result = adapter.publish(source, "final.bin")
+
+    assert not result.success
+    assert result.reason_code == "destination_exists"
+    assert destination.read_bytes() == b"keep-competitor"
+    assert source.exists()
     assert result.temporary_rel is not None
     assert (adapter.root / result.temporary_rel).exists()
 
@@ -260,6 +310,7 @@ def test_remote_publish_orders_temp_verify_and_moveto(tmp_path: Path) -> None:
             _result(stdout=[json.dumps({"Size": 3})]),
             not_found,
             _result(),
+            not_found,
         ]
     )
     source = tmp_path / "source.bin"
@@ -268,10 +319,19 @@ def test_remote_publish_orders_temp_verify_and_moveto(tmp_path: Path) -> None:
     assert result.success
     assert not source.exists()
     commands = [call[0][0] for call in runner.calls]
-    assert commands == ["lsjson", "mkdir", "copyto", "lsjson", "lsjson", "moveto"]
+    assert commands == [
+        "lsjson",
+        "mkdir",
+        "copyto",
+        "lsjson",
+        "lsjson",
+        "moveto",
+        "lsjson",
+    ]
     copy_destination = runner.calls[2][0][2]
     assert ".sluicery-tmp-" in copy_destination
-    assert runner.calls[-1][0][-1].endswith("folder/final.bin")
+    assert runner.calls[5][0][2].endswith("folder/final.bin")
+    assert "--ignore-existing" in runner.calls[5][0]
     assert all("test-password" not in argument for call, _env in runner.calls for argument in call)
     assert runner.obscured_inputs == ["test-password"]
     assert "RCLONE_CONFIG_ST42_PASS" in runner.calls[0][1]
@@ -295,6 +355,31 @@ def test_remote_publish_failure_leaves_only_reported_temp(tmp_path: Path) -> Non
     assert source.exists()
 
 
+def test_remote_publish_race_does_not_replace_competing_destination(tmp_path: Path) -> None:
+    not_found = _result(returncode=1, stderr_tail="object not found")
+    runner = ScriptedRunner(
+        [
+            not_found,
+            _result(),
+            _result(),
+            _result(stdout=[json.dumps({"Size": 3})]),
+            not_found,
+            _result(),
+            _result(),
+        ]
+    )
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"abc")
+
+    result = _remote_adapter(runner).publish(source, "folder/final.bin")
+
+    assert not result.success
+    assert result.reason_code == "destination_exists"
+    assert result.temporary_rel is not None
+    assert source.exists()
+    assert "--ignore-existing" in runner.calls[5][0]
+
+
 def test_remote_connection_has_four_successful_stages_and_cleans_up() -> None:
     runner = ConnectionRunner()
     result = _remote_adapter(runner).test_connection()
@@ -309,6 +394,28 @@ def test_remote_connection_reports_delete_failure() -> None:
     assert not result.ok
     assert result.cleanup_warning is not None
     assert result.stages[-1].classification == StorageClassification.PERMISSION_DENIED
+
+
+def test_remote_connection_reports_content_mismatch_as_failure() -> None:
+    result = _remote_adapter(ConnectionRunner(corrupt_read=True)).test_connection()
+
+    assert not result.ok
+    assert result.stages[-1].classification == StorageClassification.FAILED
+    assert result.stages[-1].reason_code == "content_mismatch"
+
+
+def test_remote_connection_uses_one_deadline_for_all_subprocesses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = iter([100.0, 101.0, 102.0, 110.0, 120.0, 129.0])
+    monkeypatch.setattr(remote_module.time, "monotonic", values.__next__)
+    runner = ConnectionRunner()
+
+    result = _remote_adapter(runner, test_timeout_sec=30).test_connection()
+
+    assert result.ok
+    assert runner.obscure_timeouts == [29.0]
+    assert [timeout.absolute_sec for timeout in runner.timeouts] == [28.0, 20.0, 10.0, 1.0]
 
 
 def test_remote_exists_list_move_and_free_space() -> None:

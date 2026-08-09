@@ -76,7 +76,7 @@ class RcloneRunner(BaseRunner):
             log_dir=log_dir,
         )
 
-    def obscure_password(self, password: str, *, timeout_sec: int = 30) -> str:
+    def obscure_password(self, password: str, *, timeout_sec: float = 30) -> str:
         """平文は stdin だけに流し、rclone の obscure 値を返す。"""
         if "\n" in password or "\r" in password:
             raise RcloneConfigurationError("パスワードに改行は使用できません")

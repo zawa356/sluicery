@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import hashlib
 import os
@@ -24,6 +25,15 @@ from sluicery.storage.base import (
 from sluicery.storage.errors import StorageClassification
 
 MEDIA_MOUNT_ROOT = Path("/mnt/media")
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1
+_HARDLINK_FALLBACK_ERRNOS = {
+    errno.EACCES,
+    errno.EPERM,
+    errno.EXDEV,
+    errno.ENOSYS,
+    errno.EOPNOTSUPP,
+}
 
 
 def _classification_for_os_error(exc: OSError) -> StorageClassification:
@@ -40,6 +50,49 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _stage_without_removing_source(src: Path, temp_path: Path) -> None:
+    """元を保持したまま一時名を作り、hardlink 非対応時だけ copy する。"""
+    try:
+        os.link(src, temp_path)
+        return
+    except OSError as exc:
+        if exc.errno not in _HARDLINK_FALLBACK_ERRNOS:
+            raise
+    with src.open("rb") as source, temp_path.open("xb") as copied:
+        shutil.copyfileobj(source, copied)
+        copied.flush()
+        os.fsync(copied.fileno())
+
+
+def _rename_noreplace(src: Path, dest: Path) -> None:
+    """Linux renameat2(RENAME_NOREPLACE) で競合時の上書きを原子的に拒否する。"""
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise OSError(errno.ENOSYS, "renameat2 is unavailable", str(dest))
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    if (
+        renameat2(
+            _AT_FDCWD,
+            os.fsencode(src),
+            _AT_FDCWD,
+            os.fsencode(dest),
+            _RENAME_NOREPLACE,
+        )
+        == 0
+    ):
+        return
+    error_number = ctypes.get_errno()
+    raise OSError(error_number, os.strerror(error_number), str(dest))
 
 
 class LocalStorageAdapter:
@@ -210,20 +263,8 @@ class LocalStorageAdapter:
         temp_rel = temp_path.relative_to(self._root).as_posix()
         source_size = src.stat().st_size
         source_hash = _sha256(src)
-        source_was_moved = False
         try:
-            try:
-                os.replace(src, temp_path)
-                source_was_moved = True
-            except OSError as exc:
-                # Docker/WSL の異なる mount が同じ st_dev を返す場合があるため、
-                # 実際の rename(2) の EXDEV を基準に copy へフォールバックする。
-                if exc.errno != errno.EXDEV:
-                    raise
-                with src.open("rb") as source, temp_path.open("xb") as copied:
-                    shutil.copyfileobj(source, copied)
-                    copied.flush()
-                    os.fsync(copied.fileno())
+            _stage_without_removing_source(src, temp_path)
             if temp_path.stat().st_size != source_size or _sha256(temp_path) != source_hash:
                 return PublishResult(
                     False,
@@ -245,20 +286,34 @@ class LocalStorageAdapter:
                     checksum_sha256=source_hash,
                     temporary_rel=temp_rel,
                 )
-            os.replace(temp_path, final_path)
-            if not source_was_moved:
-                try:
-                    src.unlink()
-                except OSError:
-                    return PublishResult(
-                        True,
-                        normalized,
-                        source_size,
-                        StorageClassification.OK,
-                        "ok_source_retained",
-                        "最終名への配置は成功しましたが、publish 元を削除できませんでした",
-                        checksum_sha256=source_hash,
-                    )
+            try:
+                if overwrite:
+                    os.replace(temp_path, final_path)
+                else:
+                    _rename_noreplace(temp_path, final_path)
+            except FileExistsError:
+                return PublishResult(
+                    False,
+                    normalized,
+                    source_size,
+                    StorageClassification.FAILED,
+                    "destination_exists",
+                    "最終化時に同名ファイルが作成されたため上書きしません",
+                    checksum_sha256=source_hash,
+                    temporary_rel=temp_rel,
+                )
+            try:
+                src.unlink()
+            except OSError:
+                return PublishResult(
+                    True,
+                    normalized,
+                    source_size,
+                    StorageClassification.OK,
+                    "ok_source_retained",
+                    "最終名への配置は成功しましたが、publish 元を削除できませんでした",
+                    checksum_sha256=source_hash,
+                )
             return PublishResult(
                 True,
                 normalized,
