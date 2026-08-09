@@ -75,7 +75,7 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 | 5 | Issues / Wiki / Projects の要否 | 未確認 |
 | 6 | Dependabot alerts の要否 | 未確認 |
 | 7 | README・`docs/deployment.md` の clone URL が `<repo>` のまま | public 化時に差し替え |
-| 8 | 1秒区間を `--download-sections` で切り出す追加試験は ffmpeg `-11` で失敗した。通常 fetch は成功 | 区間取得を正式対応する場合に調査 |
+| 8 | 1秒区間を `--download-sections` で切り出す追加試験は ffmpeg `-11`（SIGSEGV）で失敗した。通常 fetch は成功 | ffmpeg 静的ビルドの健全性に関わる可能性がある。Phase 7（verify で ffprobe / ffmpeg を使用）着手時に再評価する |
 | 9 | Phase 4 の16コミットとタグの GitHub push | 公開前監査済み・ユーザー承認待ち |
 
 generic extractor で `uploader` / `duration` / `upload_date` が欠損する件は Phase 4 で再確認済み。
