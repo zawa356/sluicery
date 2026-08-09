@@ -34,6 +34,43 @@ docker run --rm python:3.12-slim sh -c \
 
 README・`docs/deployment.md` は本コマンドに修正済み。
 
+## `app` コンテナが `FATAL: MEDIA_ROOT（/mnt/media）に PUID=1000/PGID=1000 で書き込めません` で再起動を繰り返す
+
+**症状**：`docker compose up -d --build` 後、`app` コンテナが `Restarting` を繰り返す。ログに
+`FATAL: MEDIA_ROOT（/mnt/media）に PUID=1000/PGID=1000 で書き込めません。ホスト側の所有者・権限を
+確認してください。` と出る。
+
+**原因**：`MEDIA_ROOT`（既定 `/mnt/media`）を事前作成せずに起動すると、Docker がコンテナ起動時に
+root 所有でディレクトリを自動作成する。`entrypoint.sh` は PUID/PGID（既定 1000/1000）での書き込み
+可否を起動時に検査しており、root 所有のままだと書き込めず起動を拒否する（意図した fail-fast 動作）。
+VM 実機検証（§5 #2）で、`MEDIA_ROOT` の事前作成を Quick Start の手順に含めていなかったために発見した。
+
+**対処**：`MEDIA_ROOT` を事前作成し、所有者を PUID/PGID（またはホスト側の自分の uid/gid）に合わせる。
+
+```bash
+mkdir -p /mnt/media
+sudo chown "$(id -u)":"$(id -g)" /mnt/media
+docker compose up -d
+```
+
+README・`docs/deployment.md` の Quick Start は本手順を含む形に修正済み。
+
+## `docker compose exec app` で生成したファイルが `root` 所有になる
+
+**症状**：`docker compose exec app python3 -m sluicery.cli ytdlp fetch <URL>` 等で Staging に生成された
+ファイルの所有者が `root:root` になっている（`ls -la /data/staging/` で確認できる）。
+
+**原因**：`docker compose exec` は既定でコンテナの root ユーザーとして実行される。コンテナの主プロセス
+（`entrypoint.sh` 経由で起動する `web`/`worker`）は `setpriv` で PUID/PGID に権限降格しているが、これは
+主プロセスにのみ適用され、`exec` で新規に起動するプロセスには影響しない。VM 実機検証（§5 #9）の
+`ytdlp fetch` 実行時に発見した。
+
+**対処**：ファイルを生成する CLI コマンドは `--user` でホスト側のユーザーと揃えて実行する。
+
+```bash
+docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp fetch <URL>
+```
+
 ## `docker compose down -v` で volume が消える
 
 **症状**：`docker compose down -v` を実行すると、DB・yt-dlp venv・Staging 領域を含む named volume
