@@ -15,6 +15,10 @@ cookies.txt
 /staging/
 /media/
 /logs/
+
+# ---- バックアップ（Storage の認証情報を暗号化された形で含む。docs/legal.md 参照） ----
+/backups/
+*.tar.gz
 *.db
 *.db-shm
 *.db-wal
