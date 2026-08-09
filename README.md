@@ -137,12 +137,19 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 ### 暫定のレコード管理 CLI
 
 Web UI（要件定義 §20 の Phase 9 以降）が実装されるまで、以下の CLI で合成確認に必要な
-Storage / Profile / Playlist レコードを管理できます。Storage は Phase 5 まで `kind=local` の
-レコード作成だけに対応し、疎通・空き容量・転送は行いません。
+Storage / Profile / Playlist レコードを管理できます。Storage は `local` と `remote`（rclone）に
+対応しています。remote で実装・実機検証する protocol は現時点では SMB だけです。
 
 ```bash
 docker compose exec app python3 -m sluicery.cli storage add \
   --kind local --name media --path /mnt/media
+# password は引数に書かず、表示される非エコーのプロンプトへ入力する
+docker compose exec app python3 -m sluicery.cli storage add \
+  --kind remote --name smb-media --protocol smb \
+  --host <SMB_HOST> --share <SHARE> --path library --user <USER>
+docker compose exec app python3 -m sluicery.cli storage test smb-media
+docker compose exec app python3 -m sluicery.cli storage space smb-media
+docker compose exec app python3 -m sluicery.cli storage ls smb-media
 docker compose exec app python3 -m sluicery.cli profile add \
   --name video --kind video
 docker compose exec app python3 -m sluicery.cli playlist add \
@@ -157,6 +164,11 @@ docker compose exec app python3 -m sluicery.cli options preview \
 `attach-profile` / `detach-profile` もあります。`playlist remove` は
 `--keep-items`（無効化・一時停止）または `--delete-items`（関連 DB レコードも削除）を
 必ず指定しますが、どちらも保存済みファイルを削除・移動しません。
+
+`storage test` は疎通・認証・一覧・書き込みを個別表示し、結果を DB に保存します。
+`storage space` は backend が空き容量取得に対応しない場合に「取得不可」と表示します。
+`storage push <storage> <local-path> <dest-rel>` は Phase 7 の pipeline 実装までの検証用で、
+完成済みの単一ファイルを一時名で転送・検証後に最終化します。既定では同名を上書きしません。
 
 ## トラブルシューティング
 

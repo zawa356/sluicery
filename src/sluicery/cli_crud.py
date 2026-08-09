@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import shlex
 import sys
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -47,6 +49,16 @@ from sluicery.db.repositories.profile import ProfileRepository
 from sluicery.db.repositories.storage import StorageRepository
 from sluicery.downloader.ytdlp import mask_command_line
 from sluicery.layout import LayoutContext, LayoutValidationError, resolve_layout
+from sluicery.storage import create_storage_adapter
+from sluicery.storage.base import (
+    ConnectionStage,
+    ConnectionTestResult,
+    StorageOperationError,
+    StoragePathError,
+    validate_relative_path,
+)
+from sluicery.storage.rclone import RcloneConfigurationError, RcloneObscureError
+from sluicery.storage.remote_rclone import UnsupportedRemoteProtocolError
 
 OpenSession = Callable[[], Session]
 LoadSettings = Callable[[], Any]
@@ -258,12 +270,25 @@ def _add_enable_pair(parser: argparse.ArgumentParser) -> None:
 
 
 def configure_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    storage = sub.add_parser("storage", help="Storage レコードを管理する（Phase 5 まで疎通なし）")
+    storage = sub.add_parser("storage", help="Storage レコードと接続を管理する")
     storage_sub = storage.add_subparsers(dest="storage_command", required=True)
     storage_add = storage_sub.add_parser("add")
     storage_add.add_argument("--name", required=True)
-    storage_add.add_argument("--kind", choices=[item.value for item in StorageKind], required=True)
-    storage_add.add_argument("--path", required=True)
+    storage_add.add_argument(
+        "--kind", choices=[StorageKind.LOCAL.value, StorageKind.REMOTE.value], required=True
+    )
+    storage_add.add_argument("--path")
+    storage_add.add_argument("--protocol", choices=["smb"])
+    storage_add.add_argument("--host")
+    storage_add.add_argument("--share")
+    storage_add.add_argument("--port", type=int, default=445)
+    storage_add.add_argument("--user")
+    storage_add.add_argument("--domain")
+    storage_add.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="password を標準入力の先頭行から読み取る（引数では受け取らない）",
+    )
     storage_sub.add_parser("list")
     storage_show = storage_sub.add_parser("show")
     storage_show.add_argument("storage")
@@ -271,9 +296,31 @@ def configure_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
     storage_edit.add_argument("storage")
     storage_edit.add_argument("--name")
     storage_edit.add_argument("--path")
+    storage_edit.add_argument("--host")
+    storage_edit.add_argument("--share")
+    storage_edit.add_argument("--port", type=int)
+    storage_edit.add_argument("--user")
+    domain_group = storage_edit.add_mutually_exclusive_group()
+    domain_group.add_argument("--domain")
+    domain_group.add_argument("--clear-domain", action="store_true")
+    password_group = storage_edit.add_mutually_exclusive_group()
+    password_group.add_argument("--prompt-password", action="store_true")
+    password_group.add_argument("--password-stdin", action="store_true")
     _add_enable_pair(storage_edit)
     storage_remove = storage_sub.add_parser("remove")
     storage_remove.add_argument("storage")
+    storage_test = storage_sub.add_parser("test", help="4段階の接続テストを実行する")
+    storage_test.add_argument("storage")
+    storage_space = storage_sub.add_parser("space", help="空き容量を表示する")
+    storage_space.add_argument("storage")
+    storage_ls = storage_sub.add_parser("ls", help="Storage root からの相対パスを一覧する")
+    storage_ls.add_argument("storage")
+    storage_ls.add_argument("rel_path", nargs="?", default="")
+    storage_push = storage_sub.add_parser("push", help="Phase 7 までの暫定単一ファイル publish")
+    storage_push.add_argument("storage")
+    storage_push.add_argument("local_path", type=Path)
+    storage_push.add_argument("dest_rel")
+    storage_push.add_argument("--overwrite", action="store_true")
 
     profile = sub.add_parser("profile", help="Profile レコードを管理する（暫定 CLI）")
     profile_sub = profile.add_subparsers(dest="profile_command", required=True)
@@ -349,11 +396,103 @@ def configure_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
 
 def _validate_local_path(value: str) -> str:
     path = Path(value)
-    if not path.is_absolute() or ".." in path.parts:
+    try:
+        if path.is_absolute():
+            boundary = Path("/mnt/media")
+            resolved = path.resolve(strict=False)
+            if not resolved.is_relative_to(boundary):
+                raise CliValidationError(
+                    "local Storage の絶対 path は /mnt/media 配下にしてください"
+                )
+            return str(resolved)
+        return validate_relative_path(value, allow_empty=True)
+    except StoragePathError as exc:
+        raise CliValidationError(str(exc)) from exc
+
+
+def _validate_remote_values(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
+    missing = [
+        option
+        for option in ("protocol", "host", "share", "user")
+        if not getattr(args, option, None)
+    ]
+    if missing:
         raise CliValidationError(
-            "local Storage の path は traversal を含まない絶対パスにしてください"
+            "remote Storage に必要な項目が不足しています: " + ", ".join(missing)
         )
-    return str(path)
+    if args.protocol != "smb":
+        raise CliValidationError("Phase 5 で実装・検証済みの protocol は smb だけです")
+    if "/" in args.share or "\\" in args.share or args.share in {".", ".."}:
+        raise CliValidationError("share はパス区切りを含まない共有名で指定してください")
+    if not 1 <= args.port <= 65535:
+        raise CliValidationError("port は1〜65535で指定してください")
+    try:
+        remote_path = validate_relative_path(args.path or "", allow_empty=True)
+    except StoragePathError as exc:
+        raise CliValidationError(str(exc)) from exc
+    password = _read_password(password_stdin=args.password_stdin, prompt=True)
+    return (
+        {
+            "protocol": "smb",
+            "host": args.host,
+            "share": args.share,
+            "path": remote_path,
+            "port": args.port,
+        },
+        {"user": args.user, "password": password, "domain": args.domain or ""},
+    )
+
+
+def _read_password(*, password_stdin: bool, prompt: bool) -> str:
+    if password_stdin:
+        password = sys.stdin.readline().rstrip("\r\n")
+    elif prompt:
+        password = getpass.getpass("SMB password: ")
+    else:
+        raise CliValidationError("password の入力方法が指定されていません")
+    if not password:
+        raise CliValidationError("password を空にできません")
+    return password
+
+
+_STAGE_LABELS = {
+    ConnectionStage.CONNECTIVITY: "疎通",
+    ConnectionStage.AUTHENTICATION: "認証",
+    ConnectionStage.LISTING: "一覧",
+    ConnectionStage.WRITE: "書き込み",
+}
+
+
+def _connection_result_json(result: ConnectionTestResult) -> dict[str, Any]:
+    return {
+        "ok": result.ok,
+        "stages": [
+            {
+                "stage": stage.stage.value,
+                "status": stage.status.value,
+                "message": stage.message,
+                "classification": stage.classification.value,
+                "reason_code": stage.reason_code,
+            }
+            for stage in result.stages
+        ],
+        "cleanup_warning": result.cleanup_warning,
+    }
+
+
+def _adapter_for(storage: Storage, session: Session):
+    from sluicery.core.settings import OperationalSettings
+
+    try:
+        return create_storage_adapter(storage, OperationalSettings(session))
+    except (
+        ValueError,
+        StorageOperationError,
+        RcloneConfigurationError,
+        RcloneObscureError,
+        UnsupportedRemoteProtocolError,
+    ) as exc:
+        raise CliValidationError(str(exc)) from exc
 
 
 def _validate_url(value: str) -> str:
@@ -481,14 +620,25 @@ def _storage_command(args: argparse.Namespace, session: Session) -> int:
     repo = StorageRepository(session)
     command = args.storage_command
     if command == "add":
-        if args.kind != StorageKind.LOCAL.value:
-            raise CliValidationError("kind=remote/mount は Phase 5 まで登録できません")
-        storage = repo.create(
-            name=args.name,
-            kind=StorageKind.LOCAL,
-            enabled=True,
-            config_json={"path": _validate_local_path(args.path)},
-        )
+        if args.kind == StorageKind.LOCAL.value:
+            if args.path is None:
+                raise CliValidationError("local Storage には --path が必要です")
+            storage = repo.create(
+                name=args.name,
+                kind=StorageKind.LOCAL,
+                enabled=True,
+                config_json={"path": _validate_local_path(args.path)},
+            )
+        else:
+            config, credentials = _validate_remote_values(args)
+            # credentials_encrypted は設定エクスポート（Phase 17）の対象外。
+            storage = repo.create(
+                name=args.name,
+                kind=StorageKind.REMOTE,
+                enabled=True,
+                config_json=config,
+                credentials_encrypted=credentials,
+            )
         print(f"Storage を作成しました: id={storage.id}")
         return 0
     if command == "list":
@@ -519,6 +669,8 @@ def _storage_command(args: argparse.Namespace, session: Session) -> int:
                     "credentials",
                     "********（設定済み）" if storage.credentials_encrypted else "（未設定）",
                 ),
+                ("last_check_at", storage.last_check_at or "（未実行）"),
+                ("last_check_result", _masked_json(storage.last_check_result_json or {})),
             )
         )
         return 0
@@ -528,14 +680,123 @@ def _storage_command(args: argparse.Namespace, session: Session) -> int:
             updates["name"] = args.name
         if args.path is not None:
             config = dict(storage.config_json or {})
-            config["path"] = _validate_local_path(args.path)
+            try:
+                config["path"] = (
+                    _validate_local_path(args.path)
+                    if storage.kind == StorageKind.LOCAL
+                    else validate_relative_path(args.path, allow_empty=True)
+                )
+            except StoragePathError as exc:
+                raise CliValidationError(str(exc)) from exc
             updates["config_json"] = config
+        remote_fields = ("host", "share", "port")
+        if any(getattr(args, field) is not None for field in remote_fields):
+            if storage.kind != StorageKind.REMOTE:
+                raise CliValidationError("host/share/port は remote Storage 専用です")
+            config = dict(updates.get("config_json", storage.config_json or {}))
+            for field in remote_fields:
+                value = getattr(args, field)
+                if value is not None:
+                    config[field] = value
+            if not 1 <= int(config.get("port", 445)) <= 65535:
+                raise CliValidationError("port は1〜65535で指定してください")
+            share = config.get("share", "")
+            if "/" in share or "\\" in share or share in {".", ".."}:
+                raise CliValidationError("share はパス区切りを含まない共有名で指定してください")
+            updates["config_json"] = config
+        credential_change = (
+            args.user is not None
+            or args.domain is not None
+            or args.clear_domain
+            or args.prompt_password
+            or args.password_stdin
+        )
+        if credential_change:
+            if storage.kind != StorageKind.REMOTE:
+                raise CliValidationError("認証情報は remote Storage 専用です")
+            credentials = dict(storage.credentials_encrypted or {})
+            if args.user is not None:
+                credentials["user"] = args.user
+            if args.domain is not None:
+                credentials["domain"] = args.domain
+            elif args.clear_domain:
+                credentials["domain"] = ""
+            if args.prompt_password or args.password_stdin:
+                credentials["password"] = _read_password(
+                    password_stdin=args.password_stdin, prompt=args.prompt_password
+                )
+            updates["credentials_encrypted"] = credentials
         if args.enabled is not _MISSING:
             updates["enabled"] = args.enabled
         if not updates:
             raise CliValidationError("変更項目を1つ以上指定してください")
         repo.update(storage, **updates)
         print(f"Storage を更新しました: id={storage.id}")
+        return 0
+    if command == "test":
+        adapter = _adapter_for(storage, session)
+        try:
+            result = adapter.test_connection()
+        except (
+            ValueError,
+            StorageOperationError,
+            RcloneConfigurationError,
+            RcloneObscureError,
+        ) as exc:
+            raise CliValidationError(str(exc)) from exc
+        payload = _connection_result_json(result)
+        repo.update(
+            storage,
+            last_check_at=datetime.now(UTC),
+            last_check_result_json=payload,
+        )
+        for stage in result.stages:
+            print(
+                f"{_STAGE_LABELS[stage.stage]}: {stage.status.value} - "
+                f"{stage.message} ({stage.classification.value})"
+            )
+        if result.cleanup_warning:
+            print(f"WARNING: {result.cleanup_warning}")
+        return 0 if result.ok else 1
+    if command == "space":
+        adapter = _adapter_for(storage, session)
+        try:
+            free = adapter.free_space()
+        except StorageOperationError as exc:
+            raise CliValidationError(str(exc)) from exc
+        print("取得不可" if free is None else f"{free} bytes")
+        return 0
+    if command == "ls":
+        adapter = _adapter_for(storage, session)
+        try:
+            rows = list(adapter.list_recursive(args.rel_path))
+        except (StorageOperationError, StoragePathError) as exc:
+            raise CliValidationError(str(exc)) from exc
+        _print_table(
+            ("相対パス", "サイズ", "更新日時"),
+            [
+                (
+                    item.relative_path,
+                    item.size if item.size is not None else "?",
+                    item.modified_at or "",
+                )
+                for item in rows
+            ],
+        )
+        return 0
+    if command == "push":
+        # Phase 7 の pipeline 実装までの検証専用経路。Artifact は作成しない。
+        adapter = _adapter_for(storage, session)
+        try:
+            result = adapter.publish(args.local_path, args.dest_rel, overwrite=args.overwrite)
+        except (StorageOperationError, StoragePathError) as exc:
+            raise CliValidationError(str(exc)) from exc
+        if not result.success:
+            temporary = f"（一時ファイル: {result.temporary_rel}）" if result.temporary_rel else ""
+            raise CliValidationError(f"{result.message}{temporary}")
+        print(f"publish 完了: {result.dest_rel} ({result.size} bytes)")
+        if result.reason_code == "ok_source_retained":
+            print(f"WARNING: {result.message}")
         return 0
     linked_profiles = session.scalar(
         select(func.count())
