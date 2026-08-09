@@ -90,3 +90,17 @@ Phase 4 の主要機能と対応テスト・設計判断は概ね揃っていま
 - 用語のドリフト: Playlist / Profile / Item / Target / Artifact、Discover / Download、Staging などの主要用語に新たなドリフトは見つからない。
 - コミット粒度: 13コミットに分割され、Conventional Commits と日本語要約を満たす。大きいコミットはあるが、概ね意味単位で分かれており重大な粒度違反はない。
 - 未記録の設計判断: 三状態化、命名境界、欠損値、expert mode、Playlist 削除、試験素材、yt-dlp extras は D-017〜D-023 に記録済み。上記のゲート迂回やマスク漏れは設計判断ではなく修正対象と判断する。
+
+## 対応
+
+全指摘へ対応した。
+
+- [重大] `--exec` の二重ゲート迂回: discover / download の取得元を完全な HTTP(S) URL に限定し、必ずオプション終端 `--` の後ろへ配置した。Profile を持たない raw `ytdlp exec` は予約引数を拒否する。`-` 始まり URL と raw exec の回帰テストを追加した
+- [重大] 共通マスク層: yt-dlp の認証・Cookie・Proxy・header・証明書・netrc 系の長短形式、短縮形と値の連結、URL の userinfo と認証 query / fragment を同じ層で伏せる。preview、Profile / Playlist show、fetch、raw exec の経路をテストした
+- [中] AISTATE: Phase 4 完了、Phase 5 の着手点、レビュー、検証結果、監査・push 承認待ちを反映して全文更新した
+- [中] nullable 値: Profile の値フィールドへ `--inherit-*`、自由入力等へ `--clear-*` を追加し、Playlist の `ytdlp_args` も消去可能にした。Profile show は全編集対象を表示する
+- [中] 非 current の旧 venv: バージョンディレクトリ単位で導入契約・実行可能性・実バージョンを検証する。broken 版の `use` を拒否し、`install` は current / non-current を問わず再構築する
+- [中] 管理者初期作成の説明: README と deployment を Phase 9 で実装予定の表現へ訂正した
+- [軽微] preview の traceback: 合成・レイアウトのバリデーション例外を CLI エラーへ変換し、終了コード1で処理する回帰テストを追加した
+
+検証結果は `make test` 161件、Ruff、mypy が全て成功。新コードの compose で DB current=head、yt-dlp 2026.07.04 `ready`、公式 Blender Open Movies の2件 probe、通常 video fetch の成功を再確認した。レビュー役の禁止事項に従い、対応と再検証は実装役が行った。
