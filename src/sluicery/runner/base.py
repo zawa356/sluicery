@@ -342,6 +342,11 @@ class BaseRunner:
                     terminated_by = "idle"
                     _terminate_process_group(proc, timeout.term_grace_sec)
                     break
+        except BaseException:
+            # CLI 自体への SIGINT 等でも、別 session の子だけを残して終了しない。
+            if proc.poll() is None:
+                _terminate_process_group(proc, timeout.term_grace_sec)
+            raise
         finally:
             stdout_thread.join(timeout=5)
             stderr_thread.join(timeout=5)
