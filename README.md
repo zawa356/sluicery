@@ -133,6 +133,30 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 | `make restore FILE=...` | バックアップから復元 | **未実装（Phase 20）** | — |
 | `make purge` | 削除対象を表示して確認した上でコンテナ・イメージ・volume を削除（bind mount 先の実体は削除しない） | 実装済み | `docker compose down --rmi local --volumes --remove-orphans` |
 
+### 暫定のレコード管理 CLI
+
+Web UI（要件定義 §20 の Phase 9 以降）が実装されるまで、以下の CLI で合成確認に必要な
+Storage / Profile / Playlist レコードを管理できます。Storage は Phase 5 まで `kind=local` の
+レコード作成だけに対応し、疎通・空き容量・転送は行いません。
+
+```bash
+docker compose exec app python3 -m sluicery.cli storage add \
+  --kind local --name media --path /mnt/media
+docker compose exec app python3 -m sluicery.cli profile add \
+  --name video --kind video
+docker compose exec app python3 -m sluicery.cli playlist add \
+  --name sample --folder-name sample --url 'https://example.com/playlist'
+docker compose exec app python3 -m sluicery.cli playlist attach-profile \
+  sample video --storage media
+docker compose exec app python3 -m sluicery.cli options preview \
+  --playlist sample --profile video --kind download
+```
+
+各リソースは `add|list|show|edit|remove` に対応します。Playlist には
+`attach-profile` / `detach-profile` もあります。`playlist remove` は
+`--keep-items`（無効化・一時停止）または `--delete-items`（関連 DB レコードも削除）を
+必ず指定しますが、どちらも保存済みファイルを削除・移動しません。
+
 ## トラブルシューティング
 
 起動しない・動作がおかしい場合は [docs/troubleshooting.md](docs/troubleshooting.md) を参照してください。
@@ -150,6 +174,7 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 | [docs/footprint.md](docs/footprint.md) | ホスト上に作られるものの一覧 |
 | [docs/storage.md](docs/storage.md) | ストレージ方式の解説 |
 | [docs/legal.md](docs/legal.md) | 利用上の注意 |
+| [docs/reviews/](docs/reviews/) | フェーズごとの独立レビュー記録 |
 
 ## 現在の状態
 
