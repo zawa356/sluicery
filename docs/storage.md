@@ -42,3 +42,8 @@ security_opt:
 - ホストのディストリビューションや AppArmor 設定によっては追加の調整が必要になる場合がある
 
 有効化しない限り、この kind は UI の選択肢に一切表示されない。
+
+**LXC 環境について（未検証）**：Proxmox LXC 等のコンテナ内でさらに Docker を動かす構成では、
+`mount` kind が要求する特権が LXC 側の制約（`nesting=1,keyctl=1` の要否、非特権コンテナでの UID
+オフセット等）と衝突し、そもそも利用不可になる見込みが高い。現時点でこの見込みを裏付ける実機検証は
+行っていない（[docs/deployment.md](deployment.md) §8 参照）。
