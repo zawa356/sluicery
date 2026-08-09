@@ -16,6 +16,24 @@
 docker compose exec app python3 -m sluicery.cli ytdlp install --force
 ```
 
+## Quick Start の `SECRET_KEY` 生成コマンドが `ModuleNotFoundError: No module named 'cryptography'` で失敗する
+
+**症状**：README Quick Start の `docker run --rm python:3.12-slim python3 -c "from cryptography.fernet import Fernet; ..."` が
+`ModuleNotFoundError: No module named 'cryptography'` で失敗する。
+
+**原因**：`python:3.12-slim` イメージには `cryptography` パッケージが含まれていない。VM 実機検証（Phase 3.5
+§5 #2）で、追加手順なしの起動を確認する過程で発見した。
+
+**対処**：コンテナ内で `pip install` してから実行する。
+
+```bash
+docker run --rm python:3.12-slim sh -c \
+  "pip install -q --root-user-action=ignore cryptography && python3 -c \
+  'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+```
+
+README・`docs/deployment.md` は本コマンドに修正済み。
+
 ## `docker compose down -v` で volume が消える
 
 **症状**：`docker compose down -v` を実行すると、DB・yt-dlp venv・Staging 領域を含む named volume
