@@ -15,7 +15,7 @@ compose 変更時は必ず本ドキュメントを更新すること（CLAUDE.md
 
 - `sluicery:local`：`Dockerfile` の `runtime` ステージからローカルビルド。ベースは `python:3.12-slim`（digest 固定）。
 - ビルド時に外部から取得するもの：rclone（バージョン固定 + checksum 検証）、ffmpeg/ffprobe 静的ビルド（checksum 検証）
-- `sluicery:local-test`：`make test` 実行時にのみ `Dockerfile` の `test` ステージ（`runtime` + dev 依存 + `tests/`）からビルドされる。`docker compose` の管理下ではないため `make purge` では削除されない。手動で `docker rmi sluicery:local-test` すること
+- `sluicery:local-test`：`make test` / `make lint` 実行時に `Dockerfile` の `test` ステージ（`runtime` + dev 依存 + `tests/`）からビルドされる。`docker compose` の管理下ではないが、`make purge` の削除対象に含まれる（存在すれば削除、無ければ何もしない）
 
 ## ネットワーク
 
@@ -57,7 +57,7 @@ compose 変更時は必ず本ドキュメントを更新すること（CLAUDE.md
 
 ## `make purge` で削除されるもの／されないもの
 
-削除される：`app` / `worker-network` / `worker-compute` コンテナ、ローカルビルドイメージ `sluicery:local`、named volume `data`、compose ネットワーク。
+削除される：`app` / `worker-network` / `worker-compute` コンテナ、ローカルビルドイメージ `sluicery:local`、`sluicery:local-test`（存在する場合）、named volume `data`、compose ネットワーク。
 
 削除されない：`${MEDIA_ROOT}` 配下の bind mount 実体（メディア本体）。`compose.privileged.yaml` を併用している場合はホスト側のマウントポイント自体の後始末は別途 `umount` が必要（要件定義 §6.6、実装順序 #19 以降）。
 

@@ -42,9 +42,11 @@ purge:
 	@echo "以下を削除します（bind mount 先のメディア本体は削除されません）:"
 	@$(COMPOSE) ps -a
 	@$(COMPOSE) config --volumes
+	@echo "sluicery:local-test（存在する場合。make test / make lint が作るテスト用イメージ）"
 	@read -p "続行しますか？ [y/N] " ans; \
 	if [ "$$ans" != "y" ] && [ "$$ans" != "Y" ]; then echo "中止しました"; exit 1; fi
 	$(COMPOSE) down --rmi local --volumes --remove-orphans
+	docker rmi sluicery:local-test 2>/dev/null || true
 
 # requirements.in / requirements-dev.in から requirements.lock / requirements-dev.lock を
 # 再生成する。ネットワークアクセス可能な環境で実行すること。依存を更新したときのみ実行し、
