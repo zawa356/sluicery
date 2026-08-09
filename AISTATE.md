@@ -53,6 +53,8 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
   traversal を扱うユーザー入力由来パスの検証を追加した
 - 6層の構造化フィールド解決・自由文字列連結・由来追跡と、discover / download
   のコマンドビルダーを `core/options.py` に実装した
+- Phase 9 までの暫定 Storage / Profile / Playlist CRUD、Profile 割当、
+  `options preview` を CLI に追加した。削除は実ファイルを操作しない（D-021）
 
 ## 次にやること
 

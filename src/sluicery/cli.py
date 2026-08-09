@@ -552,6 +552,8 @@ def _cmd_ytdlp_fetch(url: str, dest: str | None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from sluicery.cli_crud import configure_parsers
+
     parser = argparse.ArgumentParser(prog="sluicery")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -584,6 +586,8 @@ def main(argv: list[str] | None = None) -> int:
     settings_unset_parser = settings_sub.add_parser("unset", help="上書きを削除し既定値に戻す")
     settings_unset_parser.add_argument("key")
 
+    configure_parsers(sub)
+
     ytdlp_parser = sub.add_parser("ytdlp", help="yt-dlp の venv を管理する")
     ytdlp_sub = ytdlp_parser.add_subparsers(dest="ytdlp_command", required=True)
     ytdlp_sub.add_parser("status", help="導入状態（ready/not_installed/broken）を表示する")
@@ -612,6 +616,13 @@ def main(argv: list[str] | None = None) -> int:
     ytdlp_fetch_parser.add_argument("--dest", default=None)
 
     args = parser.parse_args(argv)
+
+    from sluicery.cli_crud import dispatch as dispatch_crud
+    from sluicery.config import load_settings
+
+    crud_result = dispatch_crud(args, open_session=_open_session, load_settings=load_settings)
+    if crud_result is not None:
+        return crud_result
 
     if args.command == "web":
         return _run_web()
