@@ -140,9 +140,9 @@ def mask_output_text(
 
 @dataclass(frozen=True)
 class TimeoutPolicy:
-    idle_sec: int | None
-    absolute_sec: int | None
-    term_grace_sec: int
+    idle_sec: float | None
+    absolute_sec: float | None
+    term_grace_sec: float
 
 
 @dataclass(frozen=True)
@@ -245,6 +245,7 @@ class BaseRunner:
         cwd: Path | None = None,
         env_overrides: Mapping[str, str] | None = None,
         stdin_text: str | None = None,
+        inherit_stdin: bool = False,
         sensitive_values: Sequence[str] = (),
         mask_rclone_env_names: bool = False,
     ) -> ProcessRunResult:
@@ -257,9 +258,15 @@ class BaseRunner:
         self._log_dir.mkdir(parents=True, exist_ok=True)
         log_path = self._log_dir / f"{self._log_prefix}-{uuid4().hex}.log"
         start = time.monotonic()
+        if stdin_text is not None:
+            stdin = subprocess.PIPE
+        elif inherit_stdin:
+            stdin = None
+        else:
+            stdin = subprocess.DEVNULL
         proc = subprocess.Popen(  # noqa: S603 - shell=False、引数はリスト固定
             full_args,
-            stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+            stdin=stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

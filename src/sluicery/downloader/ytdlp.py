@@ -69,6 +69,7 @@ class YtdlpRunner(BaseRunner):
             on_stdout_line=read_stdout,
             cwd=cwd,
             env_overrides={"LC_ALL": "C"},
+            inherit_stdin=True,
         )
         classification = classify(
             process_result.returncode, process_result.stderr_text
