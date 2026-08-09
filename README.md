@@ -150,6 +150,8 @@ docker compose exec app python3 -m sluicery.cli storage add \
 docker compose exec app python3 -m sluicery.cli storage test smb-media
 docker compose exec app python3 -m sluicery.cli storage space smb-media
 docker compose exec app python3 -m sluicery.cli storage ls smb-media
+docker compose exec --user "$(id -u):$(id -g)" app \
+  python3 -m sluicery.cli storage push smb-media /data/staging/example.bin library/example.bin
 docker compose exec app python3 -m sluicery.cli profile add \
   --name video --kind video
 docker compose exec app python3 -m sluicery.cli playlist add \

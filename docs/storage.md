@@ -3,20 +3,32 @@
 sluicery は最終保存先を `Storage` として抽象化する（要件定義 §6）。UI から複数の Storage を登録でき、
 Playlist × Profile の組ごとにどの Storage のどの subpath に書き込むかを指定する。
 
-現バージョンで選択できる kind は `local` と `remote` の2種類。
+現バージョンで選択できる kind は `local` と `remote` の2種類。両方とも `StorageAdapter` の
+接続テスト、publish、存在確認、再帰一覧、移動、空き容量取得を実装済み。
 
 ## local
 
 コンテナから直接見えるパス（`${MEDIA_ROOT}` の bind mount 配下）への書き込み。
-特権は不要。単一ホストで完結する運用に向く。
+特権は不要。単一ホストで完結する運用に向く。コンテナ内の境界は常に `/mnt/media` で、
+その外を指す設定は拒否する。Staging と bind mount が異なる mount の場合は copy へ
+フォールバックし、保存先と同じディレクトリの一時名から最終化する。
 
 ## remote（既定・推奨）
 
-rclone のリモート定義（SMB / NFS / WebDAV / SFTP / S3 など）経由の転送。特権は不要。
-ユーザースペース転送のため、コンテナの隔離を弱めない。**このため既定かつ推奨の方式としている。**
+rclone 経由のユーザースペース転送。特権を要求せず、コンテナの隔離を弱めない。
+**Phase 5 で実装・実機検証済みの protocol は SMB だけであり、NFS / WebDAV / SFTP / S3 等は
+対応済みではない。** 未検証 protocol を指定すると明示的に拒否する。
+
+SMB の host / user / password 等は rclone 子プロセス限定の `RCLONE_CONFIG_*` 環境変数で渡す。
+設定ファイルは生成せず、password の obscure 変換も stdin だけを使う。CLI の詳細表示は
+資格情報を「設定済み」とだけ表示し、平文を返さない。
 
 いずれの kind でも、Staging（常にローカル）を経由してから最終保存先へ Publish する（要件定義 §6.2）。
 ネットワークストレージ上で直接 yt-dlp / ffmpeg を動かすことは行わない。
+
+publish は最終名へ直接書かず、`<dest>.sluicery-tmp-<uuid>` へ転送してサイズ（local は加えて
+SHA-256）を検証し、同一ディレクトリ内で rename する。既存の最終名は既定で上書きしない。
+失敗した一時ファイルは原因調査とデータ保護のため自動削除せず、呼び出し元へ相対パスを報告する。
 
 ## mount（オプトイン、非推奨）
 

@@ -3,8 +3,8 @@
 > このファイルはセッション間の引き継ぎ用です。
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
-最終更新: 2026-08-09 23:05
-対応コミット: 399337d feat: RcloneRunnerを追加
+最終更新: 2026-08-09 23:52
+対応コミット: 679f341 fix(storage): handle cross-mount local publish
 
 ## プロジェクト概要
 
@@ -19,8 +19,8 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 - [x] 2. 設定読み込み、`SECRET_KEY` 検証、DB スキーマ + Alembic マイグレーション
 - [x] 3. yt-dlp venv 管理（インストール、バージョン取得）と CLI ラッパ
 - [x] 4. オプション合成モデル、ガード、コマンドラインプレビュー
-- [ ] 5. Storage アダプタ（local / remote-rclone）、接続テスト、クレデンシャル暗号化  ← 作業中
-- [ ] 6. Task キューとワーカー（network / compute の2クラス）
+- [x] 5. Storage アダプタ（local / remote-rclone）、接続テスト、クレデンシャル暗号化
+- [ ] 6. Task キューとワーカー（network / compute の2クラス） ← 次の着手点
 - [ ] 7. パイプライン（download → verify → postprocess(空) → publish → index）
 - [ ] 8. 二相同期（discover / download）、状態遷移
 - [ ] 9. 認証、Web UI 骨格（レイアウト、ログイン）
@@ -39,50 +39,39 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 ## 直近の作業
 
 - Phase 5 の P0 を是正。公開前監査のホームパス・IPv4/IPv6・ローカルホスト名パターンを
-  修正し、75コミットを再監査した。gitleaks 漏えい0件、環境情報一致は正規表現例だけだった
-- 外部プロセス実行を `runner/base.py` へ切り出し、既存 `YtdlpRunner` を継承化した。
-  回帰テスト21件、Ruff、mypy は成功
-- `RcloneRunner`、JSON stats パーサ、Storage エラー分類、子プロセス限定の設定環境変数、
-  stdin password obscure を実装。対象テスト39件が成功（D-024, D-025）
-- Phase 4 を実装。Profile 継承フィールドの三状態化、6層オプション合成、予約引数・
-  `--exec` 二重ゲート、引数由来、`flat` / `custom` レイアウト、命名・欠損値方針を追加した
-- Phase 9 までの暫定 Storage / Profile / Playlist CRUD と `options preview` を追加。
-  Profile の nullable 値は `--inherit-*`、自由入力は `--clear-*` で未設定へ戻せる
-- `ytdlp probe` / `fetch` を合成ビルダー経由へ置換し、取得 URL を HTTP(S) に限定して
-  オプション終端 `--` の後ろへ置く。raw `ytdlp exec` は予約引数を拒否する
-- 認証・Cookie・Proxy 系の長短オプション、URL の userinfo と認証 query / fragment を
-  共通マスク層で伏せる。preview、show、probe / fetch、raw exec は同じ層を使う
-- yt-dlp venv は `yt-dlp[default]` と導入契約 marker を使用。current / non-current の
-  全バージョンを検証し、broken 版の `use` を拒否、`install` で再構築する（D-023）
-- 開発機で Phase 4 実機検証18項目を完了。公式 Blender Open Movies を用いて、
-  複数エントリ、動画2系統、opus・タグ・埋め込み画像、命名境界、所有者を確認した
-- 独立レビューを実施し、全7指摘へ対応した。記録は `docs/reviews/phase4.md`
-- レビュー修正後に `make test` 161件、Ruff、mypy が成功。compose 3サービスは稼働し、
-  DB は `5b8c9d1e2f30`、yt-dlp 2026.07.04 は `ready`。実機 probe と通常 fetch も再成功した
-- 公開前チェックリストの履歴監査を完了。71コミットを gitleaks で走査して漏えい0件。
-  危険ファイル名・環境固有情報の履歴混入はなく、機密パターン一致は合成値・空設定・手順書だけだった
-- `checkpoint/step-03.5` は Phase 3.5 完了点に付与済み。Phase 4 完了コミットへ
-  `checkpoint/step-04` を付与する。push はユーザーの明示承認待ち
+  修正し、ffmpeg SIGSEGV の未解決事項を Phase 7 の健全性再評価へ更新した
+- 外部 CLI 実行を `runner/base.py` へ切り出し、`YtdlpRunner` / `RcloneRunner` が継承する構成にした
+- local / remote-rclone の `StorageAdapter` 6メソッド、factory、容量判定、4段階接続、
+  一時名→検証→rename の publish、既定の上書き拒否を実装した（D-024〜D-028）
+- rclone password は stdin で obscure し、対象子プロセスだけの環境変数へ注入する。
+  資格情報と `RCLONE_CONFIG_*` 名は保持・ログ出力前にマスクする
+- 暫定 Storage CLI に remote SMB の登録・認証情報更新と `test` / `space` / `ls` / `push` を追加した
+- 専用 SMB 環境で Phase 5 実機検証20項目を完了。サーバー停止は閉鎖ポートの接続拒否で同等検証し、
+  正常/異常4段階、容量、転送、中断、孤児0、マスク、local、所有者を確認した
+- 実機で timeout / SMB logon 文言の分類、非秘密設定値の誤検知、Docker/WSL cross-mount の
+  local publish を修正した。試験ファイルと資格情報入り Storage レコードは削除済み
+- 最新の `make test` は204件、Ruff、mypy は全件成功
 
 ## 次にやること
 
-1. `StorageAdapter` と factory、local / remote-rclone の6メソッドを実装する
-2. 4段階接続テスト、原子的 publish、容量判定と暫定 Storage CLI を追加する
-3. ユニットテスト後、専用 SMB 共有で Phase 5 の実機検証20項目を実施する
+1. Phase 5 の独立レビュー指摘を `docs/reviews/phase5.md` に記録し、必要な修正を行う
+2. 修正後に全件テスト、履歴監査、gitleaks を再実行し `checkpoint/step-05` を付与する
+3. push は監査結果を報告し、ユーザーの明示承認を得るまで行わない
+4. Phase 6 で Task claim、network / compute ワーカー、blocked 相当の表現を設計・実装する
 
 ## 未解決・保留
 
 | # | 内容 | 状態 |
 |---|---|---|
 | 1 | Alembic の autogenerate は SQLite の CHECK 制約比較で偽陽性 diff を出す（D-008） | マイグレーション追加時に手で除去 |
-| 2 | `target.status=blocked` に対応する `TaskStatus` がない | Phase 6/7 着手時に判断 |
+| 2 | `target.status=blocked` に対応する `TaskStatus` がない | Phase 6/7 着手時に判断（D-028） |
 | 3 | compose に init がなく、yt-dlp の孫プロセスが zombie として残る可能性がある | Phase 6 着手時に評価 |
 | 4 | GitHub リポジトリの public 化 | 見送り中・判断待ち |
 | 5 | Issues / Wiki / Projects の要否 | 未確認 |
 | 6 | Dependabot alerts の要否 | 未確認 |
 | 7 | README・`docs/deployment.md` の clone URL が `<repo>` のまま | public 化時に差し替え |
 | 8 | 1秒区間を `--download-sections` で切り出す追加試験は ffmpeg `-11`（SIGSEGV）で失敗した。通常 fetch は成功 | ffmpeg 静的ビルドの健全性に関わる可能性がある。Phase 7（verify で ffprobe / ffmpeg を使用）着手時に再評価する |
-| 9 | Phase 4 の16コミットとタグの GitHub push | 公開前監査済み・ユーザー承認待ち |
+| 9 | Phase 4/5 のローカルコミットとタグの GitHub push | 最終監査後もユーザー承認待ち |
 
 generic extractor で `uploader` / `duration` / `upload_date` が欠損する件は Phase 4 で再確認済み。
 命名は空文字または `0` へ fallback し、`NA` を混入させない（D-019）。
@@ -91,21 +80,16 @@ generic extractor で `uploader` / `duration` / `upload_date` が欠損する件
 
 - 配信元での削除は絶対にローカルファイルの削除に伝播させない
 - `blocked` はリトライ回数を消費しない
-- ファイル名の `[<source_id>]` は末尾（拡張子直前）に固定。relink がこれに依存する
+- ファイル名の `[<source_id>]` は末尾（拡張子直前）に固定。relink がこれに依存している
 - `SECRET_KEY` 未設定時は起動を拒否する
 - `SECRET_KEY` はローテーション非対応（鍵紛失・変更時はクレデンシャル再入力。D-004）
 - 運用パラメータは `.env` ではなく `setting` テーブル、既定値は `core/settings.py` の `CODE_DEFAULTS`
-- 内部状態は `_internal.*` 名前空間に置き `CODE_DEFAULTS` に登録しない
-- DB のタイムスタンプは独自の `UTCDateTime` 型を使う
 - `MEDIA_ROOT` はホスト側パスであり、コンテナ内では常に `/mnt/media` を使う（D-010）
-- リポジトリ層に状態遷移ロジックを書かない
-- yt-dlp venv の変更は `app` のみ。worker は `current` symlink 越しに読み取る
-- venv をリネームしたら `_relocate_shebangs()` を必ず通す
-- yt-dlp の各 venv は current / non-current を問わず導入契約と実行可能性を確認する
-- yt-dlp の `--print` は暗黙に `--quiet` を付与する。進捗が必要なら `--progress` を明示する
-- 取得 URL は HTTP(S) に限定し、必ず yt-dlp のオプション終端 `--` の後ろへ置く
-- yt-dlp/子プロセスはプロセスグループ単位で終了させる
-- 未知の yt-dlp エラーは `failed` に分類する（D-014）
+- yt-dlp / rclone とその子はプロセスグループ単位で終了させる
+- Storage の publish は一時名で検証後に最終化し、既定で上書きしない
+- rclone 資格情報は引数・設定ファイルへ載せず、子プロセス限定の環境変数で渡す
+- Phase 5 で実装・実機検証済みの remote protocol は SMB だけ
+- 未知の yt-dlp / Storage エラーは `failed` に分類する（D-014, D-028）
 - `git push` / `gh repo create` / `gh repo edit` は履歴監査とユーザー承認後のみ許可
 
 ## 環境メモ
@@ -118,19 +102,14 @@ generic extractor で `uploader` / `duration` / `upload_date` が欠損する件
 - ログ: `data/logs/`
 - CLI: `docker compose exec app python3 -m sluicery.cli ...`。ファイル生成時は
   `docker compose exec --user "$(id -u):$(id -g)" app ...` を使う
-- D-015 試験 URL: `https://download.blender.org/peach/trailer/trailer_1080p.mov`
-- Phase 4 試験 Playlist: Blender Studio 公式 Open Movies（URL・権利根拠は D-022）
-- 開発機の compose 環境は起動済み。3サービス正常、DB current=head、yt-dlp `ready`
-- 公開前監査: 71コミット、gitleaks 漏えい0件。`.env` / `backups/` / `data/` は ignore 済み。
-  `Zone.Identifier` は作業ツリーで ignore され、履歴には存在しない
-- VM（Ubuntu 22.04.5）には `~/sluicery`、`~/sluicery.bundle`、`~/alt-media`、
-  `/mnt/media` が残る。片付けはユーザー判断であり Phase 4 では触らない
+- 開発機の compose 3サービスは稼働済み。DB current=head、yt-dlp 2026.07.04 は `ready`
+- Phase 5 SMB 試験の生成ファイル・local 試験ディレクトリ・資格情報入り Storage レコードは削除済み
+- P0 是正後の監査は75コミット時点で gitleaks 漏えい0件。Phase 5 完了後の最終再監査は未実施
 
 ## 既知の落とし穴
 
-- SQLite WAL でも書き込みトランザクションは短く保つ
-- `docker compose down -v` と `make purge` は volume / Staging を消す
-- Alembic autogenerate の CHECK 制約偽陽性をそのままコミットしない
-- yt-dlp venv リネーム後のシェバン修正を忘れない
-- `--print` による進捗抑制を合成側で補償する
-- コンテナに init がなく、孫プロセスの zombie が残る可能性がある
+- SQLite の WAL モードでワーカーとの同時書き込みが競合しやすい。書き込みトランザクションは短く保つ
+- `docker compose down -v` は volume を消す。開発中は使わない
+- Docker/WSL では異なる mount が同じ `st_dev` を返し得る。local publish は `EXDEV` で copy へ切り替える
+- `docker compose exec -T` を外側から中断すると exec クライアントだけが終了し得る。中断試験では
+  コンテナ内の CLI へ SIGINT を送り、BaseRunner のプロセスグループ終了まで確認する
