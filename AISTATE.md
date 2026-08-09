@@ -3,8 +3,8 @@
 > このファイルはセッション間の引き継ぎ用です。
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
-最終更新: 2026-08-10 00:18
-対応コミット: fd55ef7 fix(storage): publish失敗時の元ファイルと既存先を保護
+最終更新: 2026-08-10 00:24
+対応コミット: 1b9f563 docs: Phase 5独立レビューと対応を記録
 
 ## プロジェクト概要
 
@@ -53,13 +53,13 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 - 独立レビューの重大1・中4・軽微2へ対応。local は元を保持する hardlink/copy と no-replace rename、
   remote は `--ignore-existing`、接続試験は単一 deadline とし、YtdlpRunner の stdin 継承を復元した
 - レビュー対応後の `make test` は210件、Ruff、mypy は全件成功
+- 公開前監査で追跡ファイル・全履歴とも実機識別子と試験用資格情報の一致0件、gitleaks 漏えい0件を確認した
+- 最終イメージで3サービスを再作成し、app healthy、DB current=head、yt-dlp ready、rclone 1.75.0 を確認した
 
 ## 次にやること
 
-1. Phase 5 の独立レビューと対応を `docs/reviews/phase5.md` に記録する
-2. 履歴監査と gitleaks を再実行し、クリーンなら `checkpoint/step-05` を付与する
-3. push は監査結果を報告し、ユーザーの明示承認を得るまで行わない
-4. 次フェーズでは Task claim、network / compute ワーカー、blocked 相当の表現を設計・実装する
+1. Phase 4/5 のローカルコミットと `checkpoint/step-05` の push は、ユーザーの明示承認を得るまで行わない
+2. 次フェーズでは Task claim、network / compute ワーカー、blocked 相当の表現を設計・実装する
 
 ## 未解決・保留
 
@@ -106,7 +106,7 @@ generic extractor で `uploader` / `duration` / `upload_date` が欠損する件
   `docker compose exec --user "$(id -u):$(id -g)" app ...` を使う
 - 開発機の compose 3サービスは稼働済み。DB current=head、yt-dlp 2026.07.04 は `ready`
 - Phase 5 SMB 試験の生成ファイル・local 試験ディレクトリ・資格情報入り Storage レコードは削除済み
-- P0 是正後の監査は75コミット時点で gitleaks 漏えい0件。Phase 5 完了後の最終再監査は未実施
+- Phase 5 完了後の最終監査は93コミットを対象に gitleaks 漏えい0件。実機識別子・試験用資格情報も一致0件
 
 ## 既知の落とし穴
 
