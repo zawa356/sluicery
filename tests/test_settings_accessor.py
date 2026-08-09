@@ -42,3 +42,19 @@ def test_list_all_reports_override_state(db_session) -> None:
     assert entries["retry.max_attempts"].value == 3
     assert entries["staging.warn_pct"].is_override is False
     assert entries["staging.warn_pct"].value == 80
+
+
+def test_phase4_kind_defaults_and_list_override(db_session) -> None:
+    assert (
+        core_settings.get(db_session, "defaults.video.format_selector")
+        == "bv*[height<=1080]+ba/b[height<=1080]/b"
+    )
+    assert core_settings.get(db_session, "defaults.music.audio_format") == "opus"
+    core_settings.set_override(
+        db_session,
+        "defaults.music.parse_metadata",
+        '["uploader:%(artist)s"]',
+    )
+    assert core_settings.get(db_session, "defaults.music.parse_metadata") == [
+        "uploader:%(artist)s"
+    ]
