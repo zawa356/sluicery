@@ -89,6 +89,9 @@ nginx / Caddy 等のリバースプロキシを別途 `HTTP_PORT`（既定 8080�
 
 ## 5. バックアップとリストア
 
+> **未実装:** バックアップ / リストアは要件定義 §20 の Phase 20 で実装予定です。
+> 以下は完成後の予定インターフェースであり、現時点では実行できません。
+
 ```bash
 make backup
 # → backups/sluicery-<timestamp>.tar.gz

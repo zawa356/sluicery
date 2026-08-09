@@ -108,30 +108,30 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 `requirements.lock` / `requirements-dev.lock` はコミット済みのため、通常のセットアップに
 `make lock` は不要です。
 
-`SECRET_KEY` を設定しない場合、明確なエラーメッセージを出して起動を拒否します。バックアップ
-（`make backup`）を取得しておくことを推奨します。意図せず `SECRET_KEY` が変わった場合、起動時に
-警告が表示されます。
+`SECRET_KEY` を設定しない場合、明確なエラーメッセージを出して起動を拒否します。意図せず
+`SECRET_KEY` が変わった場合、起動時に警告が表示されます。バックアップ / リストアは Phase 20 で
+実装予定であり、現時点の `make backup` / `make restore` は実行できません。
 
 初回起動時、`.env` の `ADMIN_USERNAME` / `ADMIN_PASSWORD` で管理者アカウントが作成されます。
 `ADMIN_PASSWORD` を空のままにした場合はランダムなパスワードが生成され、起動ログに一度だけ出力されます。
 
 ## 運用コマンド
 
-| コマンド | 内容 | `make` 無し環境での等価コマンド |
-|---|---|---|
-| `make up` | ビルドして起動 | `docker compose up -d --build` |
-| `make down` | 停止（データは保持） | `docker compose down` |
-| `make logs` | ログ追跡 | `docker compose logs -f` |
-| `make shell` | `app` コンテナにシェル接続 | `docker compose exec app /bin/bash` |
-| `make sync` | 全プレイリストの同期を即時実行 | `docker compose exec app python3 -m sluicery.cli sync --all` |
-| `make test` | dev 依存込みの test ステージをビルドし、コンテナ内で pytest を実行 | `docker build --target test -t sluicery:local-test . && docker run --rm --entrypoint pytest sluicery:local-test` |
-| `make lint` | ruff / mypy をコンテナ内で実行 | 上記 test イメージに対し `docker run --rm --entrypoint ruff sluicery:local-test check src tests` 等 |
-| `make lock` | `requirements.in` / `requirements-dev.in` から lock ファイルを再生成（依存を更新したときのみ） | — |
-| `make migrate` | DB マイグレーションを手動適用（`AUTO_MIGRATE=false` 運用時など） | `docker compose exec app python3 -m sluicery.cli db upgrade` |
-| `make revision MSG="..."` | autogenerate でマイグレーションリビジョンを生成 | `docker compose exec app python3 -m sluicery.cli db revision -m "..."` |
-| `make backup` | DB + 設定 + シークレットを単一アーカイブに書き出し | `docker compose exec -T app python3 -m sluicery.cli backup --stdout > backups/sluicery-<timestamp>.tar.gz` |
-| `make restore FILE=...` | バックアップから復元 | `docker compose exec -T app python3 -m sluicery.cli restore --stdin < <file>` |
-| `make purge` | 削除対象を表示して確認した上でコンテナ・イメージ・volume を削除（bind mount 先の実体は削除しない） | `docker compose down --rmi local --volumes --remove-orphans` |
+| コマンド | 内容 | 実装状況 | `make` 無し環境での等価コマンド |
+|---|---|---|---|
+| `make up` | ビルドして起動 | 実装済み | `docker compose up -d --build` |
+| `make down` | 停止（データは保持） | 実装済み | `docker compose down` |
+| `make logs` | ログ追跡 | 実装済み | `docker compose logs -f` |
+| `make shell` | `app` コンテナにシェル接続 | 実装済み | `docker compose exec app /bin/bash` |
+| `make sync` | 全プレイリストの同期を即時実行 | **未実装（Phase 8）** | — |
+| `make test` | dev 依存込みの test ステージをビルドし、コンテナ内で pytest を実行 | 実装済み | `docker build --target test -t sluicery:local-test . && docker run --rm --entrypoint pytest sluicery:local-test` |
+| `make lint` | ruff / mypy をコンテナ内で実行 | 実装済み | 上記 test イメージに対し `docker run --rm --entrypoint ruff sluicery:local-test check src tests` 等 |
+| `make lock` | `requirements.in` / `requirements-dev.in` から lock ファイルを再生成（依存を更新したときのみ） | 実装済み | — |
+| `make migrate` | DB マイグレーションを手動適用（`AUTO_MIGRATE=false` 運用時など） | 実装済み | `docker compose exec app python3 -m sluicery.cli db upgrade` |
+| `make revision MSG="..."` | autogenerate でマイグレーションリビジョンを生成 | 実装済み | `docker compose exec app python3 -m sluicery.cli db revision -m "..."` |
+| `make backup` | DB + 設定 + シークレットを単一アーカイブに書き出し | **未実装（Phase 20）** | — |
+| `make restore FILE=...` | バックアップから復元 | **未実装（Phase 20）** | — |
+| `make purge` | 削除対象を表示して確認した上でコンテナ・イメージ・volume を削除（bind mount 先の実体は削除しない） | 実装済み | `docker compose down --rmi local --volumes --remove-orphans` |
 
 ## トラブルシューティング
 
