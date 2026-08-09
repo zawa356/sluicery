@@ -1,8 +1,6 @@
 .PHONY: up down logs shell sync backup restore purge lock migrate revision lint test
 
 COMPOSE := docker compose
-BACKUP_DIR := ./backups
-TIMESTAMP := $(shell date +%Y%m%d-%H%M%S)
 
 # Dockerfile の runtime ステージと同じ digest を参照する（要件定義 §4.2、Phase 3.5 指示書 §0.3）。
 # Dockerfile 側を更新したらここも合わせて更新すること。
@@ -20,21 +18,20 @@ logs:
 shell:
 	$(COMPOSE) exec app /bin/bash
 
-# 全プレイリストの同期を即時実行する（discover → download をキューに投入）。
+# Phase 8 で全プレイリストの同期（discover → download）を実装する。
 sync:
-	$(COMPOSE) exec app python3 -m sluicery.cli sync --all
+	@echo "ERROR: make sync は未実装です（Phase 8 で実装予定）"
+	@false
 
-# DB + config + シークレットを単一アーカイブに書き出す。
-# シークレットを含むため、バックアップの保管場所には注意すること（docs/legal.md 参照）。
+# Phase 20 で DB + config + シークレットのバックアップを実装する。
 backup:
-	mkdir -p $(BACKUP_DIR)
-	$(COMPOSE) exec -T app python3 -m sluicery.cli backup --stdout > $(BACKUP_DIR)/sluicery-$(TIMESTAMP).tar.gz
-	@echo "backup written to $(BACKUP_DIR)/sluicery-$(TIMESTAMP).tar.gz"
+	@echo "ERROR: make backup は未実装です（Phase 20 で実装予定）"
+	@false
 
-# 例: make restore FILE=backups/sluicery-20260101-000000.tar.gz
+# Phase 20 でバックアップからの復元を実装する。
 restore:
-	@if [ -z "$(FILE)" ]; then echo "使用法: make restore FILE=<backup file>"; exit 1; fi
-	$(COMPOSE) exec -T app python3 -m sluicery.cli restore --stdin < $(FILE)
+	@echo "ERROR: make restore は未実装です（Phase 20 で実装予定）"
+	@false
 
 # コンテナ・イメージ・volume・ネットワークを削除する。bind mount 先の
 # メディア本体は削除されない。実行前に削除対象を一覧表示し、確認を取る。
