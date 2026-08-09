@@ -3,8 +3,8 @@
 > このファイルはセッション間の引き継ぎ用です。
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
-最終更新: 2026-08-09 22:09
-対応コミット: a0a8e08 fix: Phase 4独立レビュー指摘に対応
+最終更新: 2026-08-09 22:12
+対応コミット: fb6874b docs: Phase 4レビュー対応と完了状態を記録
 
 ## プロジェクト概要
 
@@ -53,14 +53,16 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 - 独立レビューを実施し、全7指摘へ対応した。記録は `docs/reviews/phase4.md`
 - レビュー修正後に `make test` 161件、Ruff、mypy が成功。compose 3サービスは稼働し、
   DB は `5b8c9d1e2f30`、yt-dlp 2026.07.04 は `ready`。実機 probe と通常 fetch も再成功した
-- `checkpoint/step-03.5` は Phase 3.5 完了点に付与済み。Phase 4 完了タグは最終監査後に付与する
+- 公開前チェックリストの履歴監査を完了。71コミットを gitleaks で走査して漏えい0件。
+  危険ファイル名・環境固有情報の履歴混入はなく、機密パターン一致は合成値・空設定・手順書だけだった
+- `checkpoint/step-03.5` は Phase 3.5 完了点に付与済み。Phase 4 完了コミットへ
+  `checkpoint/step-04` を付与する。push はユーザーの明示承認待ち
 
 ## 次にやること
 
-1. `docs/公開前チェックリスト.md` に従い Phase 4 完了時の履歴監査を行う
-2. `checkpoint/step-04` を Phase 4 完了コミットへ付与する
-3. 監査結果をユーザーへ報告し、明示的な承認があるまで push しない
-4. 次セッションでは Phase 5 の指示書を読み、Storage アダプタの現状と要件を着手前確認する
+1. 監査結果をユーザーへ報告し、明示的な承認があるまで push しない
+2. 公開可否、指示書 / AISTATE の公開、Issues / Wiki / Projects、Dependabot の判断を待つ
+3. 次セッションでは Phase 5 の指示書を読み、Storage アダプタの現状と要件を着手前確認する
 
 ## 未解決・保留
 
@@ -74,6 +76,7 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 | 6 | Dependabot alerts の要否 | 未確認 |
 | 7 | README・`docs/deployment.md` の clone URL が `<repo>` のまま | public 化時に差し替え |
 | 8 | 1秒区間を `--download-sections` で切り出す追加試験は ffmpeg `-11` で失敗した。通常 fetch は成功 | 区間取得を正式対応する場合に調査 |
+| 9 | Phase 4 の16コミットとタグの GitHub push | 公開前監査済み・ユーザー承認待ち |
 
 generic extractor で `uploader` / `duration` / `upload_date` が欠損する件は Phase 4 で再確認済み。
 命名は空文字または `0` へ fallback し、`NA` を混入させない（D-019）。
@@ -112,6 +115,8 @@ generic extractor で `uploader` / `duration` / `upload_date` が欠損する件
 - D-015 試験 URL: `https://download.blender.org/peach/trailer/trailer_1080p.mov`
 - Phase 4 試験 Playlist: Blender Studio 公式 Open Movies（URL・権利根拠は D-022）
 - 開発機の compose 環境は起動済み。3サービス正常、DB current=head、yt-dlp `ready`
+- 公開前監査: 71コミット、gitleaks 漏えい0件。`.env` / `backups/` / `data/` は ignore 済み。
+  `Zone.Identifier` は作業ツリーで ignore され、履歴には存在しない
 - VM（Ubuntu 22.04.5）には `~/sluicery`、`~/sluicery.bundle`、`~/alt-media`、
   `/mnt/media` が残る。片付けはユーザー判断であり Phase 4 では触らない
 
