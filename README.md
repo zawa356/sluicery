@@ -33,7 +33,8 @@ curl http://localhost:8080/healthz
 `make` が使える環境では `cp .env.example .env && $EDITOR .env && make up` でも同じです（`MEDIA_ROOT` の
 事前作成は別途必要）。
 
-yt-dlp は起動後にバックグラウンドで自動導入されます。導入完了は以下で確認できます。
+yt-dlp は起動後にバックグラウンドで自動導入されます。音声メタデータやサムネイルの
+埋め込みに必要な公式 `default` extras も同じ venv に導入されます。導入完了は以下で確認できます。
 
 ```bash
 docker compose exec app python3 -m sluicery.cli ytdlp status
