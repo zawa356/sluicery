@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -32,6 +33,25 @@ def test_run_captures_progress_and_print_lines(tmp_path: Path) -> None:
     assert result.stdout_lines == ["done"]
     assert seen == result.progress_events
     assert result.log_path is not None and result.log_path.exists()
+
+
+def test_ytdlp_runner_preserves_inherited_stdin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_popen = subprocess.Popen
+    seen_stdin: list[object] = []
+
+    def capture_popen(*args: object, **kwargs: object) -> subprocess.Popen[str]:
+        seen_stdin.append(kwargs.get("stdin"))
+        return original_popen(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(subprocess, "Popen", capture_popen)
+    result = _runner(tmp_path).run(
+        ["noop"], timeout=TimeoutPolicy(idle_sec=5, absolute_sec=10, term_grace_sec=2)
+    )
+
+    assert result.returncode == 0
+    assert seen_stdin == [None]
 
 
 def test_run_classifies_via_stderr_pattern(tmp_path: Path) -> None:
