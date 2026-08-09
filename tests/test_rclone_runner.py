@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -8,7 +9,8 @@ import pytest
 
 from sluicery.runner.base import TimeoutPolicy
 from sluicery.storage.errors import StorageClassification
-from sluicery.storage.rclone import RcloneConfigurationError, RcloneRunner
+from sluicery.storage.progress import TransferProgressEvent
+from sluicery.storage.rclone import RcloneConfigurationError, RcloneRunner, RcloneRunResult
 
 FAKE_RCLONE = Path(__file__).parent / "fixtures" / "fake_rclone.py"
 
@@ -30,7 +32,7 @@ def _process_still_running(pid: int) -> bool:
 
 
 def test_rclone_runner_parses_json_progress_and_stdout(tmp_path: Path) -> None:
-    seen = []
+    seen: list[TransferProgressEvent] = []
     result = _runner(tmp_path).run(
         ["json_then_exit"],
         timeout=_timeout(),
@@ -95,11 +97,37 @@ def test_rclone_runner_terminates_entire_process_group(tmp_path: Path) -> None:
         ["spawn_child_and_sleep", str(pid_file)], timeout=_timeout(idle=1, absolute=30)
     )
     assert result.terminated_by == "idle"
+    assert result.classification == StorageClassification.UNREACHABLE
+    assert result.reason_code == "timeout"
     child_pid = int(pid_file.read_text())
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline and _process_still_running(child_pid):
         time.sleep(0.05)
     assert not _process_still_running(child_pid)
+
+
+def test_rclone_runner_classifies_cancellation_separately(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+    result_holder: dict[str, RcloneRunResult] = {}
+
+    def run() -> None:
+        result_holder["result"] = runner.run(
+            ["spawn_child_and_sleep", str(tmp_path / "cancelled-child.pid")],
+            timeout=_timeout(idle=30, absolute=30),
+        )
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    deadline = time.monotonic() + 3
+    while not (tmp_path / "cancelled-child.pid").exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    runner.cancel()
+    thread.join(timeout=5)
+
+    result = result_holder["result"]
+    assert result.terminated_by == "cancel"
+    assert result.classification == StorageClassification.FAILED
+    assert result.reason_code == "cancelled"
 
 
 def test_caller_interruption_terminates_process_group(tmp_path: Path) -> None:

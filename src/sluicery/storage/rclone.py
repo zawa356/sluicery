@@ -149,11 +149,20 @@ class RcloneRunner(BaseRunner):
             sensitive_values=_sensitive_config_values(env),
             mask_rclone_env_names=True,
         )
-        classification = classify(result.returncode, result.stderr_text)
+        if result.terminated_by in {"idle", "absolute"}:
+            classification_name = StorageClassification.UNREACHABLE
+            reason_code = "timeout"
+        elif result.terminated_by == "cancel":
+            classification_name = StorageClassification.FAILED
+            reason_code = "cancelled"
+        else:
+            classification = classify(result.returncode, result.stderr_text)
+            classification_name = classification.classification
+            reason_code = classification.reason_code
         return RcloneRunResult(
             returncode=result.returncode,
-            classification=classification.classification,
-            reason_code=classification.reason_code,
+            classification=classification_name,
+            reason_code=reason_code,
             stdout_lines=stdout_lines,
             progress_events=progress_events,
             stderr_tail=result.stderr_tail,
