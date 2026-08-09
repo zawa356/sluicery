@@ -101,6 +101,16 @@ CODE_DEFAULTS: dict[str, SettingSpec] = {
     "ytdlp.discover_timeout_sec": SettingSpec("ytdlp.discover_timeout_sec", int, 300),
     "ytdlp.term_grace_sec": SettingSpec("ytdlp.term_grace_sec", int, 10),
     "ytdlp.stderr_tail_kb": SettingSpec("ytdlp.stderr_tail_kb", int, 64),
+    "storage.free_space_warn_bytes": SettingSpec(
+        "storage.free_space_warn_bytes", int, 10 * 1024**3
+    ),
+    "storage.free_space_stop_bytes": SettingSpec(
+        "storage.free_space_stop_bytes", int, 2 * 1024**3
+    ),
+    "storage.idle_timeout_sec": SettingSpec("storage.idle_timeout_sec", int, 300),
+    "storage.absolute_timeout_sec": SettingSpec("storage.absolute_timeout_sec", int, 21600),
+    "storage.test_timeout_sec": SettingSpec("storage.test_timeout_sec", int, 30),
+    "storage.rclone_retries": SettingSpec("storage.rclone_retries", int, 1),
 }
 
 
@@ -278,6 +288,30 @@ class OperationalSettings:
     @property
     def ytdlp_stderr_tail_kb(self) -> int:
         return get(self._session, "ytdlp.stderr_tail_kb")
+
+    @property
+    def storage_free_space_warn_bytes(self) -> int:
+        return get(self._session, "storage.free_space_warn_bytes")
+
+    @property
+    def storage_free_space_stop_bytes(self) -> int:
+        return get(self._session, "storage.free_space_stop_bytes")
+
+    @property
+    def storage_idle_timeout_sec(self) -> int:
+        return get(self._session, "storage.idle_timeout_sec")
+
+    @property
+    def storage_absolute_timeout_sec(self) -> int:
+        return get(self._session, "storage.absolute_timeout_sec")
+
+    @property
+    def storage_test_timeout_sec(self) -> int:
+        return get(self._session, "storage.test_timeout_sec")
+
+    @property
+    def storage_rclone_retries(self) -> int:
+        return get(self._session, "storage.rclone_retries")
 
 
 __all__ = [
