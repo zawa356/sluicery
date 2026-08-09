@@ -107,11 +107,11 @@ class RcloneRunner(BaseRunner):
     ) -> RcloneRunResult:
         env = dict(config_env or {})
         _validate_config_env(env)
-        for name, value in env.items():
-            if name in args or value in args:
-                raise RcloneConfigurationError(
-                    "rclone の設定名・クレデンシャルをコマンドラインへ指定できません"
-                )
+        sensitive_values = _sensitive_config_values(env)
+        if any(name in args for name in env) or any(value in args for value in sensitive_values):
+            raise RcloneConfigurationError(
+                "rclone の設定名・クレデンシャルをコマンドラインへ指定できません"
+            )
 
         stdout_lines: list[str] = []
         progress_events: list[TransferProgressEvent] = []
@@ -146,7 +146,7 @@ class RcloneRunner(BaseRunner):
             on_stderr_line=read_stderr,
             cwd=cwd,
             env_overrides=env,
-            sensitive_values=_sensitive_config_values(env),
+            sensitive_values=sensitive_values,
             mask_rclone_env_names=True,
         )
         if result.terminated_by in {"idle", "absolute"}:
