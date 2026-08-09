@@ -179,6 +179,37 @@ def _probe_version(venv_dir: Path) -> str:
     return proc.stdout.strip()
 
 
+def _relocate_shebangs(old_dir: Path, new_dir: Path) -> None:
+    """venv の console_scripts のシェバンに焼き込まれたインストール時の絶対パスを、
+    リネーム後の最終パスに書き換える。
+
+    Python の venv は一般に再配置可能ではない。`pip install` 時に生成される
+    `bin/yt-dlp` 等のラッパースクリプトは1行目に `#!<venv>/bin/python3` を
+    絶対パスで埋め込むため、`versions/.tmp-<uuid>/` に作った venv を
+    `versions/<version>/` へリネームすると、シェバンが指す旧パスが消えて
+    実行できなくなる（`bin/python3` 自体はシステム Python へのシンボリック
+    リンクで絶対パスなので壊れないが、ラッパースクリプトのシェバンは別）。
+    """
+    old_prefix = f"#!{old_dir}".encode()
+    new_prefix = f"#!{new_dir}".encode()
+    bin_dir = new_dir / "bin"
+    if not bin_dir.is_dir():
+        return
+    for entry in bin_dir.iterdir():
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        try:
+            content = entry.read_bytes()
+        except OSError:
+            continue
+        newline_idx = content.find(b"\n")
+        first_line = content[:newline_idx] if newline_idx != -1 else content
+        if old_prefix not in first_line:
+            continue
+        fixed_line = first_line.replace(old_prefix, new_prefix)
+        entry.write_bytes(fixed_line + content[newline_idx:] if newline_idx != -1 else fixed_line)
+
+
 def _record_install(session: Session, version: str, source: YtdlpReleaseSource) -> YtdlpRelease:
     repo = YtdlpReleaseRepository(session)
     existing = repo.get_by_version(version)
@@ -253,12 +284,17 @@ def install(
             raise YtdlpInstallError(_format_subprocess_error(exc)) from exc
 
         final_dir = versions_dir(root) / installed_version
-        if final_dir.is_dir():
+        if final_dir.is_dir() and not force:
             # 既に同名のバージョンが存在する場合は、一時ディレクトリを破棄して
-            # 既存を採用する(§2.2 手順5)。
+            # 既存を採用する(§2.2 手順5)。ただし --force のときは、broken
+            # 状態からの復旧などで既存を明示的に上書きしたい場合があるため、
+            # 新しく作った venv で置き換える。
             shutil.rmtree(tmp_dir, ignore_errors=True)
         else:
+            if final_dir.is_dir():
+                shutil.rmtree(final_dir)
             tmp_dir.rename(final_dir)
+            _relocate_shebangs(tmp_dir, final_dir)
 
         release = _record_install(session, installed_version, source)
         if needs_activation:

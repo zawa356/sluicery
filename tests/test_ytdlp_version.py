@@ -90,6 +90,24 @@ def test_install_already_present_is_noop_without_force(root: Path, db_session) -
     assert marker.stat().st_mtime == original_mtime
 
 
+def test_install_force_replaces_existing_directory(root: Path, db_session) -> None:
+    """--force は既存の同名バージョンディレクトリを新しい venv で置き換える。
+
+    実機検証（docs/phase3_指示書.md §11.2 #18: broken からの復旧）で、
+    force=True でも「既存があれば新しい方を捨てて既存を採用する」通常経路が
+    そのまま使われ、broken な既存ディレクトリを上書きできないバグが見つかった。
+    """
+    import time
+
+    install(root, db_session, version="2026.01.01", source=YtdlpReleaseSource.MANUAL)
+    marker = version_mod.versions_dir(root) / "2026.01.01" / "bin" / "yt-dlp"
+    original_mtime = marker.stat().st_mtime
+    time.sleep(0.01)
+
+    install(root, db_session, version="2026.01.01", source=YtdlpReleaseSource.MANUAL, force=True)
+    assert marker.stat().st_mtime > original_mtime
+
+
 def test_use_switches_current_and_deactivates_old(root: Path, db_session) -> None:
     install(root, db_session, version="2026.02.01", source=YtdlpReleaseSource.MANUAL)
     install(root, db_session, version="2026.01.01", source=YtdlpReleaseSource.MANUAL)
