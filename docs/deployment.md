@@ -55,8 +55,8 @@ docker compose exec app python3 -m sluicery.cli ytdlp status
 | 変数 | 既定値 | 内容 |
 |---|---|---|
 | `SECRET_KEY` | （必須、既定値なし） | Fernet 暗号化鍵。未設定時は起動を拒否する。ローテーション非対応 |
-| `ADMIN_USERNAME` | `admin` | 初回起動時のみ使用する管理者アカウント名 |
-| `ADMIN_PASSWORD` | （空＝自動生成） | 空の場合はランダム生成し、起動ログに一度だけ出力する |
+| `ADMIN_USERNAME` | `admin` | Phase 9 で実装予定の初期管理者アカウント名。現時点では作成処理に未接続 |
+| `ADMIN_PASSWORD` | （空） | Phase 9 で実装予定。現時点では自動生成・ログ出力を行わない |
 | `TZ` | `Asia/Tokyo` | タイムゾーン。cron 式はこの TZ で解釈する |
 | `PUID` / `PGID` | `1000` / `1000` | 生成ファイルの所有者。ホスト側で `id` コマンドの値と合わせる |
 | `UMASK` | `022` | 生成ファイルの権限 |

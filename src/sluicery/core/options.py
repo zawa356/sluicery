@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -81,6 +82,37 @@ SHORT_VALUE_ALIASES = {"-P": "--paths", "-o": "--output", "-O": "--print"}
 
 class OptionValidationError(ValueError):
     """自由入力の構文または予約引数ガード違反。"""
+
+
+def validate_source_url(value: str) -> str:
+    """yt-dlp に渡す取得元を完全な HTTP(S) URL に限定する。"""
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError as exc:
+        raise OptionValidationError("取得元 URL の形式が不正です") from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or not hostname
+        or any(character.isspace() for character in value)
+    ):
+        raise OptionValidationError(
+            "取得元 URL は http:// または https:// の完全な形式で指定してください"
+        )
+    return value
+
+
+def guard_raw_exec_args(tokens: list[str]) -> tuple[str, ...]:
+    """Profile を持たない debug exec から予約引数を実行させない。"""
+    for occurrence in parse_managed_options(tokens):
+        if occurrence.canonical in RESERVED_OPTIONS:
+            raise OptionValidationError(
+                f"`{occurrence.canonical}` は `ytdlp exec` では使用できません。"
+                "Profile を通る probe / fetch 経路を使用してください"
+            )
+    return tuple(tokens)
 
 
 @dataclass(frozen=True)
@@ -525,8 +557,9 @@ def build_discover_args(
         )
     for option in sorted(reserved):
         warnings.append(_reserved_warning(option, "discover"))
+    source_url = validate_source_url(playlist.url)
     accumulator.add(
-        [playlist.url],
+        ["--", source_url],
         layer="L1",
         source=f"Playlist {playlist.name}",
         field_name="url",
@@ -560,6 +593,7 @@ def build_download_args(
     from sluicery.layout import LayoutContext, resolve_layout
 
     overrides = overrides or OptionOverrides()
+    source_url = validate_source_url(source_url)
     selected_kind = kind or (profile.kind.value if profile is not None else "video")
     if selected_kind not in {"video", "music", "other"}:
         raise OptionValidationError(f"未対応の Profile kind です: {selected_kind}")
@@ -653,7 +687,9 @@ def build_download_args(
     for option in sorted(reserved):
         warnings.append(_reserved_warning(option, "download"))
     source_label = f"Target {target.id}" if target is not None and target.id else "source_url"
-    accumulator.add([source_url], layer="L1", source=source_label, field_name="source_url")
+    accumulator.add(
+        ["--", source_url], layer="L1", source=source_label, field_name="source_url"
+    )
 
     return BuiltCommand(
         args=tuple(accumulator.args),
@@ -680,5 +716,7 @@ __all__ = [
     "build_discover_args",
     "build_download_args",
     "guard_freeform",
+    "guard_raw_exec_args",
     "parse_managed_options",
+    "validate_source_url",
 ]

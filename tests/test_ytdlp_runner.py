@@ -4,6 +4,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from sluicery.downloader.errors import Classification
 from sluicery.downloader.ytdlp import TimeoutPolicy, YtdlpRunner, mask_command_line
 
@@ -146,3 +148,24 @@ def test_mask_command_line_redacts_sensitive_values() -> None:
 def test_mask_command_line_redacts_inline_flag_value() -> None:
     masked = mask_command_line(["--password=hunter2"])
     assert masked == ["--password=********"]
+
+
+@pytest.mark.parametrize(
+    ("args", "secret"),
+    [
+        (["-p", "short-secret"], "short-secret"),
+        (["-pjoined-secret"], "joined-secret"),
+        (["--cookies-from-browser=firefox:profile"], "firefox:profile"),
+        (["--add-headers", "Authorization: Bearer header-secret"], "header-secret"),
+        (["--proxy", "https://proxy-user:proxy-secret@example.com"], "proxy-secret"),
+        (["https://url-user:url-secret@example.com/watch?v=1"], "url-secret"),
+        (["https://example.com/watch?v=1&token=query-secret"], "query-secret"),
+        (["https://example.com/#access_token=fragment-secret"], "fragment-secret"),
+    ],
+)
+def test_mask_command_line_covers_auth_cookie_proxy_and_urls(
+    args: list[str], secret: str
+) -> None:
+    rendered = " ".join(mask_command_line(args))
+    assert secret not in rendered
+    assert "********" in rendered

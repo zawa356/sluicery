@@ -351,14 +351,14 @@ def _cmd_ytdlp_install(version: str | None, force: bool) -> int:
 
 
 def _cmd_ytdlp_use(version: str) -> int:
-    from sluicery.downloader.version import UnknownVersionError, use
+    from sluicery.downloader.version import BrokenVersionError, UnknownVersionError, use
 
     _settings, root = _ytdlp_root_from_settings()
     session = _open_session()
     try:
         try:
             release = use(root, session, version)
-        except UnknownVersionError as exc:
+        except (BrokenVersionError, UnknownVersionError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
         print(f"切り替えました: {release.version}")
@@ -412,7 +412,14 @@ def _ytdlp_timeout_and_bin():
 
 
 def _cmd_ytdlp_exec(args: list[str]) -> int:
+    from sluicery.core.options import OptionValidationError, guard_raw_exec_args
     from sluicery.downloader.ytdlp import YtdlpRunner, mask_command_line
+
+    try:
+        args = list(guard_raw_exec_args(args))
+    except OptionValidationError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
     prepared = _ytdlp_timeout_and_bin()
     if prepared is None:
