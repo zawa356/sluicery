@@ -481,10 +481,33 @@ def _cmd_ytdlp_probe(url: str) -> int:
     return 0
 
 
+def _build_fetch_args(url: str, dest_dir: Path) -> list[str]:
+    """`ytdlp fetch` の固定引数を組み立てる（テストしやすいよう純粋関数として分離）。
+
+    `--print` は既定で `--quiet` を暗黙付与し、`--progress-template` による
+    進捗出力も抑制してしまう（yt-dlp 実機で確認済み）。`--progress` で
+    明示的に上書きする。
+    """
+    from sluicery.downloader.protocol import PRINT_PREFIX, PROGRESS_PREFIX
+
+    return [
+        url,
+        "--newline",
+        "--progress",
+        "--paths",
+        str(dest_dir),
+        "-o",
+        "%(id)s.%(ext)s",
+        "--progress-template",
+        f"download:{PROGRESS_PREFIX}%(progress)j",
+        "--print",
+        f"after_move:{PRINT_PREFIX}%(filepath)s",
+    ]
+
+
 def _cmd_ytdlp_fetch(url: str, dest: str | None) -> int:
     from sluicery.downloader.errors import Classification
     from sluicery.downloader.progress import ProgressEvent
-    from sluicery.downloader.protocol import PRINT_PREFIX, PROGRESS_PREFIX
     from sluicery.downloader.ytdlp import YtdlpRunner
 
     prepared = _ytdlp_timeout_and_bin()
@@ -496,18 +519,7 @@ def _cmd_ytdlp_fetch(url: str, dest: str | None) -> int:
     assert dest_dir is not None
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    args = [
-        url,
-        "--newline",
-        "--paths",
-        str(dest_dir),
-        "-o",
-        "%(id)s.%(ext)s",
-        "--progress-template",
-        f"download:{PROGRESS_PREFIX}%(progress)j",
-        "--print",
-        f"after_move:{PRINT_PREFIX}%(filepath)s",
-    ]
+    args = _build_fetch_args(url, dest_dir)
 
     def on_progress(event: ProgressEvent) -> None:
         if event.total_bytes and event.downloaded_bytes is not None:
