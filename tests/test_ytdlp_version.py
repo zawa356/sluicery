@@ -20,6 +20,25 @@ from sluicery.downloader.version import (
     ytdlp_root,
 )
 
+_REAL_PIP_INSTALL_YTDLP = version_mod._pip_install_ytdlp
+
+
+def test_pip_install_requests_default_extras(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[list[str]] = []
+
+    def _capture_run(command: list[str], **_kwargs: object) -> None:
+        calls.append(command)
+
+    monkeypatch.setattr(version_mod.subprocess, "run", _capture_run)
+
+    _REAL_PIP_INSTALL_YTDLP(tmp_path, "2026.07.04")
+
+    assert calls == [
+        [str(tmp_path / "bin" / "pip"), "install", "yt-dlp[default]==2026.07.04"]
+    ]
+
 
 @pytest.fixture(autouse=True)
 def _fake_venv_backend(monkeypatch: pytest.MonkeyPatch) -> None:

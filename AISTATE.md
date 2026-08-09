@@ -57,6 +57,8 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
   `options preview` を CLI に追加した。削除は実ファイルを操作しない（D-021）
 - `ytdlp probe` / `fetch` の暫定固定引数を削除し、discover / download の
   合成ビルダー経由へ置換した。`--print` の進捗抑制補償もビルダーに集約した
+- 実機の音楽 fetch で判明した `mutagen` 不足を修正し、yt-dlp venv は公式
+  `default` extras 付きで導入するようにした。opus のタグと埋め込み画像を確認済み
 
 ## 次にやること
 

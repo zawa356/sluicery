@@ -156,7 +156,10 @@ def _create_venv(path: Path) -> None:
 
 def _pip_install_ytdlp(venv_dir: Path, version: str | None) -> None:
     pip_path = venv_dir / "bin" / "pip"
-    spec = "yt-dlp" if version is None else f"yt-dlp=={version}"
+    # `default` extra には mutagen（音声メタデータ/サムネイル埋め込み）や
+    # yt-dlp-ejs など、Phase 4 で有効にする postprocessor/extractor の実行依存が
+    # 含まれる。本体だけを導入すると動画取得は通っても音楽 postprocess が失敗する。
+    spec = "yt-dlp[default]" if version is None else f"yt-dlp[default]=={version}"
     subprocess.run(
         [str(pip_path), "install", spec],
         check=True,
