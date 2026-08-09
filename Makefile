@@ -4,6 +4,10 @@ COMPOSE := docker compose
 BACKUP_DIR := ./backups
 TIMESTAMP := $(shell date +%Y%m%d-%H%M%S)
 
+# Dockerfile の runtime ステージと同じ digest を参照する（要件定義 §4.2、Phase 3.5 指示書 §0.3）。
+# Dockerfile 側を更新したらここも合わせて更新すること。
+PYTHON_SLIM_DIGEST := python:3.12-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36
+
 up:
 	$(COMPOSE) up -d --build
 
@@ -46,7 +50,7 @@ purge:
 # 再生成する。ネットワークアクセス可能な環境で実行すること。依存を更新したときのみ実行し、
 # 生成物はコミットする（README のセットアップ手順には含めない）。
 lock:
-	docker run --rm -v "$(CURDIR)":/work -w /work python:3.12-slim \
+	docker run --rm -v "$(CURDIR)":/work -w /work $(PYTHON_SLIM_DIGEST) \
 		bash -c "pip install pip-tools \
 			&& pip-compile --generate-hashes --output-file requirements.lock requirements.in \
 			&& pip-compile --generate-hashes --allow-unsafe --output-file requirements-dev.lock requirements-dev.in"
@@ -61,9 +65,13 @@ revision:
 	@if [ -z "$(MSG)" ]; then echo "使用法: make revision MSG=\"説明\""; exit 1; fi
 	$(COMPOSE) exec app python3 -m sluicery.cli db revision -m "$(MSG)"
 
+# dev 依存込みの test ステージをビルドし、lock ファイル由来の固定バージョンで
+# ruff / mypy を実行する（Phase 3.5 指示書 §0.2。requirements-dev.in 直参照だと
+# 実行時期でバージョンが変わり再現性が崩れるため）。
 lint:
-	docker run --rm -v "$(CURDIR)":/work -w /work python:3.12-slim \
-		bash -c "pip install -r requirements-dev.in && ruff check src tests && mypy src"
+	docker build --target test -t sluicery:local-test .
+	docker run --rm --entrypoint ruff sluicery:local-test check src tests
+	docker run --rm --entrypoint mypy sluicery:local-test src
 
 # dev 依存込みの test ステージをビルドし、コンテナ内で pytest を実行する
 # （本番イメージに dev 依存を焼き込まないため、専用ステージを使う。sluicery:local
