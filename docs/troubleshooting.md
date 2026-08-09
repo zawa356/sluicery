@@ -55,6 +55,18 @@ docker compose up -d
 
 README・`docs/deployment.md` の Quick Start は本手順を含む形に修正済み。
 
+## local Storage の `push` が named volume から bind mount への転送で失敗する
+
+**症状**：`/data` の Staging ファイルを `/mnt/media` 配下の local Storage へ `push` すると、
+接続テストは成功するのに publish が失敗する。
+
+**原因**：Docker Desktop / WSL2 の一部構成では、named volume と bind mount が同じ `st_dev` を
+返しても mount 境界をまたぐ `rename(2)` は `EXDEV` で失敗する。Phase 5 の実機検証で発見した。
+
+**対処**：現行版は実際の `EXDEV` を検出して一時名への copy にフォールバックし、検証後に保存先内で
+rename する。修正前の版を使用している場合は更新する。一時名が報告された場合は内容を確認してから
+手動で扱い、sluicery は自動削除しない。
+
 ## `docker compose exec app` で生成したファイルが `root` 所有になる
 
 **症状**：`docker compose exec app python3 -m sluicery.cli ytdlp fetch <URL>` 等で Staging に生成された

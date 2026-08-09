@@ -167,3 +167,41 @@ compose はプロジェクト名でリソースを分離するため、他サー
 
 Proxmox LXC 環境での動作を試す場合は、上記を出発点にしつつ実際に踏んだ問題を
 [docs/troubleshooting.md](troubleshooting.md) にフィードバックしてください。
+
+## 9. SMB Storage の設定と検証
+
+Phase 5 で実装・実機検証済みの remote protocol は SMB だけです。実値を文書やシェル履歴へ
+残さないよう、以下のプレースホルダを各環境の値へ読み替えてください。password は引数に書かず、
+非エコーのプロンプトへ入力します。
+
+```bash
+docker compose exec app python3 -m sluicery.cli storage add \
+  --kind remote --name smb-media --protocol smb \
+  --host <SMB_HOST> --share <SHARE> --path library --user <USER>
+docker compose exec app python3 -m sluicery.cli storage show smb-media
+docker compose exec app python3 -m sluicery.cli storage test smb-media
+docker compose exec app python3 -m sluicery.cli storage space smb-media
+docker compose exec app python3 -m sluicery.cli storage ls smb-media
+docker compose exec --user "$(id -u):$(id -g)" app \
+  python3 -m sluicery.cli storage push smb-media /data/staging/example.bin library/example.bin
+```
+
+自動化から password を渡す場合は `--password-stdin` を明示し、標準入力の先頭行だけへ渡します。
+`storage show` は資格情報を `********（設定済み）` と表示し、平文を返しません。`storage push` は
+Phase 7 の pipeline が入るまでの検証用であり、既定では同名ファイルを上書きしません。
+
+### Phase 5 SMB 実機検証の実測値
+
+検証日 2026-08-09。専用の書込可能共有・読取専用共有・専用ユーザーを使用し、識別情報は記録して
+いません。値は同一 LAN 上の一回の測定であり、性能保証ではありません。
+
+| 項目 | 結果 |
+|---|---|
+| 4段階接続テスト | 約2.4秒（疎通・認証・一覧・作成/読出/削除） |
+| 単一ファイル転送 | 約5.5 MiB/s（16 MiB、CLI 起動時間を含む） |
+| `rclone about` | SMB で利用可能。空き容量を bytes で取得できた |
+
+実機検証20項目は、正常系、誤ホスト、誤password、存在しないパス、読取専用、上書き拒否、
+転送中断、孤児プロセス、マスク、所有者まで確認した。共有ホスト自体の停止は他サービスへの影響を
+避け、閉鎖ポートへの接続拒否で `unreachable` 分類を同等検証した。試験後は生成ファイルと
+資格情報入りの試験レコードを削除した。
