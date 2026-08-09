@@ -210,13 +210,19 @@ class LocalStorageAdapter:
         temp_rel = temp_path.relative_to(self._root).as_posix()
         source_size = src.stat().st_size
         source_hash = _sha256(src)
-        same_filesystem = src.stat().st_dev == final_path.parent.stat().st_dev
+        source_was_moved = False
         try:
-            if same_filesystem:
+            try:
                 os.replace(src, temp_path)
-            else:
-                shutil.copyfile(src, temp_path)
-                with temp_path.open("rb") as copied:
+                source_was_moved = True
+            except OSError as exc:
+                # Docker/WSL の異なる mount が同じ st_dev を返す場合があるため、
+                # 実際の rename(2) の EXDEV を基準に copy へフォールバックする。
+                if exc.errno != errno.EXDEV:
+                    raise
+                with src.open("rb") as source, temp_path.open("xb") as copied:
+                    shutil.copyfileobj(source, copied)
+                    copied.flush()
                     os.fsync(copied.fileno())
             if temp_path.stat().st_size != source_size or _sha256(temp_path) != source_hash:
                 return PublishResult(
@@ -240,7 +246,7 @@ class LocalStorageAdapter:
                     temporary_rel=temp_rel,
                 )
             os.replace(temp_path, final_path)
-            if not same_filesystem:
+            if not source_was_moved:
                 try:
                     src.unlink()
                 except OSError:
