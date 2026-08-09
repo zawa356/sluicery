@@ -3,8 +3,8 @@
 > このファイルはセッション間の引き継ぎ用です。
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
-最終更新: 2026-08-09 23:52
-対応コミット: 679f341 fix(storage): handle cross-mount local publish
+最終更新: 2026-08-10 00:18
+対応コミット: fd55ef7 fix(storage): publish失敗時の元ファイルと既存先を保護
 
 ## プロジェクト概要
 
@@ -46,18 +46,20 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 - rclone password は stdin で obscure し、対象子プロセスだけの環境変数へ注入する。
   資格情報と `RCLONE_CONFIG_*` 名は保持・ログ出力前にマスクする
 - 暫定 Storage CLI に remote SMB の登録・認証情報更新と `test` / `space` / `ls` / `push` を追加した
-- 専用 SMB 環境で Phase 5 実機検証20項目を完了。サーバー停止は閉鎖ポートの接続拒否で同等検証し、
-  正常/異常4段階、容量、転送、中断、孤児0、マスク、local、所有者を確認した
+- 専用 SMB 環境で Phase 5 実機検証20項目を完了。サーバー停止は転送確立後の app ネットワーク
+  一時切断で安全に代替し、`unreachable`、最終名なし、元保持、一時名報告、孤児0を確認した
 - 実機で timeout / SMB logon 文言の分類、非秘密設定値の誤検知、Docker/WSL cross-mount の
   local publish を修正した。試験ファイルと資格情報入り Storage レコードは削除済み
-- 最新の `make test` は204件、Ruff、mypy は全件成功
+- 独立レビューの重大1・中4・軽微2へ対応。local は元を保持する hardlink/copy と no-replace rename、
+  remote は `--ignore-existing`、接続試験は単一 deadline とし、YtdlpRunner の stdin 継承を復元した
+- レビュー対応後の `make test` は210件、Ruff、mypy は全件成功
 
 ## 次にやること
 
-1. Phase 5 の独立レビュー指摘を `docs/reviews/phase5.md` に記録し、必要な修正を行う
-2. 修正後に全件テスト、履歴監査、gitleaks を再実行し `checkpoint/step-05` を付与する
+1. Phase 5 の独立レビューと対応を `docs/reviews/phase5.md` に記録する
+2. 履歴監査と gitleaks を再実行し、クリーンなら `checkpoint/step-05` を付与する
 3. push は監査結果を報告し、ユーザーの明示承認を得るまで行わない
-4. Phase 6 で Task claim、network / compute ワーカー、blocked 相当の表現を設計・実装する
+4. 次フェーズでは Task claim、network / compute ワーカー、blocked 相当の表現を設計・実装する
 
 ## 未解決・保留
 
@@ -110,6 +112,6 @@ generic extractor で `uploader` / `duration` / `upload_date` が欠損する件
 
 - SQLite の WAL モードでワーカーとの同時書き込みが競合しやすい。書き込みトランザクションは短く保つ
 - `docker compose down -v` は volume を消す。開発中は使わない
-- Docker/WSL では異なる mount が同じ `st_dev` を返し得る。local publish は `EXDEV` で copy へ切り替える
+- Docker/WSL では異なる mount が同じ `st_dev` を返し得る。local publish は hardlink 失敗時に copy へ切り替える
 - `docker compose exec -T` を外側から中断すると exec クライアントだけが終了し得る。中断試験では
   コンテナ内の CLI へ SIGINT を送り、BaseRunner のプロセスグループ終了まで確認する

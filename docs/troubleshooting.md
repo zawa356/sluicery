@@ -61,11 +61,12 @@ README・`docs/deployment.md` の Quick Start は本手順を含む形に修正�
 接続テストは成功するのに publish が失敗する。
 
 **原因**：Docker Desktop / WSL2 の一部構成では、named volume と bind mount が同じ `st_dev` を
-返しても mount 境界をまたぐ `rename(2)` は `EXDEV` で失敗する。Phase 5 の実機検証で発見した。
+返しても mount 境界をまたぐ rename / hardlink は `EXDEV` で失敗する。Phase 5 の実機検証で発見した。
 
-**対処**：現行版は実際の `EXDEV` を検出して一時名への copy にフォールバックし、検証後に保存先内で
-rename する。修正前の版を使用している場合は更新する。一時名が報告された場合は内容を確認してから
-手動で扱い、sluicery は自動削除しない。
+**対処**：現行版は Staging 元を保持したまま hardlink を試し、`EXDEV` や非対応時は一時名への copy に
+フォールバックする。検証後は no-replace rename で最終化し、成功後だけ Staging 元を削除する。
+修正前の版を使用している場合は更新する。一時名が報告された場合は内容を確認してから手動で扱い、
+sluicery は自動削除しない。
 
 ## `docker compose exec app` で生成したファイルが `root` 所有になる
 
