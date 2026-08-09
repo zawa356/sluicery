@@ -42,9 +42,8 @@ class SettingSpec:
     default: Any
 
 
-# 要件定義から拾える運用パラメータ（§6.3）。`defaults.video.*` / `defaults.music.*`
-# は Phase 4 のオプション合成モデルで層3として使うキー体系のみ、ここでは定義しない
-# （値の構造が Profile の合成モデルに依存するため、Phase 4 で追加する）。
+# 要件定義から拾える運用パラメータ。`defaults.video.*` / `defaults.music.*` は
+# Phase 4 のオプション合成で L3 として参照する。
 CODE_DEFAULTS: dict[str, SettingSpec] = {
     "staging.warn_pct": SettingSpec("staging.warn_pct", int, 80),
     "staging.stop_pct": SettingSpec("staging.stop_pct", int, 90),
@@ -64,6 +63,35 @@ CODE_DEFAULTS: dict[str, SettingSpec] = {
     "download.limit_rate": SettingSpec("download.limit_rate", str, "8M"),
     "download.retries": SettingSpec("download.retries", int, 5),
     "download.fragment_retries": SettingSpec("download.fragment_retries", int, 10),
+    "defaults.video.format_selector": SettingSpec(
+        "defaults.video.format_selector", str, "bv*[height<=1080]+ba/b[height<=1080]/b"
+    ),
+    "defaults.video.container": SettingSpec("defaults.video.container", str, "mkv"),
+    "defaults.video.audio_extract": SettingSpec("defaults.video.audio_extract", bool, False),
+    "defaults.video.embed_metadata": SettingSpec("defaults.video.embed_metadata", bool, True),
+    "defaults.video.embed_thumbnail": SettingSpec("defaults.video.embed_thumbnail", bool, True),
+    "defaults.video.embed_chapters": SettingSpec("defaults.video.embed_chapters", bool, True),
+    "defaults.video.subtitle_langs": SettingSpec("defaults.video.subtitle_langs", str, "ja,en"),
+    "defaults.video.subtitle_auto": SettingSpec("defaults.video.subtitle_auto", bool, False),
+    "defaults.video.subtitle_embed": SettingSpec("defaults.video.subtitle_embed", bool, True),
+    "defaults.music.format_selector": SettingSpec(
+        "defaults.music.format_selector", str, "bestaudio/best"
+    ),
+    "defaults.music.audio_extract": SettingSpec("defaults.music.audio_extract", bool, True),
+    "defaults.music.audio_format": SettingSpec("defaults.music.audio_format", str, "opus"),
+    "defaults.music.audio_quality": SettingSpec("defaults.music.audio_quality", str, "0"),
+    "defaults.music.embed_metadata": SettingSpec("defaults.music.embed_metadata", bool, True),
+    "defaults.music.embed_thumbnail": SettingSpec("defaults.music.embed_thumbnail", bool, True),
+    "defaults.music.parse_metadata": SettingSpec(
+        "defaults.music.parse_metadata",
+        list,
+        [
+            "playlist_index:%(track_number)s",
+            "playlist_title:%(album)s",
+            "uploader:%(artist)s",
+            "upload_date:%(release_date)s",
+        ],
+    ),
     "retry.max_attempts": SettingSpec("retry.max_attempts", int, 5),
     "ytdlp.auto_install": SettingSpec("ytdlp.auto_install", bool, True),
     "ytdlp.keep_versions": SettingSpec("ytdlp.keep_versions", int, 3),
@@ -84,6 +112,11 @@ def _cast(type_: type, raw: Any) -> Any:
         return raw
     if type_ is bool and isinstance(raw, str):
         return raw.strip().lower() in ("1", "true", "yes", "on")
+    if type_ is list:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+            raise ValueError("JSON文字列の配列を指定してください")
+        return parsed
     return type_(raw)
 
 
