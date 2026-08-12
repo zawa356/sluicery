@@ -100,3 +100,48 @@ def test_profile_tristate_migration_preserves_values_and_round_trips(tmp_path: P
 
     command.upgrade(cfg, "head")
     engine.dispose()
+
+
+def test_phase6_task_migration_preserves_existing_queue_and_round_trips(tmp_path: Path) -> None:
+    db_path = tmp_path / "phase6-task.db"
+    cfg = _alembic_config(db_path)
+    command.upgrade(cfg, "5b8c9d1e2f30")
+
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """INSERT INTO task (
+                    type, target_ref_type, target_ref_id, worker_class, priority,
+                    status, attempts, max_attempts, created_at
+                ) VALUES (
+                    'download', 'target', 1, 'network', 0,
+                    'queued', 0, 5, CURRENT_TIMESTAMP
+                )"""
+            )
+        )
+
+    command.upgrade(cfg, "head")
+    columns = {column["name"] for column in inspect(engine).get_columns("task")}
+    assert {
+        "available_at",
+        "blocked_until",
+        "blocked_reason",
+        "heartbeat_at",
+        "worker_id",
+        "cancel_requested",
+    } <= columns
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT type, status, cancel_requested FROM task WHERE target_ref_id = 1")
+        ).one()
+        assert tuple(row) == ("download", "queued", 0)
+
+    command.downgrade(cfg, "5b8c9d1e2f30")
+    downgraded_columns = {column["name"] for column in inspect(engine).get_columns("task")}
+    assert "heartbeat_at" not in downgraded_columns
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM task")).scalar_one() == 1
+
+    command.upgrade(cfg, "head")
+    engine.dispose()
