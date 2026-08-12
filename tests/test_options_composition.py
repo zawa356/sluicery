@@ -134,6 +134,14 @@ def test_freeform_layers_are_concatenated_in_order(db_session) -> None:
     assert _option_value(command.args, "--format") == "temporary"
 
 
+def test_download_always_enables_partial_file_resume(db_session) -> None:
+    command = _download(db_session, profile_args="--no-continue")
+
+    assert command.args.index("--continue") > command.args.index("--no-continue")
+    origin = next(origin for origin in command.origins if "--continue" in origin.arguments)
+    assert origin.layer == "L1"
+
+
 def test_download_contains_staging_layout_protocol_and_progress_fix(db_session) -> None:
     command = _download(db_session)
     assert _option_value(command.args, "--paths") == "temp:/data/staging/work-1/.tmp"

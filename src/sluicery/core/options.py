@@ -671,7 +671,11 @@ def build_download_args(
         source=f"layout {strategy_name}",
         field_name="output_template",
     )
-    accumulator.add(["--newline", "--progress"], layer="L1", source="アプリ予約引数")
+    accumulator.add(
+        ["--continue", "--newline", "--progress"],
+        layer="L1",
+        source="アプリ予約引数",
+    )
     if "--progress-template" not in reserved:
         accumulator.add(
             ["--progress-template", f"download:{PROGRESS_PREFIX}%(progress)j"],
