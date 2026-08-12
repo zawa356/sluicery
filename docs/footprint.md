@@ -11,6 +11,11 @@ compose 変更時は必ず本ドキュメントを更新すること（CLAUDE.md
 | `worker-network` | `sluicery:local`（同一イメージ） | discover / download / publish |
 | `worker-compute` | `sluicery:local`（同一イメージ） | postprocess / verify（現バージョンではほぼ待機） |
 
+全サービスは Compose の `init: true` を使い、コンテナ内 PID 1 に tini 相当の init を置く。
+これは終了した子孫プロセスの reap のためであり、ホスト上に新しいファイル、volume、bind mount、
+ポート、常駐プロセスを追加しない。worker の `stop_grace_period` は30秒で、アプリ内の20秒の
+shutdown猶予より長くしている。
+
 ## イメージ
 
 - `sluicery:local`：`Dockerfile` の `runtime` ステージからローカルビルド。ベースは `python:3.12-slim`（digest 固定）。
