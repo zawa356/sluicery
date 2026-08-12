@@ -1,5 +1,6 @@
 services:
   app:
+    init: true
     build:
       context: .
       dockerfile: Dockerfile
@@ -23,6 +24,8 @@ services:
       start_period: 15s
 
   worker-network:
+    init: true
+    stop_grace_period: 30s
     build:
       context: .
       dockerfile: Dockerfile
@@ -41,6 +44,8 @@ services:
         condition: service_healthy
 
   worker-compute:
+    init: true
+    stop_grace_period: 30s
     build:
       context: .
       dockerfile: Dockerfile
