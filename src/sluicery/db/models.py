@@ -61,6 +61,7 @@ class UTCDateTime(TypeDecorator):
             return None
         return value.replace(tzinfo=UTC)
 
+
 # Alembic の batch モードで制約名が必要になるため、Phase 2 で必ず設定する（後から入れるのは困難）。
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
@@ -373,7 +374,10 @@ class Artifact(Base, TimestampMixin):
     """実体ファイル。1 Target に複数存在しうる。現バージョンで生成されるのは role=source のみ。"""
 
     __tablename__ = "artifact"
-    __table_args__ = (Index("ix_artifact_storage_id", "storage_id"),)
+    __table_args__ = (
+        UniqueConstraint("target_id", "role", "storage_id", "relative_path"),
+        Index("ix_artifact_storage_id", "storage_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     target_id: Mapped[int] = mapped_column(ForeignKey("target.id", ondelete="CASCADE"))
