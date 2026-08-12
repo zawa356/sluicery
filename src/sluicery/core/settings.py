@@ -111,6 +111,22 @@ CODE_DEFAULTS: dict[str, SettingSpec] = {
     "storage.absolute_timeout_sec": SettingSpec("storage.absolute_timeout_sec", int, 21600),
     "storage.test_timeout_sec": SettingSpec("storage.test_timeout_sec", int, 30),
     "storage.rclone_retries": SettingSpec("storage.rclone_retries", int, 1),
+    "worker.poll_interval_sec": SettingSpec("worker.poll_interval_sec", float, 3),
+    "worker.poll_jitter_sec": SettingSpec("worker.poll_jitter_sec", float, 1),
+    "worker.heartbeat_interval_sec": SettingSpec("worker.heartbeat_interval_sec", float, 30),
+    "worker.stale_threshold_sec": SettingSpec("worker.stale_threshold_sec", float, 180),
+    "worker.retry_base_sec": SettingSpec("worker.retry_base_sec", float, 60),
+    "worker.retry_max_sec": SettingSpec("worker.retry_max_sec", float, 3600),
+    "worker.max_attempts": SettingSpec("worker.max_attempts", int, 5),
+    "worker.blocked_retry_sec": SettingSpec("worker.blocked_retry_sec", float, 300),
+    "worker.progress_write_interval_sec": SettingSpec(
+        "worker.progress_write_interval_sec", float, 2
+    ),
+    "worker.progress_write_percent_step": SettingSpec(
+        "worker.progress_write_percent_step", float, 5
+    ),
+    "worker.shutdown_grace_sec": SettingSpec("worker.shutdown_grace_sec", float, 20),
+    "worker.enable_test_tasks": SettingSpec("worker.enable_test_tasks", bool, False),
 }
 
 
@@ -312,6 +328,54 @@ class OperationalSettings:
     @property
     def storage_rclone_retries(self) -> int:
         return get(self._session, "storage.rclone_retries")
+
+    @property
+    def worker_poll_interval_sec(self) -> float:
+        return get(self._session, "worker.poll_interval_sec")
+
+    @property
+    def worker_poll_jitter_sec(self) -> float:
+        return get(self._session, "worker.poll_jitter_sec")
+
+    @property
+    def worker_heartbeat_interval_sec(self) -> float:
+        return get(self._session, "worker.heartbeat_interval_sec")
+
+    @property
+    def worker_stale_threshold_sec(self) -> float:
+        return get(self._session, "worker.stale_threshold_sec")
+
+    @property
+    def worker_retry_base_sec(self) -> float:
+        return get(self._session, "worker.retry_base_sec")
+
+    @property
+    def worker_retry_max_sec(self) -> float:
+        return get(self._session, "worker.retry_max_sec")
+
+    @property
+    def worker_max_attempts(self) -> int:
+        return get(self._session, "worker.max_attempts")
+
+    @property
+    def worker_blocked_retry_sec(self) -> float:
+        return get(self._session, "worker.blocked_retry_sec")
+
+    @property
+    def worker_progress_write_interval_sec(self) -> float:
+        return get(self._session, "worker.progress_write_interval_sec")
+
+    @property
+    def worker_progress_write_percent_step(self) -> float:
+        return get(self._session, "worker.progress_write_percent_step")
+
+    @property
+    def worker_shutdown_grace_sec(self) -> float:
+        return get(self._session, "worker.shutdown_grace_sec")
+
+    @property
+    def worker_enable_test_tasks(self) -> bool:
+        return get(self._session, "worker.enable_test_tasks")
 
 
 __all__ = [

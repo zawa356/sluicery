@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -169,6 +170,14 @@ class TaskType(enum.StrEnum):
     INTEGRITY_CHECK = "integrity_check"
     RETENTION = "retention"
     UPDATE_YTDLP = "update_ytdlp"
+    # Phase 6 のキュー検証専用。worker.enable_test_tasks=false（既定）では
+    # CLI から投入できず、ワーカーにもハンドラを登録しない。
+    NOOP = "noop"
+    SLEEP = "sleep"
+    FAIL = "fail"
+    FAIL_UNAVAILABLE = "fail_unavailable"
+    FAIL_BLOCKED = "fail_blocked"
+    SPAWN = "spawn"
 
 
 class WorkerClass(enum.StrEnum):
@@ -184,6 +193,8 @@ class TaskStatus(enum.StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    UNAVAILABLE = "unavailable"
+    BLOCKED = "blocked"
     CANCELLED = "cancelled"
 
 
@@ -391,7 +402,15 @@ class Task(Base):
 
     __tablename__ = "task"
     __table_args__ = (
-        Index("ix_task_status_worker_class_priority", "status", "worker_class", "priority"),
+        Index(
+            "ix_task_claim",
+            "status",
+            "worker_class",
+            "priority",
+            "scheduled_at",
+            "available_at",
+            "blocked_until",
+        ),
         Index("ix_task_depends_on_task_id", "depends_on_task_id"),
     )
 
@@ -411,6 +430,14 @@ class Task(Base):
     scheduled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    available_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    blocked_until: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    blocked_reason: Mapped[str | None] = mapped_column(String(4000))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    worker_id: Mapped[str | None] = mapped_column(String(255))
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
     error_message: Mapped[str | None] = mapped_column(String(4000))
     log_excerpt: Mapped[str | None] = mapped_column(String(4000))
     run_id: Mapped[int | None] = mapped_column(ForeignKey("run.id"))
