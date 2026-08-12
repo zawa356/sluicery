@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime, timedelta
 
 from sluicery.db.models import Run, RunStatus, RunTrigger, TaskStatus, TaskType, WorkerClass
@@ -129,6 +130,37 @@ def test_stale_owner_cannot_overwrite_progress(db_session) -> None:
     assert task.payload_json is None
 
 
+def test_stale_owner_cannot_overwrite_new_owner_with_failed_result(db_session) -> None:
+    repo = TaskRepository(db_session)
+    task = _task(
+        repo,
+        status=TaskStatus.RUNNING,
+        worker_id="old-worker",
+        heartbeat_at=NOW - timedelta(seconds=181),
+    )
+    assert repo.recover_stale(stale_before=NOW - timedelta(seconds=180), now=NOW) == [task.id]
+    claimed = repo.claim_next(
+        WorkerClass.NETWORK,
+        worker_id="new-worker",
+        now=NOW,
+    )
+    assert claimed is not None and claimed.id == task.id
+
+    assert (
+        repo.mark_failed_for_retry(
+            task.id,
+            "old-worker",
+            retry_delay_sec=60,
+            now=NOW,
+        )
+        is None
+    )
+    db_session.refresh(task)
+    assert task.status == TaskStatus.RUNNING
+    assert task.worker_id == "new-worker"
+    assert task.attempts == 1
+
+
 def test_heartbeat_updates_and_returns_cancel_flag(db_session) -> None:
     repo = TaskRepository(db_session)
     task = _task(repo, status=TaskStatus.RUNNING, worker_id="worker")
@@ -178,6 +210,148 @@ def test_cancel_waiting_and_run_interface(db_session) -> None:
     db_session.refresh(running)
     assert waiting.status == TaskStatus.CANCELLED
     assert running.cancel_requested is True
+
+
+def test_cancel_after_last_heartbeat_wins_over_retryable_or_blocked_result(db_session) -> None:
+    repo = TaskRepository(db_session)
+    failed = _task(
+        repo,
+        target_ref_id=1,
+        status=TaskStatus.RUNNING,
+        worker_id="worker",
+        cancel_requested=True,
+        attempts=1,
+    )
+    blocked = _task(
+        repo,
+        target_ref_id=2,
+        status=TaskStatus.RUNNING,
+        worker_id="worker",
+        cancel_requested=True,
+        attempts=1,
+    )
+
+    assert (
+        repo.mark_failed_for_retry(
+            failed.id,
+            "worker",
+            retry_delay_sec=60,
+            now=NOW,
+        )
+        == TaskStatus.CANCELLED
+    )
+    assert repo.mark_blocked(
+        blocked.id,
+        "worker",
+        retry_after_sec=300,
+        now=NOW,
+    )
+    db_session.refresh(failed)
+    db_session.refresh(blocked)
+    assert failed.status == blocked.status == TaskStatus.CANCELLED
+    assert failed.attempts == blocked.attempts == 1
+    assert failed.cancel_requested is blocked.cancel_requested is False
+
+
+def test_cancel_and_claim_race_never_leaves_claimed_task_cancelled(session_factory) -> None:
+    def run_once(target_ref_id: int) -> None:
+        with session_factory() as session:
+            task = _task(
+                TaskRepository(session),
+                target_ref_id=target_ref_id,
+                status=TaskStatus.QUEUED,
+            )
+            task_id = task.id
+        barrier = threading.Barrier(3)
+        claimed: list[int | None] = []
+
+        def claim() -> None:
+            with session_factory() as session:
+                barrier.wait()
+                result = TaskRepository(session).claim_next(
+                    WorkerClass.NETWORK,
+                    worker_id="worker",
+                    now=NOW,
+                )
+                claimed.append(result.id if result else None)
+
+        def cancel() -> None:
+            with session_factory() as session:
+                barrier.wait()
+                TaskRepository(session).request_cancel(task_id, now=NOW)
+
+        claim_thread = threading.Thread(target=claim)
+        cancel_thread = threading.Thread(target=cancel)
+        claim_thread.start()
+        cancel_thread.start()
+        barrier.wait()
+        claim_thread.join()
+        cancel_thread.join()
+
+        with session_factory() as session:
+            task = TaskRepository(session).get(task_id)
+            assert task is not None
+            if claimed == [task_id]:
+                assert task.status == TaskStatus.RUNNING
+                assert task.cancel_requested is True
+            else:
+                assert claimed == [None]
+                assert task.status == TaskStatus.CANCELLED
+
+    for target_ref_id in range(20):
+        run_once(target_ref_id)
+
+
+def test_retry_and_claim_race_preserves_claim_ownership(session_factory) -> None:
+    def run_once(target_ref_id: int) -> None:
+        with session_factory() as session:
+            task = _task(
+                TaskRepository(session),
+                target_ref_id=target_ref_id,
+                status=TaskStatus.CANCELLED,
+            )
+            task_id = task.id
+        barrier = threading.Barrier(3)
+        claimed: list[int | None] = []
+
+        def claim() -> None:
+            with session_factory() as session:
+                barrier.wait()
+                result = TaskRepository(session).claim_next(
+                    WorkerClass.NETWORK,
+                    worker_id="worker",
+                    now=NOW,
+                )
+                claimed.append(result.id if result else None)
+
+        def retry() -> None:
+            with session_factory() as session:
+                barrier.wait()
+                TaskRepository(session).retry(task_id, now=NOW)
+
+        claim_thread = threading.Thread(target=claim)
+        retry_thread = threading.Thread(target=retry)
+        claim_thread.start()
+        retry_thread.start()
+        barrier.wait()
+        claim_thread.join()
+        retry_thread.join()
+
+        with session_factory() as session:
+            repo = TaskRepository(session)
+            task = repo.get(task_id)
+            assert task is not None
+            if claimed == [task_id]:
+                assert task.status == TaskStatus.RUNNING
+                assert task.worker_id == "worker"
+                repo.mark_cancelled(task_id, "worker", now=NOW)
+            else:
+                assert claimed == [None]
+                assert task.status == TaskStatus.PENDING
+                repo.request_cancel(task_id, now=NOW)
+
+    for target_ref_id in range(20):
+        run_once(target_ref_id)
 
 
 def test_progress_is_merged_into_payload_with_single_update(db_session) -> None:
