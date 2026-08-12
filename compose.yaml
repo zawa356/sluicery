@@ -4,6 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runtime
     image: sluicery:local
     restart: unless-stopped
     command: ["web"]
@@ -29,6 +30,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runtime
     image: sluicery:local
     restart: unless-stopped
     command: ["worker-network"]
@@ -49,6 +51,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runtime
     image: sluicery:local
     restart: unless-stopped
     command: ["worker-compute"]

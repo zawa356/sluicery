@@ -140,19 +140,24 @@ def _run_web() -> int:
     _ensure_migrations_for_web(settings)
     crypto.set_encryption_key(settings.SECRET_KEY)
     assert settings.DB_PATH is not None
-    engine = create_engine_for(settings.DB_PATH)
-    session_factory = create_session_factory(engine)
-    with session_factory() as session:
-        worker_config = WorkerConfig.from_session(session)
-    reaper_stop = threading.Event()
-    reaper = StaleTaskReaper(session_factory, worker_config)
-    reaper_thread = threading.Thread(
-        target=reaper.run,
-        args=(reaper_stop,),
-        daemon=True,
-        name="task-stale-reaper",
-    )
-    reaper_thread.start()
+    current, head = _current_and_head_revision(settings.DB_PATH)
+    engine = None
+    reaper_stop = None
+    reaper_thread = None
+    if current == head:
+        engine = create_engine_for(settings.DB_PATH)
+        session_factory = create_session_factory(engine)
+        with session_factory() as session:
+            worker_config = WorkerConfig.from_session(session)
+        reaper_stop = threading.Event()
+        reaper = StaleTaskReaper(session_factory, worker_config)
+        reaper_thread = threading.Thread(
+            target=reaper.run,
+            args=(reaper_stop,),
+            daemon=True,
+            name="task-stale-reaper",
+        )
+        reaper_thread.start()
 
     threading.Thread(
         target=_maybe_auto_install_ytdlp, args=(settings,), daemon=True, name="ytdlp-auto-install"
@@ -162,9 +167,11 @@ def _run_web() -> int:
     try:
         uvicorn.run(create_app(), host="0.0.0.0", port=port, log_level="info")
     finally:
-        reaper_stop.set()
-        reaper_thread.join(timeout=2)
-        engine.dispose()
+        if reaper_stop is not None and reaper_thread is not None:
+            reaper_stop.set()
+            reaper_thread.join(timeout=2)
+        if engine is not None:
+            engine.dispose()
     return 0
 
 
