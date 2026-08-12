@@ -154,3 +154,31 @@ def test_publish_resumes_when_existing_size_matches(session_factory, tmp_path: P
     assert result.outcome == TaskOutcome.SUCCEEDED
     assert result.payload_update["publish_resumed"] is True
     assert not adapter.published
+
+
+def test_publish_recovery_moves_blocked_target_back_to_processing(
+    session_factory, tmp_path: Path
+) -> None:
+    work = tmp_path / "work" / "folder"
+    work.mkdir(parents=True)
+    source = work / "media.mkv"
+    source.write_bytes(b"media")
+    target_id, task_id = _graph(session_factory, source)
+    with session_factory() as session:
+        target = session.get(Target, target_id)
+        target.status = TargetStatus.BLOCKED
+        session.commit()
+    adapter = _Adapter()
+
+    result = PublishHandler(
+        session_factory,
+        staging_dir=tmp_path,
+        adapter_factory=lambda storage, settings: adapter,
+    ).run(
+        {"target_id": target_id, "work_id": "work", "_execution": {"task_id": task_id}},
+        lambda _: None,
+    )
+
+    assert result.outcome == TaskOutcome.SUCCEEDED
+    with session_factory() as session:
+        assert session.get(Target, target_id).status == TargetStatus.PROCESSING
