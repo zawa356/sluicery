@@ -70,6 +70,17 @@ class PublishHandler:
             self._adapter = adapter
             warn_bytes = ops.storage_free_space_warn_bytes
             stop_bytes = ops.storage_free_space_stop_bytes
+            if not TargetRepository(session).compare_and_set_status(
+                target_id,
+                {
+                    TargetStatus.DOWNLOADING,
+                    TargetStatus.PROCESSING,
+                    TargetStatus.FAILED,
+                    TargetStatus.BLOCKED,
+                },
+                TargetStatus.PROCESSING,
+            ):
+                return TaskResult(TaskOutcome.FAILED, "Targetをprocessingへ遷移できません")
 
         raw_path = previous.get("file_path")
         if not isinstance(raw_path, str):
