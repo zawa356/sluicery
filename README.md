@@ -172,6 +172,31 @@ docker compose exec app python3 -m sluicery.cli options preview \
 `storage push <storage> <local-path> <dest-rel>` は Phase 7 の pipeline 実装までの検証用で、
 完成済みの単一ファイルを一時名で転送・検証後に最終化します。既定では同名を上書きしません。
 
+### 暫定の Task 検証 CLI
+
+Phase 7 の実パイプラインが入るまで、`noop` / `sleep` / `fail` / `fail_unavailable` /
+`fail_blocked` / `spawn` のダミーTaskでキューを検証できます。本番で誤実行しないよう既定は無効です。
+検証環境でだけ有効化し、設定を読み直すためworkerを再起動してください。
+
+```bash
+docker compose exec app python3 -m sluicery.cli settings set worker.enable_test_tasks true
+docker compose restart worker-network worker-compute
+
+docker compose exec app python3 -m sluicery.cli task enqueue noop
+docker compose exec app python3 -m sluicery.cli task enqueue sleep --payload '{"sec":30}'
+docker compose exec app python3 -m sluicery.cli task list --status running
+docker compose exec app python3 -m sluicery.cli task show <ID>
+docker compose exec app python3 -m sluicery.cli task cancel <ID>
+docker compose exec app python3 -m sluicery.cli task retry <ID>
+
+# 検証終了後に無効化し、workerを再起動
+docker compose exec app python3 -m sluicery.cli settings unset worker.enable_test_tasks
+docker compose restart worker-network worker-compute
+```
+
+`--worker-class network|compute` と `--priority N` も指定できます。このCLIとダミーTaskは
+Phase 7までの暫定実装であり、通常の同期処理には使用しません。
+
 ## トラブルシューティング
 
 起動しない・動作がおかしい場合は [docs/troubleshooting.md](docs/troubleshooting.md) を参照してください。
