@@ -1,7 +1,8 @@
 """リポジトリ層（docs/phase2_指示書.md §7）。
 
-CRUD と単純な検索まで。状態遷移のロジックはここに置かない
-（Phase 7〜8 の `core/` に置く）。セッションは外部から受け取る。
+CRUD と検索を担う。一般の状態遷移ルールは Phase 7〜8 の `core/` に置くが、
+Taskの所有権付き実行状態更新はアトミック性のため `TaskRepository` に閉じ込める。
+セッションは外部から受け取る。
 """
 
 from sluicery.db.repositories.artifact import ArtifactRepository

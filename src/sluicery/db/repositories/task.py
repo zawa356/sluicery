@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.orm import aliased
 
 from sluicery.db.models import Task, TaskStatus, WorkerClass
@@ -187,28 +187,48 @@ class TaskRepository(BaseRepository[Task]):
         error_message: str | None = None,
         now: datetime | None = None,
     ) -> TaskStatus | None:
-        """attemptsを増やし、上限未満ならpending、到達時はunavailableにする。"""
+        """所有権付き単一UPDATEでretryまたは終端状態を確定する。"""
         failed_at = now or datetime.now(UTC)
-        task = self.session.scalar(
-            select(Task).where(
+        next_attempts = Task.attempts + 1
+        cancel_requested = Task.cancel_requested.is_(True)
+        attempts_exhausted = next_attempts >= Task.max_attempts
+        status_value = case(
+            (cancel_requested, TaskStatus.CANCELLED),
+            (attempts_exhausted, TaskStatus.UNAVAILABLE),
+            else_=TaskStatus.PENDING,
+        )
+        stmt = (
+            update(Task)
+            .where(
                 Task.id == task_id,
                 Task.status == TaskStatus.RUNNING,
                 Task.worker_id == worker_id,
             )
+            .values(
+                status=status_value,
+                attempts=case(
+                    (cancel_requested, Task.attempts),
+                    else_=next_attempts,
+                ),
+                available_at=case(
+                    (or_(cancel_requested, attempts_exhausted), None),
+                    else_=failed_at + timedelta(seconds=retry_delay_sec),
+                ),
+                finished_at=case(
+                    (or_(cancel_requested, attempts_exhausted), failed_at),
+                    else_=None,
+                ),
+                error_message=error_message,
+                worker_id=None,
+                started_at=None,
+                heartbeat_at=None,
+                cancel_requested=False,
+            )
+            .returning(Task.status)
         )
-        if task is None:
-            return None
-        attempts = task.attempts + 1
-        terminal = attempts >= task.max_attempts
-        status = TaskStatus.UNAVAILABLE if terminal else TaskStatus.PENDING
-        task.status = status
-        task.attempts = attempts
-        task.available_at = None if terminal else failed_at + timedelta(seconds=retry_delay_sec)
-        task.finished_at = failed_at if terminal else None
-        task.error_message = error_message
-        self._clear_ownership(task)
+        status = self.session.execute(stmt).scalar_one_or_none()
         self.session.commit()
-        if terminal:
+        if status == TaskStatus.UNAVAILABLE:
             self.cancel_descendants(task_id, now=failed_at)
         return status
 
@@ -223,6 +243,7 @@ class TaskRepository(BaseRepository[Task]):
     ) -> bool:
         """外的要因をblockedにし、attemptsを消費せず再claim時刻を設定する。"""
         blocked_at = now or datetime.now(UTC)
+        cancel_requested = Task.cancel_requested.is_(True)
         stmt = (
             update(Task)
             .where(
@@ -231,15 +252,22 @@ class TaskRepository(BaseRepository[Task]):
                 Task.worker_id == worker_id,
             )
             .values(
-                status=TaskStatus.BLOCKED,
-                blocked_until=blocked_at + timedelta(seconds=retry_after_sec),
-                blocked_reason=reason,
+                status=case(
+                    (cancel_requested, TaskStatus.CANCELLED),
+                    else_=TaskStatus.BLOCKED,
+                ),
+                blocked_until=case(
+                    (cancel_requested, None),
+                    else_=blocked_at + timedelta(seconds=retry_after_sec),
+                ),
+                blocked_reason=case((cancel_requested, None), else_=reason),
                 worker_id=None,
                 started_at=None,
                 heartbeat_at=None,
-                finished_at=None,
+                finished_at=case((cancel_requested, blocked_at), else_=None),
                 available_at=None,
-                error_message=reason,
+                cancel_requested=False,
+                error_message=case((cancel_requested, None), else_=reason),
             )
         )
         result = self.session.execute(stmt)
@@ -272,20 +300,30 @@ class TaskRepository(BaseRepository[Task]):
         return bool(_rowcount(result))
 
     def request_cancel(self, task_id: int, *, now: datetime | None = None) -> bool:
-        task = self.get(task_id)
-        if task is None:
-            return False
-        if task.status == TaskStatus.RUNNING:
-            task.cancel_requested = True
-        elif task.status in WAITING_STATUSES:
-            task.status = TaskStatus.CANCELLED
-            task.finished_at = now or datetime.now(UTC)
-            task.cancel_requested = False
-            self._clear_ownership(task)
-        else:
-            return False
+        """claimとの競合を単一の状態条件付きUPDATEで直列化する。"""
+        requested_at = now or datetime.now(UTC)
+        is_running = Task.status == TaskStatus.RUNNING
+        stmt = (
+            update(Task)
+            .where(
+                Task.id == task_id,
+                or_(is_running, Task.status.in_(WAITING_STATUSES)),
+            )
+            .values(
+                status=case((is_running, Task.status), else_=TaskStatus.CANCELLED),
+                finished_at=case((is_running, Task.finished_at), else_=requested_at),
+                cancel_requested=case((is_running, True), else_=False),
+                worker_id=case((is_running, Task.worker_id), else_=None),
+                started_at=case((is_running, Task.started_at), else_=None),
+                heartbeat_at=case((is_running, Task.heartbeat_at), else_=None),
+                available_at=case((is_running, Task.available_at), else_=None),
+                blocked_until=case((is_running, Task.blocked_until), else_=None),
+                blocked_reason=case((is_running, Task.blocked_reason), else_=None),
+            )
+        )
+        result = self.session.execute(stmt)
         self.session.commit()
-        return True
+        return bool(_rowcount(result))
 
     def request_cancel_run(self, run_id: int, *, now: datetime | None = None) -> int:
         """Phase 8のRun生成経路から使うRun単位キャンセルのDBインターフェース。"""
@@ -311,20 +349,26 @@ class TaskRepository(BaseRepository[Task]):
         return _rowcount(waiting_result) + _rowcount(running_result)
 
     def retry(self, task_id: int, *, now: datetime | None = None) -> bool:
-        task = self.get(task_id)
-        if task is None or task.status == TaskStatus.RUNNING:
-            return False
-        task.status = TaskStatus.PENDING
-        task.attempts = 0
-        task.available_at = now or datetime.now(UTC)
-        task.blocked_until = None
-        task.blocked_reason = None
-        task.cancel_requested = False
-        task.finished_at = None
-        task.error_message = None
-        self._clear_ownership(task)
+        stmt = (
+            update(Task)
+            .where(Task.id == task_id, Task.status != TaskStatus.RUNNING)
+            .values(
+                status=TaskStatus.PENDING,
+                attempts=0,
+                available_at=now or datetime.now(UTC),
+                blocked_until=None,
+                blocked_reason=None,
+                cancel_requested=False,
+                finished_at=None,
+                error_message=None,
+                worker_id=None,
+                started_at=None,
+                heartbeat_at=None,
+            )
+        )
+        result = self.session.execute(stmt)
         self.session.commit()
-        return True
+        return bool(_rowcount(result))
 
     def cancel_descendants(self, task_id: int, *, now: datetime | None = None) -> int:
         """失敗した依存元より後ろの未実行Taskを全てcancelledにする。"""
