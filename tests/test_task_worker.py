@@ -9,7 +9,7 @@ from sluicery.db.models import TaskStatus, TaskType, WorkerClass
 from sluicery.db.repositories.task import TaskRepository
 from sluicery.tasks.handlers.dummy import DUMMY_HANDLER_FACTORIES
 from sluicery.tasks.queue import TaskOutcome, TaskResult
-from sluicery.tasks.worker import Worker, WorkerConfig
+from sluicery.tasks.worker import Worker, WorkerConfig, make_worker_id
 
 NOW = datetime(2026, 8, 12, 0, 0, tzinfo=UTC)
 
@@ -180,3 +180,10 @@ def test_spawn_dummy_handler_completes_without_orphan_on_normal_exit() -> None:
     handler = DUMMY_HANDLER_FACTORIES["spawn"]()
     result = handler.run({"sec": 0}, lambda _progress: None)
     assert result.outcome == TaskOutcome.SUCCEEDED
+
+
+def test_worker_id_is_unique_across_restarts() -> None:
+    first = make_worker_id(WorkerClass.NETWORK)
+    second = make_worker_id(WorkerClass.NETWORK)
+    assert first != second
+    assert first.startswith("worker-network:")

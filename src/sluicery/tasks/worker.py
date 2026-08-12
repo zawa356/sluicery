@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -85,7 +86,8 @@ class WorkerConfig:
 
 def make_worker_id(worker_class: WorkerClass) -> str:
     host = socket.gethostname().split(".", 1)[0][:12]
-    return f"worker-{worker_class.value}:{host}:{os.getpid()}"
+    invocation = uuid4().hex[:8]
+    return f"worker-{worker_class.value}:{host}:{os.getpid()}:{invocation}"
 
 
 class Worker:
@@ -342,7 +344,10 @@ class StaleTaskReaper:
 
     def run(self, stop: threading.Event) -> None:
         while not stop.is_set():
-            self.run_once()
+            try:
+                self.run_once()
+            except Exception:  # noqa: BLE001 - 一時的DB競合で回収ループを失わない
+                logger.warning("Stale task recovery failed", exc_info=True)
             stop.wait(self._config.heartbeat_interval_sec)
 
 
