@@ -205,6 +205,7 @@ def _run_worker(worker_class: str) -> int:
     from sluicery.db.models import WorkerClass
     from sluicery.db.session import create_engine_for, create_session_factory
     from sluicery.downloader.version import ytdlp_root
+    from sluicery.tasks.handlers import DUMMY_HANDLER_FACTORIES, build_pipeline_handler_factories
     from sluicery.tasks.worker import Worker, WorkerConfig
 
     settings = load_settings()
@@ -217,7 +218,15 @@ def _run_worker(worker_class: str) -> int:
     session_factory = create_session_factory(engine)
     with session_factory() as session:
         config = WorkerConfig.from_session(session)
-    worker = Worker(session_factory, WorkerClass(worker_class), config)
+    handler_factories = build_pipeline_handler_factories(session_factory, settings)
+    if config.enable_test_tasks:
+        handler_factories.update(DUMMY_HANDLER_FACTORIES)
+    worker = Worker(
+        session_factory,
+        WorkerClass(worker_class),
+        config,
+        handler_factories=handler_factories,
+    )
     print(f"[sluicery] {worker.worker_id}: Taskキューの処理を開始します", flush=True)
     try:
         worker.run()
