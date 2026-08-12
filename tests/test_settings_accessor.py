@@ -58,3 +58,19 @@ def test_phase4_kind_defaults_and_list_override(db_session) -> None:
     assert core_settings.get(db_session, "defaults.music.parse_metadata") == [
         "uploader:%(artist)s"
     ]
+
+
+def test_phase6_worker_defaults(db_session) -> None:
+    accessor = core_settings.OperationalSettings(db_session)
+    assert accessor.worker_poll_interval_sec == 3
+    assert accessor.worker_poll_jitter_sec == 1
+    assert accessor.worker_heartbeat_interval_sec == 30
+    assert accessor.worker_stale_threshold_sec == 180
+    assert accessor.worker_retry_base_sec == 60
+    assert accessor.worker_retry_max_sec == 3600
+    assert accessor.worker_max_attempts == 5
+    assert accessor.worker_blocked_retry_sec == 300
+    assert accessor.worker_progress_write_interval_sec == 2
+    assert accessor.worker_progress_write_percent_step == 5
+    assert accessor.worker_shutdown_grace_sec == 20
+    assert accessor.worker_enable_test_tasks is False
