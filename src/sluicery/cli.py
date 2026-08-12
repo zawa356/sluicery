@@ -683,6 +683,7 @@ def _cmd_ytdlp_fetch(
 
 def main(argv: list[str] | None = None) -> int:
     from sluicery.cli_crud import configure_parsers
+    from sluicery.cli_staging import configure_parser as configure_staging_parser
     from sluicery.cli_task import configure_parser as configure_task_parser
 
     parser = argparse.ArgumentParser(prog="sluicery")
@@ -719,6 +720,7 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_parsers(sub)
     configure_task_parser(sub)
+    configure_staging_parser(sub)
 
     ytdlp_parser = sub.add_parser("ytdlp", help="yt-dlp の venv を管理する")
     ytdlp_sub = ytdlp_parser.add_subparsers(dest="ytdlp_command", required=True)
@@ -755,6 +757,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     from sluicery.cli_crud import dispatch as dispatch_crud
+    from sluicery.cli_staging import dispatch as dispatch_staging
     from sluicery.cli_task import dispatch as dispatch_task
     from sluicery.config import load_settings
 
@@ -764,6 +767,9 @@ def main(argv: list[str] | None = None) -> int:
     task_result = dispatch_task(args, open_session=_open_session)
     if task_result is not None:
         return task_result
+    staging_result = dispatch_staging(args, open_session=_open_session, load_settings=load_settings)
+    if staging_result is not None:
+        return staging_result
 
     if args.command == "web":
         return _run_web()
