@@ -190,7 +190,14 @@ class Worker:
 
         def invoke_handler() -> None:
             try:
-                result_holder.append(handler.run(task.payload_json or {}, progress.emit))
+                execution_payload = dict(task.payload_json or {})
+                execution_payload["_execution"] = {
+                    "task_id": task.id,
+                    "depends_on_task_id": task.depends_on_task_id,
+                    "target_ref_id": task.target_ref_id,
+                    "run_id": task.run_id,
+                }
+                result_holder.append(handler.run(execution_payload, progress.emit))
             except Exception as exc:  # noqa: BLE001 - 1件の例外でworker全体を停止させない
                 logger.exception("Task handler raised", extra={"task_id": task.id})
                 result_holder.append(TaskResult(TaskOutcome.FAILED, str(exc)))
@@ -224,8 +231,10 @@ class Worker:
                 )
             return
 
-        result = result_holder[0] if result_holder else TaskResult(
-            TaskOutcome.FAILED, "ハンドラが結果を返しませんでした"
+        result = (
+            result_holder[0]
+            if result_holder
+            else TaskResult(TaskOutcome.FAILED, "ハンドラが結果を返しませんでした")
         )
         if cancel_seen.is_set():
             result = TaskResult(TaskOutcome.CANCELLED)
@@ -266,6 +275,8 @@ class Worker:
     def _apply_result(self, task: Task, result: TaskResult) -> None:
         with self._session_factory() as session:
             repo = TaskRepository(session)
+            if result.payload_update:
+                repo.write_result_payload(task.id, self.worker_id, result.payload_update)
             if result.outcome == TaskOutcome.SUCCEEDED:
                 repo.mark_succeeded(task.id, self.worker_id, now=self._clock())
             elif result.outcome == TaskOutcome.CANCELLED:
