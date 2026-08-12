@@ -104,13 +104,14 @@ CODE_DEFAULTS: dict[str, SettingSpec] = {
     "storage.free_space_warn_bytes": SettingSpec(
         "storage.free_space_warn_bytes", int, 10 * 1024**3
     ),
-    "storage.free_space_stop_bytes": SettingSpec(
-        "storage.free_space_stop_bytes", int, 2 * 1024**3
-    ),
+    "storage.free_space_stop_bytes": SettingSpec("storage.free_space_stop_bytes", int, 2 * 1024**3),
     "storage.idle_timeout_sec": SettingSpec("storage.idle_timeout_sec", int, 300),
     "storage.absolute_timeout_sec": SettingSpec("storage.absolute_timeout_sec", int, 21600),
     "storage.test_timeout_sec": SettingSpec("storage.test_timeout_sec", int, 30),
     "storage.rclone_retries": SettingSpec("storage.rclone_retries", int, 1),
+    "pipeline.verify_timeout_sec": SettingSpec("pipeline.verify_timeout_sec", int, 60),
+    "sync.max_targets_per_run": SettingSpec("sync.max_targets_per_run", int, 50),
+    "sync.delete_staging_after_index": SettingSpec("sync.delete_staging_after_index", bool, True),
     "worker.poll_interval_sec": SettingSpec("worker.poll_interval_sec", float, 3),
     "worker.poll_jitter_sec": SettingSpec("worker.poll_jitter_sec", float, 1),
     "worker.heartbeat_interval_sec": SettingSpec("worker.heartbeat_interval_sec", float, 30),
@@ -328,6 +329,18 @@ class OperationalSettings:
     @property
     def storage_rclone_retries(self) -> int:
         return get(self._session, "storage.rclone_retries")
+
+    @property
+    def pipeline_verify_timeout_sec(self) -> int:
+        return get(self._session, "pipeline.verify_timeout_sec")
+
+    @property
+    def sync_max_targets_per_run(self) -> int:
+        return get(self._session, "sync.max_targets_per_run")
+
+    @property
+    def sync_delete_staging_after_index(self) -> bool:
+        return get(self._session, "sync.delete_staging_after_index")
 
     @property
     def worker_poll_interval_sec(self) -> float:
