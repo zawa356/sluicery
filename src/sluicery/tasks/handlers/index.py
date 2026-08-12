@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sluicery.db.models import ArtifactRole, TargetStatus
 from sluicery.db.repositories.artifact import ArtifactRepository
 from sluicery.db.repositories.target import TargetRepository
+from sluicery.hooks import EventLogHook, Hook, emit_safely
 from sluicery.tasks.handlers.dummy import ProgressCallback
 from sluicery.tasks.pipeline import dependency_payload, execution_task_id
 from sluicery.tasks.queue import TaskOutcome, TaskResult
@@ -22,10 +23,12 @@ class IndexHandler:
         *,
         staging_dir: Path,
         delete_staging: bool = True,
+        hook: Hook | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._staging_dir = staging_dir
         self._delete_staging = delete_staging
+        self._hook = hook or EventLogHook(session_factory)
 
     def cancel(self) -> None:
         pass
@@ -84,6 +87,14 @@ class IndexHandler:
             except OSError:
                 # ArtifactとTargetの確定後なのでcleanup失敗は本体成功を覆さない。
                 staging_deleted = False
+        event_payload = {
+            "target_id": target_id,
+            "artifact_id": artifact.id,
+            "storage_id": storage_id,
+            "relative_path": relative_path,
+        }
+        emit_safely(self._hook, "target_downloaded", event_payload)
+        emit_safely(self._hook, "artifact_published", event_payload)
         on_progress({"status": "indexed", "percent": 100.0})
         return TaskResult(
             TaskOutcome.SUCCEEDED,

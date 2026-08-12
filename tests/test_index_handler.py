@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from sluicery.db.models import (
     Artifact,
+    EventLog,
     Item,
     LayoutStrategy,
     Playlist,
@@ -102,6 +103,10 @@ def test_index_creates_artifact_then_deletes_staging(session_factory, tmp_path: 
         assert artifact.produced_by_task_id == task_id
         assert artifact.checksum is None
         assert session.get(Target, target_id).status == TargetStatus.DOWNLOADED
+        assert [event.event_type for event in session.scalars(select(EventLog))] == [
+            "target_downloaded",
+            "artifact_published",
+        ]
 
 
 def test_index_is_idempotent_and_cleanup_failure_does_not_fail(
