@@ -131,17 +131,40 @@ def _run_web() -> int:
     import uvicorn
 
     from sluicery.config import load_settings
+    from sluicery.db import crypto
+    from sluicery.db.session import create_engine_for, create_session_factory
+    from sluicery.tasks.worker import StaleTaskReaper, WorkerConfig
     from sluicery.web.app import create_app
 
     settings = load_settings()
     _ensure_migrations_for_web(settings)
+    crypto.set_encryption_key(settings.SECRET_KEY)
+    assert settings.DB_PATH is not None
+    engine = create_engine_for(settings.DB_PATH)
+    session_factory = create_session_factory(engine)
+    with session_factory() as session:
+        worker_config = WorkerConfig.from_session(session)
+    reaper_stop = threading.Event()
+    reaper = StaleTaskReaper(session_factory, worker_config)
+    reaper_thread = threading.Thread(
+        target=reaper.run,
+        args=(reaper_stop,),
+        daemon=True,
+        name="task-stale-reaper",
+    )
+    reaper_thread.start()
 
     threading.Thread(
         target=_maybe_auto_install_ytdlp, args=(settings,), daemon=True, name="ytdlp-auto-install"
     ).start()
 
     port = int(os.environ.get("HTTP_PORT", str(settings.HTTP_PORT)))
-    uvicorn.run(create_app(), host="0.0.0.0", port=port, log_level="info")
+    try:
+        uvicorn.run(create_app(), host="0.0.0.0", port=port, log_level="info")
+    finally:
+        reaper_stop.set()
+        reaper_thread.join(timeout=2)
+        engine.dispose()
     return 0
 
 
@@ -171,22 +194,29 @@ def _wait_for_ytdlp_ready(root: Path, *, poll_interval_sec: float = 10.0) -> Non
 
 def _run_worker(worker_class: str) -> int:
     from sluicery.config import load_settings
+    from sluicery.db import crypto
+    from sluicery.db.models import WorkerClass
+    from sluicery.db.session import create_engine_for, create_session_factory
     from sluicery.downloader.version import ytdlp_root
+    from sluicery.tasks.worker import Worker, WorkerConfig
 
     settings = load_settings()
     _wait_for_migrations_for_worker(settings)
     _wait_for_ytdlp_ready(ytdlp_root(settings.DATA_DIR))
 
-    # Task キュー・ワーカーの実装は実装順序 #6 で追加する。未実装の処理を持つ
-    # worker はここで終了せず待機ループへ入る。終了して restart: unless-stopped
-    # に任せると、Docker の restart backoff が効き始め、Phase 6 で実際の異常が
-    # 起きたときに区別できなくなる（docs/phase3_指示書.md §0.3）。
-    print(
-        f"[sluicery] worker-{worker_class}: 実装準備中（実装順序 #6 で追加）。以降は待機します",
-        flush=True,
-    )
-    while True:
-        time.sleep(3600)
+    crypto.set_encryption_key(settings.SECRET_KEY)
+    assert settings.DB_PATH is not None
+    engine = create_engine_for(settings.DB_PATH)
+    session_factory = create_session_factory(engine)
+    with session_factory() as session:
+        config = WorkerConfig.from_session(session)
+    worker = Worker(session_factory, WorkerClass(worker_class), config)
+    print(f"[sluicery] {worker.worker_id}: Taskキューの処理を開始します", flush=True)
+    try:
+        worker.run()
+    finally:
+        engine.dispose()
+    return 0
 
 
 def _cmd_config_check() -> int:
@@ -646,6 +676,7 @@ def _cmd_ytdlp_fetch(
 
 def main(argv: list[str] | None = None) -> int:
     from sluicery.cli_crud import configure_parsers
+    from sluicery.cli_task import configure_parser as configure_task_parser
 
     parser = argparse.ArgumentParser(prog="sluicery")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -680,6 +711,7 @@ def main(argv: list[str] | None = None) -> int:
     settings_unset_parser.add_argument("key")
 
     configure_parsers(sub)
+    configure_task_parser(sub)
 
     ytdlp_parser = sub.add_parser("ytdlp", help="yt-dlp の venv を管理する")
     ytdlp_sub = ytdlp_parser.add_subparsers(dest="ytdlp_command", required=True)
@@ -716,11 +748,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     from sluicery.cli_crud import dispatch as dispatch_crud
+    from sluicery.cli_task import dispatch as dispatch_task
     from sluicery.config import load_settings
 
     crud_result = dispatch_crud(args, open_session=_open_session, load_settings=load_settings)
     if crud_result is not None:
         return crud_result
+    task_result = dispatch_task(args, open_session=_open_session)
+    if task_result is not None:
+        return task_result
 
     if args.command == "web":
         return _run_web()
