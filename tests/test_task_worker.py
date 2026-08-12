@@ -101,6 +101,35 @@ def test_worker_enforces_task_max_attempts(session_factory) -> None:
         assert task.attempts == 1
 
 
+def test_worker_persists_handler_payload_update(session_factory) -> None:
+    class _ResultHandler:
+        def run(self, payload, on_progress) -> TaskResult:
+            assert payload["_execution"]["task_id"] == task_id
+            return TaskResult(TaskOutcome.SUCCEEDED, payload_update={"file_path": "/tmp/a"})
+
+        def cancel(self) -> None:
+            pass
+
+    task_id = _enqueue(session_factory, TaskType.NOOP, payload_json={"work_id": "work"})
+    worker = Worker(
+        session_factory,
+        WorkerClass.NETWORK,
+        _config(),
+        worker_id="worker:test:payload",
+        handler_factories={"noop": _ResultHandler},
+        clock=lambda: NOW,
+    )
+
+    assert worker.run_once()
+    with session_factory() as session:
+        task = TaskRepository(session).get(task_id)
+        assert task is not None
+        assert task.payload_json is not None
+        assert task.payload_json["work_id"] == "work"
+        assert task.payload_json["file_path"] == "/tmp/a"
+        assert task.payload_json["progress"]["status"] == "succeeded"
+
+
 class _BlockingHandler:
     def __init__(self, started: threading.Event, cancelled: threading.Event) -> None:
         self._started = started

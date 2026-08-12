@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 import random
 from dataclasses import dataclass
+from typing import Any
 
 
 class TaskOutcome(enum.StrEnum):
@@ -19,6 +20,7 @@ class TaskOutcome(enum.StrEnum):
 class TaskResult:
     outcome: TaskOutcome
     message: str | None = None
+    payload_update: dict[str, Any] | None = None
 
 
 def retry_delay_sec(

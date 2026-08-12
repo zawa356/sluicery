@@ -119,9 +119,37 @@ class TaskRepository(BaseRepository[Task]):
         self.session.commit()
         return result
 
-    def mark_succeeded(
-        self, task_id: int, worker_id: str, *, now: datetime | None = None
+    def write_result_payload(
+        self,
+        task_id: int,
+        worker_id: str,
+        values: dict[str, Any],
     ) -> bool:
+        """ハンドラ結果を、進捗を保持したまま所有権付きで payload へ統合する。"""
+        task = self.session.scalar(
+            select(Task).where(
+                Task.id == task_id,
+                Task.status == TaskStatus.RUNNING,
+                Task.worker_id == worker_id,
+            )
+        )
+        if task is None:
+            return False
+        payload = dict(task.payload_json or {})
+        payload.update(values)
+        result = self.session.execute(
+            update(Task)
+            .where(
+                Task.id == task_id,
+                Task.status == TaskStatus.RUNNING,
+                Task.worker_id == worker_id,
+            )
+            .values(payload_json=payload)
+        )
+        self.session.commit()
+        return bool(_rowcount(result))
+
+    def mark_succeeded(self, task_id: int, worker_id: str, *, now: datetime | None = None) -> bool:
         return self._finish(
             task_id,
             worker_id,
@@ -168,9 +196,7 @@ class TaskRepository(BaseRepository[Task]):
             self.cancel_descendants(task_id, now=now)
         return changed
 
-    def mark_cancelled(
-        self, task_id: int, worker_id: str, *, now: datetime | None = None
-    ) -> bool:
+    def mark_cancelled(self, task_id: int, worker_id: str, *, now: datetime | None = None) -> bool:
         return self._finish(
             task_id,
             worker_id,
@@ -400,9 +426,7 @@ class TaskRepository(BaseRepository[Task]):
         self.session.commit()
         return total
 
-    def recover_stale(
-        self, *, stale_before: datetime, now: datetime | None = None
-    ) -> list[int]:
+    def recover_stale(self, *, stale_before: datetime, now: datetime | None = None) -> list[int]:
         """staleなrunningを回収する。所有者競合を避けるため更新時にも時刻を再検査する。"""
         recovered_at = now or datetime.now(UTC)
         stale_condition = or_(
