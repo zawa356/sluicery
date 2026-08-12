@@ -64,7 +64,7 @@ README・`docs/deployment.md` の Quick Start は本手順を含む形に修正�
 返しても mount 境界をまたぐ rename / hardlink は `EXDEV` で失敗する。Phase 5 の実機検証で発見した。
 
 **対処**：現行版は Staging 元を保持したまま hardlink を試し、`EXDEV` や非対応時は一時名への copy に
-フォールバックする。検証後は no-replace rename で最終化し、成功後だけ Staging 元を削除する。
+フォールバックする。検証後は no-replace rename で最終化し、Staging 元は Artifact が確定する index 完了後まで保持する。
 修正前の版を使用している場合は更新する。一時名が報告された場合は内容を確認してから手動で扱い、
 sluicery は自動削除しない。
 

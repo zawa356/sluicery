@@ -281,9 +281,7 @@ class RcloneStorageAdapter:
         with tempfile.TemporaryDirectory(prefix="sluicery-storage-test-") as temp_dir:
             source = Path(temp_dir) / "payload"
             source.write_bytes(payload)
-            copy_result = self._run_test(
-                ["copyto", str(source), remote_test], deadline=deadline
-            )
+            copy_result = self._run_test(["copyto", str(source), remote_test], deadline=deadline)
             if copy_result.returncode == 0:
                 uploaded = True
                 read_result = self._run_test(["cat", remote_test], deadline=deadline)
@@ -307,9 +305,7 @@ class RcloneStorageAdapter:
         if uploaded:
             delete_result = self._run_test(["deletefile", remote_test], deadline=deadline)
             if delete_result.returncode != 0:
-                cleanup_warning = (
-                    "接続テストの一時ファイルを削除できませんでした: " + test_name
-                )
+                cleanup_warning = "接続テストの一時ファイルを削除できませんでした: " + test_name
                 write_ok = False
                 result_for_error = delete_result
 
@@ -448,24 +444,13 @@ class RcloneStorageAdapter:
                 "最終化時に同名ファイルが作成されたため上書きしません",
                 temporary_rel=temp_rel,
             )
-        try:
-            src.unlink()
-        except OSError:
-            return PublishResult(
-                True,
-                normalized,
-                int(remote_size),
-                StorageClassification.OK,
-                "ok_source_retained",
-                "最終名への配置は成功しましたが、publish 元を削除できませんでした",
-            )
         return PublishResult(
             True,
             normalized,
             int(remote_size),
             StorageClassification.OK,
-            "ok",
-            "一時名で転送・検証後、最終名へ配置しました",
+            "ok_source_retained",
+            "一時名で転送・検証後、最終名へ配置しました。元はindex完了まで保持します",
         )
 
     def exists(self, rel: str) -> bool:
@@ -509,9 +494,7 @@ class RcloneStorageAdapter:
         destination = validate_relative_path(dest_rel)
         if self.exists(destination):
             raise StorageOperationError("移動先が既に存在します", reason_code="destination_exists")
-        result = self._run(
-            ["moveto", self._remote_path(source), self._remote_path(destination)]
-        )
+        result = self._run(["moveto", self._remote_path(source), self._remote_path(destination)])
         if result.returncode != 0:
             self._raise_result(result, "remote Storage 内の移動に失敗しました")
 

@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from sluicery.db.models import (
+    Item,
+    LayoutStrategy,
+    Playlist,
+    PlaylistKindHint,
+    PlaylistProfile,
+    Profile,
+    ProfileKind,
+    Storage,
+    StorageKind,
+    Target,
+    TargetStatus,
+    Task,
+    TaskStatus,
+    TaskType,
+    WorkerClass,
+)
+from sluicery.storage.base import PublishResult, RemoteFile
+from sluicery.storage.errors import StorageClassification
+from sluicery.tasks.handlers.publish import PublishHandler
+from sluicery.tasks.queue import TaskOutcome
+
+
+class _Adapter:
+    def __init__(self, classification=StorageClassification.OK, *, existing_size=None):
+        self.classification = classification
+        self.existing_size = existing_size
+        self.published = False
+
+    def free_space(self):
+        return 100 * 1024**3
+
+    def exists(self, rel):
+        return self.existing_size is not None or self.published
+
+    def list_recursive(self, rel):
+        if self.existing_size is not None:
+            yield RemoteFile("folder/media.mkv", self.existing_size)
+
+    def publish(self, src, dest_rel, *, overwrite=False):
+        if self.classification != StorageClassification.OK:
+            return PublishResult(False, dest_rel, None, self.classification, "error", "error")
+        self.published = True
+        return PublishResult(True, dest_rel, src.stat().st_size, self.classification, "ok", "ok")
+
+
+def _graph(session_factory, file_path: Path) -> tuple[int, int]:
+    with session_factory() as session:
+        storage = Storage(name="s", kind=StorageKind.LOCAL, config_json={"path": "out"})
+        profile = Profile(name="p", kind=ProfileKind.VIDEO, layout_strategy=LayoutStrategy.FLAT)
+        playlist = Playlist(
+            name="p", folder_name="p", url="https://example.com", kind_hint=PlaylistKindHint.VIDEO
+        )
+        session.add_all([storage, profile, playlist])
+        session.flush()
+        assignment = PlaylistProfile(
+            playlist_id=playlist.id, profile_id=profile.id, storage_id=storage.id
+        )
+        item = Item(playlist_id=playlist.id, source_id="x", source_url="https://example.com/x")
+        session.add_all([assignment, item])
+        session.flush()
+        target = Target(
+            item_id=item.id,
+            playlist_profile_id=assignment.id,
+            status=TargetStatus.PROCESSING,
+        )
+        session.add(target)
+        session.flush()
+        postprocess = Task(
+            type=TaskType.POSTPROCESS,
+            target_ref_type="target",
+            target_ref_id=target.id,
+            payload_json={"file_path": str(file_path)},
+            worker_class=WorkerClass.COMPUTE,
+            status=TaskStatus.SUCCEEDED,
+        )
+        session.add(postprocess)
+        session.flush()
+        publish = Task(
+            type=TaskType.PUBLISH,
+            target_ref_type="target",
+            target_ref_id=target.id,
+            payload_json={"target_id": target.id, "work_id": "work"},
+            worker_class=WorkerClass.NETWORK,
+            status=TaskStatus.RUNNING,
+            depends_on_task_id=postprocess.id,
+        )
+        session.add(publish)
+        session.commit()
+        return target.id, publish.id
+
+
+@pytest.mark.parametrize(
+    ("classification", "outcome", "target_status"),
+    [
+        (StorageClassification.OK, TaskOutcome.SUCCEEDED, TargetStatus.PROCESSING),
+        (StorageClassification.UNREACHABLE, TaskOutcome.BLOCKED, TargetStatus.BLOCKED),
+        (StorageClassification.NO_SPACE, TaskOutcome.BLOCKED, TargetStatus.BLOCKED),
+        (StorageClassification.AUTH_FAILED, TaskOutcome.FAILED, TargetStatus.FAILED),
+        (StorageClassification.PERMISSION_DENIED, TaskOutcome.FAILED, TargetStatus.FAILED),
+    ],
+)
+def test_publish_maps_storage_classification(
+    session_factory, tmp_path: Path, classification, outcome, target_status
+) -> None:
+    work = tmp_path / "work" / "folder"
+    work.mkdir(parents=True)
+    source = work / "media.mkv"
+    source.write_bytes(b"media")
+    target_id, task_id = _graph(session_factory, source)
+    adapter = _Adapter(classification)
+    handler = PublishHandler(
+        session_factory,
+        staging_dir=tmp_path,
+        adapter_factory=lambda storage, settings: adapter,
+    )
+    result = handler.run(
+        {
+            "target_id": target_id,
+            "work_id": "work",
+            "_execution": {"task_id": task_id},
+        },
+        lambda _: None,
+    )
+
+    assert result.outcome == outcome
+    assert source.exists(), "Staging削除はindexまで行わない"
+    with session_factory() as session:
+        assert session.get(Target, target_id).status == target_status
+
+
+def test_publish_resumes_when_existing_size_matches(session_factory, tmp_path: Path) -> None:
+    work = tmp_path / "work" / "folder"
+    work.mkdir(parents=True)
+    source = work / "media.mkv"
+    source.write_bytes(b"media")
+    target_id, task_id = _graph(session_factory, source)
+    adapter = _Adapter(existing_size=5)
+    result = PublishHandler(
+        session_factory,
+        staging_dir=tmp_path,
+        adapter_factory=lambda storage, settings: adapter,
+    ).run(
+        {"target_id": target_id, "work_id": "work", "_execution": {"task_id": task_id}},
+        lambda _: None,
+    )
+
+    assert result.outcome == TaskOutcome.SUCCEEDED
+    assert result.payload_update["publish_resumed"] is True
+    assert not adapter.published
