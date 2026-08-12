@@ -3,8 +3,8 @@
 > このファイルはセッション間の引き継ぎ用です。
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
-最終更新: 2026-08-10 00:24
-対応コミット: 1b9f563 docs: Phase 5独立レビューと対応を記録
+最終更新: 2026-08-12 23:08
+対応コミット: 381eab0 fix: Task状態遷移の所有権競合を解消
 
 ## プロジェクト概要
 
@@ -20,7 +20,7 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 - [x] 3. yt-dlp venv 管理（インストール、バージョン取得）と CLI ラッパ
 - [x] 4. オプション合成モデル、ガード、コマンドラインプレビュー
 - [x] 5. Storage アダプタ（local / remote-rclone）、接続テスト、クレデンシャル暗号化
-- [ ] 6. Task キューとワーカー（network / compute の2クラス） ← 次の着手点
+- [x] 6. Task キューとワーカー（network / compute の2クラス）
 - [ ] 7. パイプライン（download → verify → postprocess(空) → publish → index）
 - [ ] 8. 二相同期（discover / download）、状態遷移
 - [ ] 9. 認証、Web UI 骨格（レイアウト、ログイン）
@@ -38,80 +38,68 @@ sluicery は yt-dlp を用いた自己ホスト型のプレイリスト同期サ
 
 ## 直近の作業
 
-- Phase 5 の P0 を是正。公開前監査のホームパス・IPv4/IPv6・ローカルホスト名パターンを
-  修正し、ffmpeg SIGSEGV の未解決事項を Phase 7 の健全性再評価へ更新した
-- 外部 CLI 実行を `runner/base.py` へ切り出し、`YtdlpRunner` / `RcloneRunner` が継承する構成にした
-- local / remote-rclone の `StorageAdapter` 6メソッド、factory、容量判定、4段階接続、
-  一時名→検証→rename の publish、既定の上書き拒否を実装した（D-024〜D-028）
-- rclone password は stdin で obscure し、対象子プロセスだけの環境変数へ注入する。
-  資格情報と `RCLONE_CONFIG_*` 名は保持・ログ出力前にマスクする
-- 暫定 Storage CLI に remote SMB の登録・認証情報更新と `test` / `space` / `ls` / `push` を追加した
-- 専用 SMB 環境で Phase 5 実機検証20項目を完了。サーバー停止は転送確立後の app ネットワーク
-  一時切断で安全に代替し、`unreachable`、最終名なし、元保持、一時名報告、孤児0を確認した
-- 実機で timeout / SMB logon 文言の分類、非秘密設定値の誤検知、Docker/WSL cross-mount の
-  local publish を修正した。試験ファイルと資格情報入り Storage レコードは削除済み
-- 独立レビューの重大1・中4・軽微2へ対応。local は元を保持する hardlink/copy と no-replace rename、
-  remote は `--ignore-existing`、接続試験は単一 deadline とし、YtdlpRunner の stdin 継承を復元した
-- レビュー対応後の `make test` は210件、Ruff、mypy は全件成功
-- 公開前監査で追跡ファイル・全履歴とも実機識別子と試験用資格情報の一致0件、gitleaks 漏えい0件を確認した
-- 最終イメージで3サービスを再作成し、app healthy、DB current=head、yt-dlp ready、rclone 1.75.0 を確認した
+- `TaskStatus` に `blocked` / `unavailable`、taskへ `available_at` / `blocked_until` /
+  `blocked_reason` / `heartbeat_at` / `worker_id` / `cancel_requested` を追加した
+- 既存の単一 `UPDATE ... RETURNING` claimを、時刻・依存成功・worker所有権対応へ拡張した
+- network / compute worker、poll jitter、指数backoff、graceful shutdown、heartbeat、app stale回収、
+  Task / Run cancel、依存失敗の後続cancel、所有権付き進捗スロットリングを実装した
+- `worker.enable_test_tasks=false` で既定無効のダミーTask 6種と暫定Task CLIを追加した
+- 全サービスへ `init: true`、workerへ `stop_grace_period: 30s`、build targetへruntimeを設定した
+- Phase 6実機検証20項目と実DB migration往復を完了。レビュー対応後の`make test` 240件、Ruff、mypy成功
+- 独立レビューで失敗再試行、cancel / retryとclaimの所有権競合を検出し、状態・所有権条件付き単一UPDATEと競合回帰試験で解消した
+- `docs/reviews/phase6.md` に指摘と対応を記録し、ローカルの`checkpoint/step-06`を付与した
+- 検証用Task 24件とworker設定上書きは削除済み。Stagingの既存ファイルは変更していない
 
 ## 次にやること
 
-1. Phase 4/5 のローカルコミットと `checkpoint/step-05` の push は、ユーザーの明示承認を得るまで行わない
-2. 次フェーズでは Task claim、network / compute ワーカー、blocked 相当の表現を設計・実装する
+1. Phase 7指示書を読み、download → verify → postprocess(空) → publish → index の境界と既存Task契約を棚卸しする
+2. Phase 7で実ハンドラを登録し、Staging保持・原子的publish・依存失敗伝播を実パイプラインへ接続する
+3. Phase 7着手時にffmpeg静的ビルドのSIGSEGV（未解決 #8）を再評価する
 
 ## 未解決・保留
 
 | # | 内容 | 状態 |
 |---|---|---|
 | 1 | Alembic の autogenerate は SQLite の CHECK 制約比較で偽陽性 diff を出す（D-008） | マイグレーション追加時に手で除去 |
-| 2 | `target.status=blocked` に対応する `TaskStatus` がない | Phase 6/7 着手時に判断（D-028） |
-| 3 | compose に init がなく、yt-dlp の孫プロセスが zombie として残る可能性がある | Phase 6 着手時に評価 |
 | 4 | GitHub リポジトリの public 化 | 見送り中・判断待ち |
 | 5 | Issues / Wiki / Projects の要否 | 未確認 |
 | 6 | Dependabot alerts の要否 | 未確認 |
 | 7 | README・`docs/deployment.md` の clone URL が `<repo>` のまま | public 化時に差し替え |
-| 8 | 1秒区間を `--download-sections` で切り出す追加試験は ffmpeg `-11`（SIGSEGV）で失敗した。通常 fetch は成功 | ffmpeg 静的ビルドの健全性に関わる可能性がある。Phase 7（verify で ffprobe / ffmpeg を使用）着手時に再評価する |
-| 9 | Phase 4/5 のローカルコミットとタグの GitHub push | 最終監査後もユーザー承認待ち |
+| 8 | 1秒区間を `--download-sections` で切り出す追加試験は ffmpeg `-11`（SIGSEGV）で失敗した。通常 fetch は成功 | Phase 7のverify着手時に静的ビルドの健全性を再評価 |
+| 9 | Phase 6のローカルコミットとタグのGitHub push | 公開前監査とユーザー承認前は実行しない |
 
-generic extractor で `uploader` / `duration` / `upload_date` が欠損する件は Phase 4 で再確認済み。
-命名は空文字または `0` へ fallback し、`NA` を混入させない（D-019）。
+未解決 #2（Task側blocked）と #3（compose init）はPhase 6のD-029 / D-030で解消済み。
 
 ## 重要な前提（忘れやすいもの）
 
 - 配信元での削除は絶対にローカルファイルの削除に伝播させない
 - `blocked` はリトライ回数を消費しない
+- shutdownはTaskをattempts不変の`pending`へ戻し、Stagingの中間ファイルを消さない
+- stale回収はTaskを`pending`へ戻し、無限再実行防止のためattemptsを1増やす
+- 進捗更新は短い単一UPDATEとし、最終状態は必ず保存する
 - ファイル名の `[<source_id>]` は末尾（拡張子直前）に固定。relink がこれに依存している
-- `SECRET_KEY` 未設定時は起動を拒否する
-- `SECRET_KEY` はローテーション非対応（鍵紛失・変更時はクレデンシャル再入力。D-004）
-- 運用パラメータは `.env` ではなく `setting` テーブル、既定値は `core/settings.py` の `CODE_DEFAULTS`
-- `MEDIA_ROOT` はホスト側パスであり、コンテナ内では常に `/mnt/media` を使う（D-010）
+- `SECRET_KEY` 未設定時は起動を拒否する。ローテーションには対応しない（D-004）
+- 運用パラメータは`.env`ではなくsettingテーブル、既定値は`core/settings.py`の`CODE_DEFAULTS`
+- `MEDIA_ROOT` はホスト側パスで、コンテナ内では常に `/mnt/media` を使う（D-010）
 - yt-dlp / rclone とその子はプロセスグループ単位で終了させる
-- Storage の publish は一時名で検証後に最終化し、既定で上書きしない
-- rclone 資格情報は引数・設定ファイルへ載せず、子プロセス限定の環境変数で渡す
-- Phase 5 で実装・実機検証済みの remote protocol は SMB だけ
-- 未知の yt-dlp / Storage エラーは `failed` に分類する（D-014, D-028）
+- Storage publishは一時名で検証後に最終化し、既定で上書きしない
 - `git push` / `gh repo create` / `gh repo edit` は履歴監査とユーザー承認後のみ許可
 
 ## 環境メモ
 
 - 起動: `make up` または `docker compose up -d --build`
 - テスト: `make test`。lint: `make lint`
-- DB: `data/sluicery.db`（named volume `data` 内）
-- yt-dlp venv: `data/ytdlp/`（`versions/<version>/`、`current` symlink、`.lock`）
-- マイグレーション: `sluicery db upgrade`（`AUTO_MIGRATE=true` なら起動時に自動実行）
-- ログ: `data/logs/`
-- CLI: `docker compose exec app python3 -m sluicery.cli ...`。ファイル生成時は
-  `docker compose exec --user "$(id -u):$(id -g)" app ...` を使う
-- 開発機の compose 3サービスは稼働済み。DB current=head、yt-dlp 2026.07.04 は `ready`
-- Phase 5 SMB 試験の生成ファイル・local 試験ディレクトリ・資格情報入り Storage レコードは削除済み
-- Phase 5 完了後の最終監査は93コミットを対象に gitleaks 漏えい0件。実機識別子・試験用資格情報も一致0件
+- DB: `data/sluicery.db`（named volume内）。current/head=`c7d94b31a6e2`
+- CLI: `docker compose exec app python3 -m sluicery.cli ...`
+- 開発機の3サービスはruntimeイメージで稼働中。app healthy、yt-dlp 2026.07.04 ready
+- worker IDは `service:container:pid:nonce`。再起動ごとにnonceが変わる
+- Phase 6検証後、`worker.*` は全てコード既定値、`worker.enable_test_tasks=false`
+- `/data/staging/trailer_1080p.mov` はPhase 3由来の既存ファイル。Phase 6では変更・削除していない
 
 ## 既知の落とし穴
 
-- SQLite の WAL モードでワーカーとの同時書き込みが競合しやすい。書き込みトランザクションは短く保つ
-- `docker compose down -v` は volume を消す。開発中は使わない
-- Docker/WSL では異なる mount が同じ `st_dev` を返し得る。local publish は hardlink 失敗時に copy へ切り替える
-- `docker compose exec -T` を外側から中断すると exec クライアントだけが終了し得る。中断試験では
-  コンテナ内の CLI へ SIGINT を送り、BaseRunner のプロセスグループ終了まで確認する
+- SQLite WALでも書込み競合は起こる。claim、heartbeat、進捗、状態更新のtransactionを短く保つ
+- heartbeatのstale閾値はheartbeat間隔の3倍以上にする。既定は30秒 / 180秒
+- `docker compose down -v` はvolumeとStagingを消す。開発中は使わない
+- 検証用Taskを有効化した場合、workerは設定を起動時に読むため再起動が必要
+- Docker/WSLでは異なるmountが同じ`st_dev`を返し得る。local publishは実際のEXDEVでcopyへ切替える
