@@ -49,6 +49,7 @@ class YtdlpRunner(BaseRunner):
         timeout: TimeoutPolicy,
         on_progress: Callable[[ProgressEvent], None] | None = None,
         cwd: Path | None = None,
+        sensitive_values: tuple[str, ...] = (),
     ) -> RunResult:
         stdout_lines: list[str] = []
         progress_events: list[ProgressEvent] = []
@@ -70,6 +71,7 @@ class YtdlpRunner(BaseRunner):
             cwd=cwd,
             env_overrides={"LC_ALL": "C"},
             inherit_stdin=True,
+            sensitive_values=sensitive_values,
         )
         classification = classify(
             process_result.returncode, process_result.stderr_text
