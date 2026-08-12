@@ -302,25 +302,13 @@ class LocalStorageAdapter:
                     checksum_sha256=source_hash,
                     temporary_rel=temp_rel,
                 )
-            try:
-                src.unlink()
-            except OSError:
-                return PublishResult(
-                    True,
-                    normalized,
-                    source_size,
-                    StorageClassification.OK,
-                    "ok_source_retained",
-                    "最終名への配置は成功しましたが、publish 元を削除できませんでした",
-                    checksum_sha256=source_hash,
-                )
             return PublishResult(
                 True,
                 normalized,
                 source_size,
                 StorageClassification.OK,
-                "ok",
-                "一時名で検証後、最終名へ配置しました",
+                "ok_source_retained",
+                "一時名で検証後、最終名へ配置しました。元はindex完了まで保持します",
                 checksum_sha256=source_hash,
             )
         except OSError as exc:

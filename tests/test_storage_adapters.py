@@ -166,7 +166,7 @@ def test_local_publish_uses_temporary_name_then_final(tmp_path: Path) -> None:
     adapter = LocalStorageAdapter("library", media_root=media_root)
     result = adapter.publish(source, "folder/final.bin")
     assert result.success
-    assert not source.exists()
+    assert source.exists()
     assert (adapter.root / "folder/final.bin").read_bytes() == b"complete-content"
     assert not list(adapter.root.rglob("*.sluicery-tmp-*"))
 
@@ -190,7 +190,7 @@ def test_local_publish_falls_back_to_copy_when_hardlink_is_cross_device(
     result = adapter.publish(source, "folder/final.bin")
 
     assert result.success
-    assert not source.exists()
+    assert source.exists()
     assert (adapter.root / "folder/final.bin").read_bytes() == b"cross-device-content"
 
 
@@ -202,6 +202,7 @@ def test_local_publish_interruption_never_creates_final(
     source = tmp_path / "source.bin"
     source.write_bytes(b"complete-content")
     adapter = LocalStorageAdapter("library", media_root=media_root)
+
     def interrupt_finalization(src: Path, dest: Path) -> None:
         raise OSError("synthetic interruption")
 
@@ -282,9 +283,7 @@ def test_local_exists_list_move_and_free_space(tmp_path: Path) -> None:
     original.write_bytes(b"abc")
     adapter = LocalStorageAdapter("library", media_root=media_root)
     assert adapter.exists("folder/original.bin")
-    assert [item.relative_path for item in adapter.list_recursive("")] == [
-        "folder/original.bin"
-    ]
+    assert [item.relative_path for item in adapter.list_recursive("")] == ["folder/original.bin"]
     adapter.move("folder/original.bin", "moved/final.bin")
     assert not adapter.exists("folder/original.bin")
     assert adapter.exists("moved/final.bin")
@@ -317,7 +316,7 @@ def test_remote_publish_orders_temp_verify_and_moveto(tmp_path: Path) -> None:
     source.write_bytes(b"abc")
     result = _remote_adapter(runner).publish(source, "folder/final.bin")
     assert result.success
-    assert not source.exists()
+    assert source.exists()
     commands = [call[0][0] for call in runner.calls]
     assert commands == [
         "lsjson",
