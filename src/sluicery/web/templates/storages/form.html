@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}{{ "Storage編集" if storage else "Storage作成" }} — sluicery{% endblock %}
+{% set selected_kind = values.get('kind', storage.kind.value if storage else 'local') %}
+{% macro common_value(name, default='') %}{{ values.get(name, storage|attr(name) if storage and storage|attr(name) is not none else default) }}{% endmacro %}
+{% macro config_value(name, default='') %}{{ values.get(name, config.get(name, default)) }}{% endmacro %}
+{% block content %}
+<h1>{{ "Storage編集" if storage else "Storage作成" }}</h1>
+{% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+<form method="post" class="stacked-form panel">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<div class="form-grid">
+<label>名前<input name="name" required value="{{ common_value('name') }}"></label>
+<label>種別<select name="kind"><option value="local"{% if selected_kind == 'local' %} selected{% endif %}>local</option><option value="remote"{% if selected_kind == 'remote' %} selected{% endif %}>remote (SMB)</option><option value="mount"{% if selected_kind == 'mount' %} selected{% endif %}>mount（Phase 19で実装予定）</option></select></label>
+</div>
+<label class="checkbox-label"><input type="checkbox" name="enabled" value="yes"{% if values.get('enabled', storage.enabled if storage else true) in [true, 'yes', 'on'] %} checked{% endif %}>有効</label>
+<section class="notice"><h2>local設定</h2><label>path（/mnt/media基準の相対パス、または/mnt/media配下の絶対パス）<input name="path" value="{{ values.get('path', config.get('path', '') if selected_kind == 'local' else '') }}"></label></section>
+<section class="notice"><h2>remote設定</h2><p>検証済みのプロトコルはSMBのみです。クレデンシャルはwrite-onlyで、保存後に平文表示しません。</p>
+<input type="hidden" name="protocol" value="smb"><div class="form-grid">
+<label>host<input name="host" value="{{ config_value('host') }}"></label><label>share<input name="share" value="{{ config_value('share') }}"></label>
+<label>remote path<input name="path_remote" value="{{ values.get('path_remote', config.get('path', '') if selected_kind == 'remote' else '') }}"></label><label>port<input type="number" min="1" max="65535" name="port" value="{{ config_value('port', 445) }}"></label>
+<label>user<input name="user" value="{{ values.get('user', credential_user) }}"></label><label>domain<input name="domain" value="{{ values.get('domain', credential_domain) }}"></label>
+</div><label>password<input type="password" name="password" autocomplete="new-password" value=""><span class="muted">{% if credentials_configured %}設定済み。変更しない場合は空欄のまま保存してください。{% else %}新規remote Storageでは必須です。{% endif %}</span></label></section>
+<button type="submit">保存</button>
+</form>
+{% if storage %}<section class="panel section-block"><div class="page-heading"><h2>接続テスト</h2><form method="post" action="/storages/{{ storage.id }}/test"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>4段階テストを実行</button></form></div>
+{% set result = storage.last_check_result_json %}{% if result %}<p>結果: <strong>{{ "成功" if result.get('ok') else "失敗" }}</strong> / 実行日時: {{ storage.last_check_at }}</p>
+{% if result.get('error') %}<div class="flash flash-error">{{ result.get('error') }}</div>{% endif %}
+<table><thead><tr><th>段階</th><th>判定</th><th>分類</th><th>理由</th><th>メッセージ</th></tr></thead><tbody>{% for stage in result.get('stages', []) %}<tr><td>{{ stage.stage }}</td><td>{{ stage.status }}</td><td>{{ stage.classification }}</td><td>{{ stage.reason_code }}</td><td>{{ stage.message }}</td></tr>{% else %}<tr><td colspan="5">段階別結果はありません。</td></tr>{% endfor %}</tbody></table>
+<p>空き容量: {% if result.get('free_bytes') is not none %}{{ result.get('free_bytes')|filesize }}{% else %}取得不可{% endif %}</p>{% if result.get('cleanup_warning') %}<div class="flash flash-warning">{{ result.get('cleanup_warning') }}</div>{% endif %}
+{% else %}<p class="muted">未実行です。</p>{% endif %}</section>
+<section class="panel danger-zone section-block"><h2>削除</h2><p>Playlistから参照中のStorageは削除できません。Storageレコードの削除でメディアファイルは操作しません。</p><form method="post" action="/storages/{{ storage.id }}/delete" onsubmit="return confirm('Storageレコードを削除しますか？ メディアファイルは削除されません。')"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button-danger">削除</button></form></section>{% endif %}
+{% endblock %}

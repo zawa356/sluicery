@@ -35,6 +35,7 @@ from sluicery.core.options import (
     guard_freeform,
     validate_source_url,
 )
+from sluicery.core.settings import OperationalSettings
 from sluicery.core.sync import enqueue_discover_run, execute_download_run
 from sluicery.core.target_state import transition_target
 from sluicery.db.models import (
@@ -48,6 +49,7 @@ from sluicery.db.models import (
     ProfileKind,
     Run,
     Storage,
+    StorageKind,
     Target,
     TargetStatus,
 )
@@ -55,10 +57,13 @@ from sluicery.db.repositories.playlist import PlaylistRepository
 from sluicery.db.repositories.playlist_profile import PlaylistProfileRepository
 from sluicery.db.repositories.profile import ProfileRepository
 from sluicery.db.repositories.run import RunRepository
+from sluicery.db.repositories.storage import StorageRepository
 from sluicery.db.repositories.ytdlp_release import YtdlpReleaseRepository
 from sluicery.downloader.version import get_status, ytdlp_root
 from sluicery.downloader.ytdlp import mask_command_line
 from sluicery.layout import LayoutContext, LayoutValidationError, resolve_layout
+from sluicery.storage import create_storage_adapter
+from sluicery.storage.base import StoragePathError, validate_relative_path
 from sluicery.web.auth import (
     LOGIN_ERROR_MESSAGE,
     SESSION_COOKIE_NAME,
@@ -261,20 +266,21 @@ def create_app(
     def home(request: Request) -> Response:
         with session_factory() as db:
             recent_runs = RunRepository(db).list_recent(10)
-            playlist_names = {
-                row.id: row.name for row in db.scalars(select(Playlist)).all()
-            }
+            playlist_names = {row.id: row.name for row in db.scalars(select(Playlist)).all()}
             target_counts = {
                 status.value: count
                 for status, count in db.execute(
                     select(Target.status, func.count()).group_by(Target.status)
                 )
             }
-            delisted_count = db.scalar(
-                select(func.count())
-                .select_from(Item)
-                .where(Item.membership == ItemMembership.DELISTED)
-            ) or 0
+            delisted_count = (
+                db.scalar(
+                    select(func.count())
+                    .select_from(Item)
+                    .where(Item.membership == ItemMembership.DELISTED)
+                )
+                or 0
+            )
             storages = list(db.scalars(select(Storage).order_by(Storage.id)))
             active_release = YtdlpReleaseRepository(db).get_active()
         assert settings.STAGING_DIR is not None
@@ -284,9 +290,7 @@ def create_app(
             {
                 "id": run.id,
                 "playlist": (
-                    playlist_names.get(run.playlist_id, "—")
-                    if run.playlist_id is not None
-                    else "—"
+                    playlist_names.get(run.playlist_id, "—") if run.playlist_id is not None else "—"
                 ),
                 "kind": run.kind,
                 "status": run.status.value,
@@ -334,11 +338,14 @@ def create_app(
         with session_factory() as db:
             rows = []
             for playlist in db.scalars(select(Playlist).order_by(Playlist.id)):
-                item_count = db.scalar(
-                    select(func.count())
-                    .select_from(Item)
-                    .where(Item.playlist_id == playlist.id)
-                ) or 0
+                item_count = (
+                    db.scalar(
+                        select(func.count())
+                        .select_from(Item)
+                        .where(Item.playlist_id == playlist.id)
+                    )
+                    or 0
+                )
                 rows.append({"playlist": playlist, "item_count": item_count})
         return templates.TemplateResponse(
             request,
@@ -468,9 +475,7 @@ def create_app(
                     raise HTTPException(status_code=422, detail="不正な状態です") from None
             if q.strip():
                 pattern = f"%{q.strip()}%"
-                stmt = stmt.where(
-                    Item.title.ilike(pattern) | Item.source_id.ilike(pattern)
-                )
+                stmt = stmt.where(Item.title.ilike(pattern) | Item.source_id.ilike(pattern))
             total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
             target_rows = [
                 tuple(row)
@@ -569,11 +574,14 @@ def create_app(
             assignment = db.get(PlaylistProfile, assignment_id)
             if assignment is None or assignment.playlist_id != playlist_id:
                 raise HTTPException(status_code=404)
-            count = db.scalar(
-                select(func.count())
-                .select_from(Target)
-                .where(Target.playlist_profile_id == assignment_id)
-            ) or 0
+            count = (
+                db.scalar(
+                    select(func.count())
+                    .select_from(Target)
+                    .where(Target.playlist_profile_id == assignment_id)
+                )
+                or 0
+            )
             if count:
                 auth.add_flash(request.state.auth, "error", "Targetが存在する割当は解除できません")
             else:
@@ -624,9 +632,12 @@ def create_app(
                 PlaylistRepository(db).update(playlist, enabled=False, paused=True)
                 message = "Playlistを無効化・一時停止しました。Itemとメディアは保持されます"
             elif mode == "delete_items":
-                run_count = db.scalar(
-                    select(func.count()).select_from(Run).where(Run.playlist_id == playlist_id)
-                ) or 0
+                run_count = (
+                    db.scalar(
+                        select(func.count()).select_from(Run).where(Run.playlist_id == playlist_id)
+                    )
+                    or 0
+                )
                 if run_count:
                     auth.add_flash(
                         request.state.auth,
@@ -651,11 +662,14 @@ def create_app(
         with session_factory() as db:
             rows = []
             for profile in db.scalars(select(Profile).order_by(Profile.id)):
-                refs = db.scalar(
-                    select(func.count())
-                    .select_from(PlaylistProfile)
-                    .where(PlaylistProfile.profile_id == profile.id)
-                ) or 0
+                refs = (
+                    db.scalar(
+                        select(func.count())
+                        .select_from(PlaylistProfile)
+                        .where(PlaylistProfile.profile_id == profile.id)
+                    )
+                    or 0
+                )
                 rows.append({"profile": profile, "refs": refs})
         return templates.TemplateResponse(
             request,
@@ -715,8 +729,7 @@ def create_app(
             if concurrent is not None and concurrent < 1:
                 raise ValueError("concurrent_fragmentsは1以上にしてください")
             tristates = {
-                field: parse_tristate(form.get(field, "inherit"))
-                for field in tristate_fields
+                field: parse_tristate(form.get(field, "inherit")) for field in tristate_fields
             }
         except (OptionValidationError, LayoutValidationError, ValueError) as exc:
             raise ValueError(str(exc)) from exc
@@ -864,11 +877,14 @@ def create_app(
             profile = db.get(Profile, profile_id)
             if profile is None:
                 raise HTTPException(status_code=404)
-            refs = db.scalar(
-                select(func.count())
-                .select_from(PlaylistProfile)
-                .where(PlaylistProfile.profile_id == profile_id)
-            ) or 0
+            refs = (
+                db.scalar(
+                    select(func.count())
+                    .select_from(PlaylistProfile)
+                    .where(PlaylistProfile.profile_id == profile_id)
+                )
+                or 0
+            )
             if refs:
                 auth.add_flash(
                     request.state.auth,
@@ -882,11 +898,241 @@ def create_app(
 
     @app.get("/storages")
     def storages(request: Request) -> Response:
+        with session_factory() as db:
+            statement = (
+                select(Storage, func.count(PlaylistProfile.id))
+                .outerjoin(PlaylistProfile, PlaylistProfile.storage_id == Storage.id)
+                .group_by(Storage.id)
+                .order_by(Storage.id)
+            )
+            rows = [
+                {
+                    "storage": storage,
+                    "refs": refs,
+                    "credentials_configured": storage.credentials_encrypted is not None,
+                }
+                for storage, refs in db.execute(statement)
+            ]
         return templates.TemplateResponse(
             request,
-            "placeholder.html",
-            context(request, active_nav="storages", title="Storage", phase="Part B"),
+            "storages/list.html",
+            context(request, active_nav="storages", rows=rows),
         )
+
+    def normalize_local_path(value: str) -> str:
+        path = Path(value)
+        if path.is_absolute():
+            resolved = path.resolve(strict=False)
+            if not resolved.is_relative_to(Path("/mnt/media")):
+                raise ValueError("local Storageの絶対pathは/mnt/media配下にしてください")
+            return str(resolved)
+        try:
+            return validate_relative_path(value, allow_empty=True)
+        except StoragePathError as exc:
+            raise ValueError(str(exc)) from exc
+
+    def storage_form_values(
+        form: Any, current: Storage | None = None
+    ) -> tuple[dict[str, Any], dict[str, str] | None]:
+        name = str(form.get("name", "")).strip()
+        if not name:
+            raise ValueError("名前を入力してください")
+        try:
+            kind = StorageKind(str(form.get("kind", "local")))
+        except ValueError:
+            raise ValueError("Storage kindが不正です") from None
+        if kind == StorageKind.MOUNT:
+            raise ValueError("mount StorageはPhase 19で実装予定です")
+        values: dict[str, Any] = {
+            "name": name,
+            "kind": kind,
+            "enabled": form.get("enabled") == "yes",
+        }
+        credentials: dict[str, str] | None = None
+        if kind == StorageKind.LOCAL:
+            values["config_json"] = {"path": normalize_local_path(str(form.get("path", "")))}
+            values["credentials_encrypted"] = None
+        else:
+            protocol = str(form.get("protocol", "smb")).strip()
+            host = str(form.get("host", "")).strip()
+            share = str(form.get("share", "")).strip()
+            user = str(form.get("user", "")).strip()
+            password = str(form.get("password", ""))
+            domain = str(form.get("domain", "")).strip()
+            if protocol != "smb":
+                raise ValueError("検証済みのremote protocolはSMBだけです")
+            if not host or not share or not user:
+                raise ValueError("remote Storageにはhost / share / userが必要です")
+            if "/" in share or "\\" in share or share in {".", ".."}:
+                raise ValueError("shareにパス区切りは使用できません")
+            try:
+                port = int(str(form.get("port", "445")))
+                if not 1 <= port <= 65535:
+                    raise ValueError
+                remote_path = validate_relative_path(
+                    str(form.get("path_remote", "")), allow_empty=True
+                )
+            except (ValueError, StoragePathError):
+                raise ValueError("portまたはremote pathが不正です") from None
+            values["config_json"] = {
+                "protocol": "smb",
+                "host": host,
+                "share": share,
+                "path": remote_path,
+                "port": port,
+            }
+            if password:
+                credentials = {"user": user, "password": password, "domain": domain}
+            elif current is None or not isinstance(current.credentials_encrypted, dict):
+                raise ValueError("新規remote Storageにはpasswordが必要です")
+            else:
+                credentials = dict(current.credentials_encrypted)
+                credentials.update({"user": user, "domain": domain})
+            values["credentials_encrypted"] = credentials
+        return values, credentials
+
+    def storage_editor_response(
+        request: Request,
+        *,
+        storage: Storage | None = None,
+        values: dict[str, Any] | None = None,
+        error: str | None = None,
+        status_code: int = 200,
+    ) -> Response:
+        config = storage.config_json if storage and isinstance(storage.config_json, dict) else {}
+        credentials = (
+            storage.credentials_encrypted
+            if storage and isinstance(storage.credentials_encrypted, dict)
+            else {}
+        )
+        return templates.TemplateResponse(
+            request,
+            "storages/form.html",
+            context(
+                request,
+                active_nav="storages",
+                storage=storage,
+                values=values or {},
+                config=config,
+                credential_user=credentials.get("user", ""),
+                credential_domain=credentials.get("domain", ""),
+                credentials_configured=bool(credentials),
+                error=error,
+            ),
+            status_code=status_code,
+        )
+
+    @app.get("/storages/new")
+    def storage_new(request: Request) -> Response:
+        return storage_editor_response(request)
+
+    @app.post("/storages/new")
+    async def storage_create(request: Request) -> Response:
+        form = await request.form()
+        try:
+            values, _credentials = storage_form_values(form)
+        except ValueError as exc:
+            safe_values = {key: value for key, value in form.items() if key != "password"}
+            return storage_editor_response(
+                request, values=safe_values, error=str(exc), status_code=422
+            )
+        with session_factory() as db:
+            storage = StorageRepository(db).create(**values)
+        auth.add_flash(request.state.auth, "success", "Storageを作成しました")
+        return RedirectResponse(f"/storages/{storage.id}/edit", status_code=303)
+
+    @app.get("/storages/{storage_id}/edit")
+    def storage_edit(request: Request, storage_id: int) -> Response:
+        with session_factory() as db:
+            storage = db.get(Storage, storage_id)
+            if storage is None:
+                raise HTTPException(status_code=404)
+            return storage_editor_response(request, storage=storage)
+
+    @app.post("/storages/{storage_id}/edit")
+    async def storage_update(request: Request, storage_id: int) -> Response:
+        form = await request.form()
+        with session_factory() as db:
+            storage = db.get(Storage, storage_id)
+            if storage is None:
+                raise HTTPException(status_code=404)
+            try:
+                values, _credentials = storage_form_values(form, storage)
+            except ValueError as exc:
+                safe_values = {key: value for key, value in form.items() if key != "password"}
+                return storage_editor_response(
+                    request,
+                    storage=storage,
+                    values=safe_values,
+                    error=str(exc),
+                    status_code=422,
+                )
+            StorageRepository(db).update(storage, **values)
+        auth.add_flash(request.state.auth, "success", "Storageを更新しました")
+        return RedirectResponse(f"/storages/{storage_id}/edit", status_code=303)
+
+    @app.post("/storages/{storage_id}/test")
+    def storage_test(request: Request, storage_id: int) -> Response:
+        with session_factory() as db:
+            storage = db.get(Storage, storage_id)
+            if storage is None:
+                raise HTTPException(status_code=404)
+            try:
+                adapter = create_storage_adapter(storage, OperationalSettings(db))
+                result = adapter.test_connection()
+                free_bytes = adapter.free_space()
+                result_json = {
+                    "ok": result.ok,
+                    "stages": [
+                        {
+                            "stage": stage.stage.value,
+                            "status": stage.status.value,
+                            "message": stage.message,
+                            "classification": stage.classification.value,
+                            "reason_code": stage.reason_code,
+                        }
+                        for stage in result.stages
+                    ],
+                    "cleanup_warning": result.cleanup_warning,
+                    "free_bytes": free_bytes,
+                }
+            except Exception as exc:  # noqa: BLE001 - UIへ秘密を含まない型名だけ返す
+                result_json = {
+                    "ok": False,
+                    "stages": [],
+                    "error": f"接続テストを実行できません: {type(exc).__name__}",
+                    "free_bytes": None,
+                }
+            storage.last_check_at = datetime.now(UTC)
+            storage.last_check_result_json = result_json
+            db.commit()
+        auth.add_flash(
+            request.state.auth,
+            "success" if result_json["ok"] else "error",
+            "接続テストが完了しました",
+        )
+        return RedirectResponse(f"/storages/{storage_id}/edit", status_code=303)
+
+    @app.post("/storages/{storage_id}/delete")
+    def storage_delete(request: Request, storage_id: int) -> Response:
+        with session_factory() as db:
+            storage = db.get(Storage, storage_id)
+            if storage is None:
+                raise HTTPException(status_code=404)
+            refs = (
+                db.scalar(
+                    select(func.count())
+                    .select_from(PlaylistProfile)
+                    .where(PlaylistProfile.storage_id == storage_id)
+                )
+                or 0
+            )
+            if refs:
+                auth.add_flash(request.state.auth, "error", "割当中のStorageは削除できません")
+                return RedirectResponse(f"/storages/{storage_id}/edit", status_code=303)
+            StorageRepository(db).delete(storage)
+        auth.add_flash(request.state.auth, "success", "Storageレコードを削除しました")
+        return RedirectResponse("/storages", status_code=303)
 
     @app.get("/runs")
     def runs(request: Request) -> Response:
