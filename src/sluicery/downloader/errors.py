@@ -80,6 +80,11 @@ ERROR_RULES: list[tuple[re.Pattern[str], Classification, str]] = [
         Classification.BLOCKED,
         "bot_check",
     ),
+    (
+        re.compile(r"(HTTP Error 403|403 Forbidden|HTTP status(?: code)? 403)", re.I),
+        Classification.BLOCKED,
+        "http_403",
+    ),
 ]
 
 

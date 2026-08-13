@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -24,6 +24,7 @@ def _config(**overrides) -> WorkerConfig:
         "retry_max_sec": 3600,
         "max_attempts": 5,
         "blocked_retry_sec": 300,
+        "blocked_retry_403_sec": 3600,
         "progress_write_interval_sec": 2,
         "progress_write_percent_step": 5,
         "shutdown_grace_sec": 1,
@@ -99,6 +100,40 @@ def test_worker_enforces_task_max_attempts(session_factory) -> None:
         assert task is not None
         assert task.status == TaskStatus.UNAVAILABLE
         assert task.attempts == 1
+
+
+def test_worker_uses_longer_delay_for_http_403_without_consuming_attempts(
+    session_factory,
+) -> None:
+    class _Http403Handler:
+        def run(self, payload, on_progress) -> TaskResult:
+            return TaskResult(
+                TaskOutcome.BLOCKED,
+                "HTTP 403",
+                reason_code="http_403",
+            )
+
+        def cancel(self) -> None:
+            pass
+
+    task_id = _enqueue(session_factory, TaskType.DOWNLOAD)
+    worker = Worker(
+        session_factory,
+        WorkerClass.NETWORK,
+        _config(),
+        worker_id="worker:test:http403",
+        handler_factories={"download": _Http403Handler},
+        clock=lambda: NOW,
+    )
+
+    assert worker.run_once()
+
+    with session_factory() as session:
+        task = TaskRepository(session).get(task_id)
+        assert task is not None
+        assert task.status == TaskStatus.BLOCKED
+        assert task.attempts == 0
+        assert task.blocked_until == NOW + timedelta(seconds=3600)
 
 
 def test_worker_persists_handler_payload_update(session_factory) -> None:

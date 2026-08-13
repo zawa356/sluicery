@@ -70,6 +70,7 @@ def test_phase6_worker_defaults(db_session) -> None:
     assert accessor.worker_retry_max_sec == 3600
     assert accessor.worker_max_attempts == 5
     assert accessor.worker_blocked_retry_sec == 300
+    assert accessor.worker_blocked_retry_403_sec == 3600
     assert accessor.worker_progress_write_interval_sec == 2
     assert accessor.worker_progress_write_percent_step == 5
     assert accessor.worker_shutdown_grace_sec == 20

@@ -39,6 +39,7 @@ class WorkerConfig:
     retry_max_sec: float
     max_attempts: int
     blocked_retry_sec: float
+    blocked_retry_403_sec: float
     progress_write_interval_sec: float
     progress_write_percent_step: float
     shutdown_grace_sec: float
@@ -52,6 +53,7 @@ class WorkerConfig:
             "retry_base_sec": self.retry_base_sec,
             "retry_max_sec": self.retry_max_sec,
             "blocked_retry_sec": self.blocked_retry_sec,
+            "blocked_retry_403_sec": self.blocked_retry_403_sec,
             "progress_write_interval_sec": self.progress_write_interval_sec,
             "progress_write_percent_step": self.progress_write_percent_step,
             "shutdown_grace_sec": self.shutdown_grace_sec,
@@ -78,6 +80,7 @@ class WorkerConfig:
             retry_max_sec=settings.worker_retry_max_sec,
             max_attempts=settings.worker_max_attempts,
             blocked_retry_sec=settings.worker_blocked_retry_sec,
+            blocked_retry_403_sec=settings.worker_blocked_retry_403_sec,
             progress_write_interval_sec=settings.worker_progress_write_interval_sec,
             progress_write_percent_step=settings.worker_progress_write_percent_step,
             shutdown_grace_sec=settings.worker_shutdown_grace_sec,
@@ -293,10 +296,15 @@ class Worker:
                 ):
                     final_status = TaskStatus.UNAVAILABLE
             elif result.outcome == TaskOutcome.BLOCKED:
+                retry_after_sec = (
+                    self.config.blocked_retry_403_sec
+                    if result.reason_code in {"http_403", "bot_check"}
+                    else self.config.blocked_retry_sec
+                )
                 if repo.mark_blocked(
                     task.id,
                     self.worker_id,
-                    retry_after_sec=self.config.blocked_retry_sec,
+                    retry_after_sec=retry_after_sec,
                     reason=result.message,
                     now=self._clock(),
                 ):

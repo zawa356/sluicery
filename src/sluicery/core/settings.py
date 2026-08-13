@@ -120,6 +120,7 @@ CODE_DEFAULTS: dict[str, SettingSpec] = {
     "worker.retry_max_sec": SettingSpec("worker.retry_max_sec", float, 3600),
     "worker.max_attempts": SettingSpec("worker.max_attempts", int, 5),
     "worker.blocked_retry_sec": SettingSpec("worker.blocked_retry_sec", float, 300),
+    "worker.blocked_retry_403_sec": SettingSpec("worker.blocked_retry_403_sec", float, 3600),
     "worker.progress_write_interval_sec": SettingSpec(
         "worker.progress_write_interval_sec", float, 2
     ),
@@ -373,6 +374,10 @@ class OperationalSettings:
     @property
     def worker_blocked_retry_sec(self) -> float:
         return get(self._session, "worker.blocked_retry_sec")
+
+    @property
+    def worker_blocked_retry_403_sec(self) -> float:
+        return get(self._session, "worker.blocked_retry_403_sec")
 
     @property
     def worker_progress_write_interval_sec(self) -> float:

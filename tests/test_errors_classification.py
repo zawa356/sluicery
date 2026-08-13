@@ -45,6 +45,13 @@ def test_network_unreachable_classified_blocked() -> None:
 def test_bot_check_classified_blocked() -> None:
     result = classify_stderr("Sign in to confirm you're not a bot")
     assert result.classification == Classification.BLOCKED
+    assert result.reason_code == "bot_check"
+
+
+def test_http_403_classified_blocked() -> None:
+    result = classify_stderr("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+    assert result.classification == Classification.BLOCKED
+    assert result.reason_code == "http_403"
 
 
 def test_unknown_message_falls_back_to_failed() -> None:
