@@ -31,6 +31,11 @@ class ClassificationResult:
 # 追記・修正すること（docs/phase3_指示書.md §5.3）。
 ERROR_RULES: list[tuple[re.Pattern[str], Classification, str]] = [
     # ---- unavailable: 回復不能。自動リトライしない ----
+    (
+        re.compile(r"requested format is not available", re.I),
+        Classification.UNAVAILABLE,
+        "format_unavailable",
+    ),
     (re.compile(r"video (is )?unavailable", re.I), Classification.UNAVAILABLE, "video_unavailable"),
     (re.compile(r"has been removed", re.I), Classification.UNAVAILABLE, "video_removed"),
     (

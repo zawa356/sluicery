@@ -23,6 +23,12 @@ def test_members_only_classified_unavailable() -> None:
     assert result.classification == Classification.UNAVAILABLE
 
 
+def test_requested_format_unavailable_does_not_retry() -> None:
+    result = classify_stderr("ERROR: Requested format is not available")
+    assert result.classification == Classification.UNAVAILABLE
+    assert result.reason_code == "format_unavailable"
+
+
 def test_rate_limited_classified_blocked() -> None:
     result = classify_stderr(
         "ERROR: unable to download video data: HTTP Error 429: Too Many Requests"
