@@ -12,11 +12,23 @@ from sqlalchemy.orm import Session
 
 from sluicery.core.settings import OperationalSettings
 from sluicery.core.target_state import transition_item, transition_target
-from sluicery.db.models import ItemMembership, Storage, TargetStatus
+from sluicery.db.models import (
+    ItemMembership,
+    Run,
+    RunStatus,
+    RunTrigger,
+    Storage,
+    TargetStatus,
+    Task,
+    TaskType,
+    WorkerClass,
+)
 from sluicery.db.repositories.item import ItemRepository
 from sluicery.db.repositories.playlist import PlaylistRepository
 from sluicery.db.repositories.playlist_profile import PlaylistProfileRepository
+from sluicery.db.repositories.run import RunRepository
 from sluicery.db.repositories.target import TargetRepository
+from sluicery.db.repositories.task import TaskRepository
 from sluicery.storage import create_storage_adapter
 from sluicery.storage.base import StorageAdapter, evaluate_capacity
 from sluicery.tasks.pipeline import enqueue_target_pipeline
@@ -39,6 +51,92 @@ class SyncStats:
 
     def to_dict(self) -> dict[str, int | bool]:
         return asdict(self)
+
+
+def enqueue_discover_run(
+    session: Session,
+    playlist_id: int,
+    *,
+    dry_run: bool = False,
+    trigger: RunTrigger = RunTrigger.MANUAL,
+    max_attempts: int | None = None,
+) -> tuple[Run, Task]:
+    """discover Runとnetwork Taskを同じtransactionで作成する。"""
+    playlist = PlaylistRepository(session).get(playlist_id)
+    if playlist is None:
+        raise LookupError(f"Playlist {playlist_id} が見つかりません")
+    if not playlist.enabled or playlist.paused:
+        raise ValueError("無効または一時停止中のPlaylistは同期できません")
+    attempts = OperationalSettings(session).worker_max_attempts
+    if max_attempts is not None:
+        attempts = max_attempts
+    if attempts < 1:
+        raise ValueError("再試行上限は1以上で指定してください")
+    run = RunRepository(session).start(
+        trigger=trigger,
+        kind="discover",
+        playlist_id=playlist_id,
+        commit=False,
+    )
+    task = TaskRepository(session).enqueue(
+        task_type=TaskType.DISCOVER,
+        target_ref_type="playlist",
+        target_ref_id=playlist_id,
+        payload={"playlist_id": playlist_id, "dry_run": dry_run},
+        worker_class=WorkerClass.NETWORK,
+        max_attempts=attempts,
+        run_id=run.id,
+        commit=False,
+    )
+    session.commit()
+    session.refresh(run)
+    session.refresh(task)
+    return run, task
+
+
+def execute_download_run(
+    session: Session,
+    playlist_id: int,
+    *,
+    trigger: RunTrigger = RunTrigger.MANUAL,
+    max_targets: int | None = None,
+    max_attempts: int | None = None,
+    adapter_factory: AdapterFactory = create_storage_adapter,
+) -> Run:
+    """download Runを作成し、チェーン投入完了時点で統計と成否を確定する。"""
+    run = RunRepository(session).start(
+        trigger=trigger,
+        kind="download",
+        playlist_id=playlist_id,
+    )
+    try:
+        stats = queue_download_phase(
+            session,
+            playlist_id,
+            run_id=run.id,
+            max_targets=max_targets,
+            max_attempts=max_attempts,
+            adapter_factory=adapter_factory,
+        )
+        counts = TargetRepository(session).count_by_status(playlist_id)
+        terminal_failures = sum(
+            counts.get(status, 0)
+            for status in {
+                TargetStatus.FAILED,
+                TargetStatus.UNAVAILABLE,
+                TargetStatus.BLOCKED,
+            }
+        )
+        status = RunStatus.SUCCEEDED
+        if stats.targets_queued == 0 and stats.downloaded == 0 and terminal_failures > 0:
+            status = RunStatus.FAILED
+        RunRepository(session).finish(run.id, status, stats.to_dict())
+    except Exception:
+        session.rollback()
+        RunRepository(session).finish(run.id, RunStatus.FAILED, SyncStats().to_dict())
+        raise
+    session.refresh(run)
+    return run
 
 
 def parse_discover_entries(lines: list[str]) -> list[dict[str, Any]]:
@@ -269,6 +367,8 @@ def _integer(value: object) -> int | None:
 __all__ = [
     "SyncStats",
     "apply_discovery",
+    "enqueue_discover_run",
+    "execute_download_run",
     "parse_discover_entries",
     "queue_download_phase",
 ]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import func, select
 
-from sluicery.core.sync import queue_download_phase
+from sluicery.core.sync import enqueue_discover_run, execute_download_run, queue_download_phase
 from sluicery.db.models import (
     Item,
     ItemMembership,
@@ -12,11 +12,13 @@ from sluicery.db.models import (
     PlaylistProfile,
     Profile,
     ProfileKind,
+    RunStatus,
     Storage,
     StorageKind,
     Target,
     TargetStatus,
     Task,
+    TaskType,
 )
 from sluicery.storage.base import (
     ConnectionStage,
@@ -210,3 +212,68 @@ def test_low_capacity_blocks_target_before_chain_creation(db_session):
     assert stats.blocked == 1
     assert target.status == TargetStatus.BLOCKED
     assert db_session.scalar(select(func.count()).select_from(Task)) == 0
+
+
+def test_discover_run_and_task_are_created_without_storing_url_in_payload(db_session):
+    playlist, _, _ = _graph(db_session)
+
+    run, task = enqueue_discover_run(db_session, playlist.id, dry_run=True, max_attempts=3)
+
+    assert run.kind == "discover"
+    assert run.status == RunStatus.RUNNING
+    assert task.type == TaskType.DISCOVER
+    assert task.run_id == run.id
+    assert task.max_attempts == 3
+    assert task.payload_json == {"playlist_id": playlist.id, "dry_run": True}
+    assert playlist.url not in str(task.payload_json)
+
+
+def test_download_run_finishes_when_chains_have_been_enqueued(db_session):
+    playlist, _, assignment = _graph(db_session)
+    _target(db_session, playlist, assignment, "one", 1, TargetStatus.PENDING)
+    adapter = _Adapter()
+
+    run = execute_download_run(
+        db_session,
+        playlist.id,
+        max_targets=50,
+        max_attempts=5,
+        adapter_factory=lambda _storage, _settings: adapter,  # type: ignore[arg-type]
+    )
+
+    assert run.status == RunStatus.SUCCEEDED
+    assert run.finished_at is not None
+    assert run.stats_json is not None
+    assert run.stats_json["targets_queued"] == 1
+    assert db_session.scalar(select(func.count()).select_from(Task)) == 5
+
+
+def test_download_run_is_failed_when_storage_blocks_every_target(db_session):
+    playlist, _, assignment = _graph(db_session)
+    _target(db_session, playlist, assignment, "one", 1, TargetStatus.PENDING)
+    adapter = _Adapter(ok=False)
+
+    run = execute_download_run(
+        db_session,
+        playlist.id,
+        adapter_factory=lambda _storage, _settings: adapter,  # type: ignore[arg-type]
+    )
+
+    assert run.status == RunStatus.FAILED
+    assert run.stats_json is not None
+    assert run.stats_json["targets_queued"] == 0
+    assert run.stats_json["blocked"] == 1
+
+
+def test_download_run_with_nothing_to_do_succeeds(db_session):
+    playlist, _, _ = _graph(db_session)
+
+    run = execute_download_run(
+        db_session,
+        playlist.id,
+        adapter_factory=lambda _storage, _settings: _Adapter(),  # type: ignore[arg-type]
+    )
+
+    assert run.status == RunStatus.SUCCEEDED
+    assert run.stats_json is not None
+    assert run.stats_json["targets_queued"] == 0

@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.orm import aliased
 
-from sluicery.db.models import Task, TaskStatus, WorkerClass
+from sluicery.db.models import Task, TaskStatus, TaskType, WorkerClass
 from sluicery.db.repositories.base import BaseRepository
 
 CLAIMABLE_STATUSES = (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.BLOCKED)
@@ -20,6 +20,35 @@ def _rowcount(result: Any) -> int:
 
 class TaskRepository(BaseRepository[Task]):
     model = Task
+
+    def enqueue(
+        self,
+        *,
+        task_type: TaskType,
+        target_ref_type: str,
+        target_ref_id: int,
+        payload: dict[str, Any],
+        worker_class: WorkerClass,
+        max_attempts: int,
+        run_id: int | None = None,
+        commit: bool = True,
+    ) -> Task:
+        task = Task(
+            type=task_type,
+            target_ref_type=target_ref_type,
+            target_ref_id=target_ref_id,
+            payload_json=payload,
+            worker_class=worker_class,
+            status=TaskStatus.QUEUED,
+            max_attempts=max_attempts,
+            run_id=run_id,
+        )
+        self.session.add(task)
+        self.session.flush()
+        if commit:
+            self.session.commit()
+            self.session.refresh(task)
+        return task
 
     def list_pending(self) -> list[Task]:
         stmt = select(Task).where(Task.status.in_(WAITING_STATUSES))
