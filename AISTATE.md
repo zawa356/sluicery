@@ -4,7 +4,7 @@
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
 最終更新: 2026-08-13
-対応コミット: Phase 8レビュー対応完了（`checkpoint/step-08`）
+対応コミット: Phase 9 §2（Deno導入・HTTP 403再分類）完了
 
 ## プロジェクト概要
 
@@ -22,58 +22,35 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - [x] 6. Task キューとワーカー（network / compute の2クラス）
 - [x] 7. パイプライン（download → verify → postprocess(空) → publish → index）
 - [x] 8. 二相同期（discover / download）、状態遷移
-- [ ] 9. 認証、Web UI 骨格（レイアウト、ログイン）
+- [ ] 9. 認証、Web UI 骨格（レイアウト、ログイン） ← §2の403対処完了、Part A着手前
 - [ ] 10–20. CRUD画面以降
 
-Phase 7 / 8は実装、実機検証、レビュー、全指摘対応まで完了。Part Bの詳細は
-`docs/基本設計.md`の「Phase 8 開発機・SMB実機検証」と`docs/reviews/phase8.md`を参照。
+## 直近の作業
 
-## Phase 8で実装したもの
-
-- `core/target_state.py`のItem / Target遷移表、不正遷移拒否、現在statusを所有権とするCAS
-- network workerのdiscover Task、Item upsert、delisted / 再登場、新規ItemのTarget作成
-- 空・エラーdiscoverでドメインDBを変更しない`empty_result`保護
-- active Itemのpending / 再試行可能failed / blockedをplaylist順に選ぶdownloadフェーズ
-- Storageごとの到達性・書込み・容量事前確認、使用不能時のチェーン非作成
-- `sync.max_targets_per_run`（既定50）までの5段チェーン投入と残数記録
-- discover / download Runの生成と8統計、全件blocked時のRun failed
-- `sluicery sync discover/download/run --playlist/--all`、discover dry-run、`make sync`
-- `sync run --all`で全discover完了後に全downloadを投入する二相順序
-- 再試行でもcore遷移表を1段ずつ通るPhase 7ハンドラ
-
-## Phase 8検証結果
-
-- 5プレイリストを3.38〜7.52秒でdiscoverし、合計309 Item / 618 Targetを生成
-- dry-runは新規0 / delisted 0を表示し、Item / Target / Playlist同期時刻を変更しない
-- 投入上限2の反復、ワーカー再起動復旧、完了Playlistの新規0 / 重複0を確認
-- delistedと再登場、空振りは実DBの制御差分で検証し、Artifact / Target / ファイル非変更
-- local / SMB合計224 Artifact、863,302,990 bytes。Opusタグ・埋め込み画像も確認
-- 読取専用SMBはTaskを作らずTarget blocked、書込可能SMBはpublish / index完了
-- 連続downloadはHTTP 403多発時に指示書§16.3の停止条件を適用。停止時はdownloaded 224 / failed 68 / pending 320 / unavailable 7
-- Stagingは53ファイル・89,834,689 bytes。孤立4件とTask追跡中の中間ファイルで、自動削除していない
-- runtime全サービスを最新コードで再ビルド済み。app healthy、network / compute worker稼働
-- `make test` 306件成功、Ruff成功、mypy 80 source files成功
-- 実URL 5件と認証・接続値13件の追跡ファイル・全履歴・compose log・`/data/logs`一致は0件。gitleaksもleak 0件
+- Deno 2.9.5をversioned URL・SHA-256検証付きでruntimeイメージへ同梱した（D-044）
+- HTTP 403とボット確認をattemptsを消費しない`blocked`へ再分類し、専用の1時間待機を追加した（D-045）
+- 既存ログはJSランタイム欠如警告325件、HTTP 403が70件。D-022のprobe / fetchはDeno導入後に成功した
+- 既存403 Target 5件の再試行は成功2、HTTP 403 blocked 2、形式非互換 unavailable 1。大量アクセスはしていない
+- 基準線306テストと、403関連43テストが成功した
 
 ## 次にやること
 
-1. 要件定義§12.1、§16、§18とPhase 9の指示書を読み、「認証、Web UI 骨格（レイアウト、ログイン）」の設計点検から始める
-2. Phase 9着手前に`checkpoint/step-08`がHEADを指すこと、worktreeがcleanであることを確認する
-3. Phase 8の全download完走を将来再検証する場合は、HTTP 403が解消したことを少数Taskで確認し、並列度を上げずに再開する
+1. Part Aの単一ユーザー認証、DBセッション、永続ロックアウトを実装する
+2. CSRF、Web UI骨格、ローカル同梱HTMX / CSSを実装する
+3. Playlist Cookieの暗号化保存・tmpfs展開・確実な削除・マスクを実装し、少量で403を再評価する
+4. セキュリティ重点レビュー①を実施し、`checkpoint/step-09`を付ける
 
 ## 未解決・保留
 
 | # | 内容 | 状態 |
 |---|---|---|
 | 1 | Alembic autogenerateがSQLite CHECK制約で偽陽性diffを出す（D-008） | マイグレーション追加時に手で除去 |
-| 4 | GitHubリポジトリのpublic化 | 見送り中・判断待ち |
-| 5 | Issues / Wiki / Projectsの要否 | 未確認 |
-| 6 | Dependabot alertsの要否 | 未確認 |
-| 7 | README / deploymentのclone URLが`<repo>`のまま | public化時に差し替え |
-| 8 | ffmpegの`--download-sections` 1秒区間切り出しは`-11` | ffprobe通常検証は健全。D-036 |
-| 9 | ローカルコミットとタグのGitHub push | 公開前監査とユーザー承認前は禁止 |
-| 10 | D-022 YouTube素材が検証時にHTTP 403 | Blender公式PeerTube素材で代替 |
-| 11 | Phase 8実運用規模downloadのHTTP 403多発 | 指示書に従い安全停止。未取得分はDBで追跡可能 |
+| 2 | GitHubリポジトリのpublic化、Issues / Wiki / Projects / Dependabot | 判断待ち |
+| 3 | README / deploymentのclone URLが`<repo>`のまま | public化時に差し替え |
+| 4 | ffmpegの`--download-sections` 1秒区間切り出しは`-11` | ffprobe通常検証は健全。D-036 |
+| 5 | ローカルコミットとタグのGitHub push | 公開前監査とユーザー承認前は禁止 |
+| 6 | Deno導入後も既存5件中2件はHTTP 403 | Part AのCookieサポート後に少量再評価 |
+| 7 | `.local/docker-server.env`のSSH認証が拒否される | ローカルDockerで継続。最終実機確認までに要確認 |
 
 ## 重要な合意
 
@@ -98,10 +75,9 @@ Phase 7 / 8は実装、実機検証、レビュー、全指摘対応まで完了
 - 起動: `make up`または`docker compose up -d --build`
 - テスト: `make test`、lint: `make lint`
 - 同期: `make sync`または`docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli sync ...`
-- 実機用のSMB / Docker SSH / Playlist URLは、ignoredかつmode 600の`.local/*.env`と`.local/test_playlists.txt`だけにある
-- `/data/staging/trailer_1080p.mov`は削除禁止。現在の孤立検出は同ファイルを含む4件
-- 検証用Playlist ID 4〜8、Task、Artifactは開発DBに残っている。一時的な読取専用Storageと割当ては削除済み
-- `sync.max_targets_per_run`は既定50へ戻し、Playlist ID 1〜8のpausedはfalse
+- 実機用のSMB / Docker SSH / Playlist URL / Cookieは、ignoredかつmode 600の`.local/`だけにある
+- `/data/staging/trailer_1080p.mov`は削除禁止。既存の孤立検出対象は自動削除しない
+- `sync.max_targets_per_run`は既定50へ復元済み
 - DBマイグレーションheadは`e4a1f7b9c203`
 
 ## 既知の落とし穴
