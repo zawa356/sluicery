@@ -197,12 +197,15 @@ class TaskRepository(BaseRepository[Task]):
         return changed
 
     def mark_cancelled(self, task_id: int, worker_id: str, *, now: datetime | None = None) -> bool:
-        return self._finish(
+        changed = self._finish(
             task_id,
             worker_id,
             status=TaskStatus.CANCELLED,
             now=now,
         )
+        if changed:
+            self.cancel_descendants(task_id, now=now)
+        return changed
 
     def mark_failed_for_retry(
         self,
@@ -254,7 +257,7 @@ class TaskRepository(BaseRepository[Task]):
         )
         status = self.session.execute(stmt).scalar_one_or_none()
         self.session.commit()
-        if status == TaskStatus.UNAVAILABLE:
+        if status in {TaskStatus.UNAVAILABLE, TaskStatus.CANCELLED}:
             self.cancel_descendants(task_id, now=failed_at)
         return status
 
@@ -296,9 +299,11 @@ class TaskRepository(BaseRepository[Task]):
                 error_message=case((cancel_requested, None), else_=reason),
             )
         )
-        result = self.session.execute(stmt)
+        status = self.session.execute(stmt.returning(Task.status)).scalar_one_or_none()
         self.session.commit()
-        return bool(_rowcount(result))
+        if status == TaskStatus.CANCELLED:
+            self.cancel_descendants(task_id, now=blocked_at)
+        return status is not None
 
     def release_for_shutdown(
         self, task_id: int, worker_id: str, *, now: datetime | None = None
@@ -347,9 +352,11 @@ class TaskRepository(BaseRepository[Task]):
                 blocked_reason=case((is_running, Task.blocked_reason), else_=None),
             )
         )
-        result = self.session.execute(stmt)
+        status = self.session.execute(stmt.returning(Task.status)).scalar_one_or_none()
         self.session.commit()
-        return bool(_rowcount(result))
+        if status == TaskStatus.CANCELLED:
+            self.cancel_descendants(task_id, now=requested_at)
+        return status is not None
 
     def request_cancel_run(self, run_id: int, *, now: datetime | None = None) -> int:
         """Phase 8のRun生成経路から使うRun単位キャンセルのDBインターフェース。"""

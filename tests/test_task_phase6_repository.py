@@ -212,6 +212,21 @@ def test_cancel_waiting_and_run_interface(db_session) -> None:
     assert running.cancel_requested is True
 
 
+def test_cancel_waiting_task_cancels_descendant_chain(db_session) -> None:
+    repo = TaskRepository(db_session)
+    parent = _task(repo)
+    child = _task(repo, target_ref_id=2, depends_on_task_id=parent.id)
+    grandchild = _task(repo, target_ref_id=3, depends_on_task_id=child.id)
+
+    assert repo.request_cancel(parent.id, now=NOW)
+    db_session.refresh(parent)
+    db_session.refresh(child)
+    db_session.refresh(grandchild)
+    assert parent.status == TaskStatus.CANCELLED
+    assert child.status == TaskStatus.CANCELLED
+    assert grandchild.status == TaskStatus.CANCELLED
+
+
 def test_cancel_after_last_heartbeat_wins_over_retryable_or_blocked_result(db_session) -> None:
     repo = TaskRepository(db_session)
     failed = _task(
