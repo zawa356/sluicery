@@ -107,6 +107,18 @@ PlaylistごとのCookie設定画面では、Netscape形式のCookieファイル�
 tmpfsとしてマウントする`/run/sluicery`だけへ600で展開し、成功・失敗にかかわらず削除します。
 `--cookies-from-browser`はコンテナ内にブラウザが無いため使用できません。
 
+### 定期同期
+
+APSchedulerは`app`サービスのプロセス内だけで起動し、jobを既存SQLiteへ永続化します。
+worker、ホストcrontab、systemd timerへ追加設定は不要です。discover / downloadのグローバルcron、
+±ジッター、download実行可能時間帯はWeb UIの設定画面で変更でき、Playlist編集画面では個別cronと
+一時停止を設定できます。cronと次回予定は`.env`の`TZ`で解釈・表示されます。
+
+CLIで設定やPlaylistを変更した場合も60秒以内にjobstoreへ反映されます。設定反映を即時確認したい
+場合は`app`を通常の再起動で起動し直せます。停止中に複数の予定時刻を過ぎても、復帰時は直近1回へ
+畳み込まれます。同一Playlistの手動syncと自動syncは並行せず、自動側の見送り理由はRun履歴で
+確認できます。
+
 ## 5. バックアップとリストア
 
 > **未実装:** バックアップ / リストアは要件定義 §20 の Phase 20 で実装予定です。

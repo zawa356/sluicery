@@ -124,6 +124,11 @@ argon2でハッシュ化され、平文はDBへ保存しません。
 既定は無効で、有効化時にはアカウント停止リスクへの明示確認が必要です。平文は実行中だけ
 tmpfsの`/run/sluicery`へ展開され、実行後に削除されます。
 
+Playlistを有効にすると、`app`サービス内のスケジューラがdiscoverとdownloadを独立したcronで
+実行します。cronは`.env`の`TZ`で解釈され、Playlist個別設定が無い場合は設定画面のグローバル
+既定（各6時間）を使います。ダウンロード時間帯、±ジッター、一時停止、次回予定もWeb UIから
+確認・変更できます。workerやホストのcron / systemd timerを別途設定する必要はありません。
+
 ## 運用コマンド
 
 | コマンド | 内容 | 実装状況 | `make` 無し環境での等価コマンド |
@@ -189,7 +194,13 @@ docker compose exec app python3 -m sluicery.cli playlist attach-profile \
   sample video --storage media
 docker compose exec app python3 -m sluicery.cli options preview \
   --playlist sample --profile video --kind download
+docker compose exec app python3 -m sluicery.cli settings set \
+  schedule.download_window '23:00-05:00'
 ```
+
+CLIでPlaylistやスケジュール設定を変更した場合も、`app`が60秒以内に永続ジョブを整合します。
+手動syncと自動syncが同じPlaylistで重なった場合、自動側はTaskを作らず`skipped` Runとして理由を
+残します。時間帯制限は自動downloadだけに適用され、明示的な手動downloadは制限しません。
 
 各リソースは `add|list|show|edit|remove` に対応します。Playlist には
 `attach-profile` / `detach-profile` もあります。`playlist remove` は

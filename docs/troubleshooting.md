@@ -108,3 +108,17 @@ HTTP 403とボット確認は自動的に`blocked`となり、既定で1時間�
 並列度やレート上限を引き上げず、十分時間を置いて3〜5件だけで再確認する。形式非互換は
 `Requested format is not available`として`unavailable`になるため、Profileのformatも確認する。
 中断時のStagingファイルは`--continue`に使うため自動削除されない。
+
+## app再起動後に停止中のスケジュールが実行されない
+
+**症状**：jobstoreには停止中に期限を過ぎた`next_run_time`が残っているのに、`app`起動後のmisfireが
+発火しない。
+
+**原因**：起動時整合で、設定が変わっていない永続jobまで`replace_existing`すると、期限超過時刻が
+新しい将来時刻へ置き換わり、APSchedulerがmisfireとして認識できなくなる。Phase 12の実機検証前に
+この問題をテストで検出した。
+
+**対処**：Phase 12以降はcron、`TZ`、jitter、引数、coalesce、同時実行数、猶予が一致するjobを
+保持し、設定が変わった場合だけ再登録する。停止中の複数回分は`coalesce=true`で復帰直後の1回へ
+畳み込まれる。予定が見えない場合は、Playlistがenabledかつpausedでないこと、cron式、
+`app`の稼働、ダッシュボードの次回予定を順に確認する。worker側にschedulerログが無いのは正常である。
