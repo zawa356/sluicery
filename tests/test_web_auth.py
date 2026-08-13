@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 
 from argon2 import PasswordHasher
@@ -26,6 +27,12 @@ def _create_admin(session_factory, settings: Settings, password: str = "correct-
     settings.ADMIN_PASSWORD = password
     result = ensure_initial_user(session_factory, settings)
     assert result.created is True
+
+
+def _csrf(response) -> str:
+    match = re.search(r'name="csrf_token"\s+value="([^"]+)"', response.text)
+    assert match is not None
+    return match.group(1)
 
 
 def test_initial_user_is_created_once_with_argon2(
@@ -94,10 +101,15 @@ def test_authentication_is_whitelist_based_and_login_rotates_session(
     assert protected.status_code == 303
     assert protected.headers["location"] == "/login"
     anonymous_cookie = protected.cookies[SESSION_COOKIE_NAME]
+    csrf_token = _csrf(client.get("/login"))
 
     response = client.post(
         "/login",
-        data={"username": settings.ADMIN_USERNAME, "password": "correct-password"},
+        data={
+            "csrf_token": csrf_token,
+            "username": settings.ADMIN_USERNAME,
+            "password": "correct-password",
+        },
         follow_redirects=False,
     )
     assert response.status_code == 303
@@ -153,12 +165,19 @@ def test_login_error_does_not_reveal_username_existence(base_env, session_factor
     settings = _settings(base_env)
     _create_admin(session_factory, settings)
     client = TestClient(create_app(settings=settings, session_factory=session_factory))
-    client.get("/login")
+    csrf_token = _csrf(client.get("/login"))
 
-    unknown = client.post("/login", data={"username": "unknown", "password": "wrong"})
+    unknown = client.post(
+        "/login",
+        data={"csrf_token": csrf_token, "username": "unknown", "password": "wrong"},
+    )
     known = client.post(
         "/login",
-        data={"username": settings.ADMIN_USERNAME, "password": "wrong"},
+        data={
+            "csrf_token": csrf_token,
+            "username": settings.ADMIN_USERNAME,
+            "password": "wrong",
+        },
     )
 
     assert unknown.status_code == known.status_code == 401
@@ -190,3 +209,85 @@ def test_password_change_revokes_all_sessions(base_env, session_factory) -> None
         "new-password",
     )
     assert replacement.ok is True
+
+
+def test_csrf_is_required_for_login_and_bound_to_session(base_env, session_factory) -> None:
+    settings = _settings(base_env)
+    _create_admin(session_factory, settings)
+    app = create_app(settings=settings, session_factory=session_factory)
+    first = TestClient(app)
+    second = TestClient(app)
+    first_token = _csrf(first.get("/login"))
+    second.get("/login")
+
+    missing = first.post(
+        "/login",
+        data={"username": settings.ADMIN_USERNAME, "password": "correct-password"},
+    )
+    tampered = first.post(
+        "/login",
+        data={
+            "csrf_token": f"{first_token}x",
+            "username": settings.ADMIN_USERNAME,
+            "password": "correct-password",
+        },
+    )
+    other_session = second.post(
+        "/login",
+        data={
+            "csrf_token": first_token,
+            "username": settings.ADMIN_USERNAME,
+            "password": "correct-password",
+        },
+    )
+
+    assert missing.status_code == 403
+    assert tampered.status_code == 403
+    assert other_session.status_code == 403
+    with session_factory() as db:
+        user = UserRepository(db).get_single()
+        assert user is not None
+        assert user.failed_login_attempts == 0
+
+
+def test_csrf_header_is_accepted_and_all_mutations_reject_missing_token(
+    base_env, session_factory
+) -> None:
+    settings = _settings(base_env)
+    _create_admin(session_factory, settings)
+    client = TestClient(create_app(settings=settings, session_factory=session_factory))
+    csrf_token = _csrf(client.get("/login"))
+    login = client.post(
+        "/login",
+        data={
+            "csrf_token": csrf_token,
+            "username": settings.ADMIN_USERNAME,
+            "password": "correct-password",
+        },
+        follow_redirects=False,
+    )
+    assert login.status_code == 303
+    authenticated_csrf = _csrf(client.get("/"))
+
+    assert client.post("/logout", follow_redirects=False).status_code == 403
+    assert client.post(
+        "/settings/password",
+        data={"current_password": "correct-password", "new_password": "new-password"},
+    ).status_code == 403
+
+    logout = client.post(
+        "/logout",
+        headers={"X-CSRF-Token": authenticated_csrf},
+        follow_redirects=False,
+    )
+    assert logout.status_code == 303
+
+
+def test_csrf_dependency_treats_only_get_as_exempt(base_env, session_factory) -> None:
+    settings = _settings(base_env)
+    _create_admin(session_factory, settings)
+    client = TestClient(create_app(settings=settings, session_factory=session_factory))
+    client.get("/login")
+
+    assert client.request("HEAD", "/").status_code == 403
+    assert client.request("OPTIONS", "/").status_code == 403
