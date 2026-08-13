@@ -19,7 +19,7 @@ shutdown猶予より長くしている。
 ## イメージ
 
 - `sluicery:local`：`Dockerfile` の `runtime` ステージからローカルビルド。ベースは `python:3.12-slim`（digest 固定）。
-- ビルド時に外部から取得するもの：rclone（バージョン固定 + checksum 検証）、ffmpeg/ffprobe 静的ビルド（checksum 検証）
+- ビルド時に外部から取得するもの：rclone（バージョン固定 + checksum 検証）、ffmpeg/ffprobe 静的ビルド（checksum 検証）、Deno（バージョン固定 + checksum 検証）
 - `sluicery:local-test`：`make test` / `make lint` 実行時に `Dockerfile` の `test` ステージ（`runtime` + dev 依存 + `tests/`）からビルドされる。`docker compose` の管理下ではないが、`make purge` の削除対象に含まれる（存在すれば削除、無ければ何もしない）
 - `.dockerignore`：ビルドコンテキストから `.git` / `docs/` / `data/` 等を除外する。Dockerfile は個別 `COPY` のみを使うためイメージの中身には影響せず、送信量を減らす目的のみ
 

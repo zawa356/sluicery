@@ -141,7 +141,7 @@ make purge
 - メモリ: 3.8GiB（搭載）
 - ディスク: 60GB（うち空き 45GB、検証開始時点）
 - ビルド時間: 3分1秒（初回、ビルドキャッシュ無しの状態から）
-- イメージサイズ: sluicery:local 591MB
+- イメージサイズ: sluicery:local 796MB（Deno 2.9.5 同梱後の開発機再計測値）
 - 起動直後のメモリ使用量: app 80.7MiB / worker-network 53.8MiB / worker-compute 53.9MiB
 - ダウンロード中のメモリ使用量: app 88.4MiB（D-015 の検証用ファイル、約30MB。ファイルサイズが
   小さく、起動直後との有意差は見られなかった）
