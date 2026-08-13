@@ -11,6 +11,7 @@ from sluicery.core.settings import OperationalSettings
 from sluicery.downloader.version import current_ytdlp_bin, ytdlp_root
 from sluicery.downloader.ytdlp import YtdlpRunner
 from sluicery.runner.ffprobe import FFprobeRunner
+from sluicery.tasks.handlers.discover import DiscoverHandler
 from sluicery.tasks.handlers.download import DownloadHandler
 from sluicery.tasks.handlers.dummy import TaskHandler
 from sluicery.tasks.handlers.index import IndexHandler
@@ -32,6 +33,15 @@ def build_pipeline_handler_factories(
     ytdlp_bin = current_ytdlp_bin(ytdlp_root(settings.DATA_DIR))
     log_dir = settings.DATA_DIR / "logs"
     return {
+        "discover": lambda: DiscoverHandler(
+            session_factory,
+            runner=YtdlpRunner(
+                ytdlp_bin,
+                stderr_tail_kb=stderr_tail_kb,
+                log_dir=log_dir,
+            ),
+            env_allow_exec=settings.ALLOW_EXEC,
+        ),
         "download": lambda: DownloadHandler(
             session_factory,
             staging_dir=staging_dir,

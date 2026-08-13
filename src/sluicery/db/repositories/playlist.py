@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import datetime
+
+from sqlalchemy import select, update
 
 from sluicery.db.models import Playlist, PlaylistProfile
 from sluicery.db.repositories.base import BaseRepository
@@ -25,6 +27,14 @@ class PlaylistRepository(BaseRepository[Playlist]):
         stmt = select(PlaylistProfile).where(PlaylistProfile.playlist_id == playlist_id)
         profiles = list(self.session.scalars(stmt))
         return playlist, profiles
+
+    def set_last_discover_at(self, playlist_id: int, at: datetime, *, commit: bool = True) -> bool:
+        result = self.session.execute(
+            update(Playlist).where(Playlist.id == playlist_id).values(last_discover_at=at)
+        )
+        if commit:
+            self.session.commit()
+        return bool(getattr(result, "rowcount", 0) or 0)
 
 
 __all__ = ["PlaylistRepository"]

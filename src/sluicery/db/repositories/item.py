@@ -16,7 +16,9 @@ class ItemRepository(BaseRepository[Item]):
         stmt = select(Item).where(Item.playlist_id == playlist_id, Item.source_id == source_id)
         return self.session.scalars(stmt).first()
 
-    def upsert_many(self, playlist_id: int, items: list[dict[str, Any]]) -> list[Item]:
+    def upsert_many(
+        self, playlist_id: int, items: list[dict[str, Any]], *, commit: bool = True
+    ) -> list[Item]:
         """`source_id` が既存なら更新、なければ作成する（discover 用の下準備）。
 
         membership の遷移判定（active/delisted の切り替え）はここでは行わない。
@@ -34,10 +36,16 @@ class ItemRepository(BaseRepository[Item]):
                     setattr(existing, key, value)
                 obj = existing
             result.append(obj)
-        self.session.commit()
-        for obj in result:
-            self.session.refresh(obj)
+        self.session.flush()
+        if commit:
+            self.session.commit()
+            for obj in result:
+                self.session.refresh(obj)
         return result
+
+    def list_for_playlist(self, playlist_id: int) -> list[Item]:
+        stmt = select(Item).where(Item.playlist_id == playlist_id)
+        return list(self.session.scalars(stmt))
 
     def list_by_membership(self, playlist_id: int, membership: ItemMembership) -> list[Item]:
         stmt = select(Item).where(Item.playlist_id == playlist_id, Item.membership == membership)

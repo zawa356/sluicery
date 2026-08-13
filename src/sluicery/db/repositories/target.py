@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy import func, select, update
 
-from sluicery.db.models import Item, Target, TargetStatus
+from sluicery.db.models import Item, PlaylistProfile, Target, TargetStatus
 from sluicery.db.repositories.base import BaseRepository
 
 
@@ -57,6 +57,44 @@ class TargetRepository(BaseRepository[Target]):
         if commit:
             self.session.commit()
         return bool(getattr(result, "rowcount", 0) or 0)
+
+    def create_missing_for_items(
+        self,
+        item_ids: list[int],
+        playlist_profile_ids: list[int],
+        *,
+        commit: bool = True,
+    ) -> list[Target]:
+        """Item x PlaylistProfile の未作成分だけを追加する。"""
+        if not item_ids or not playlist_profile_ids:
+            return []
+        existing_stmt = select(Target.item_id, Target.playlist_profile_id).where(
+            Target.item_id.in_(item_ids),
+            Target.playlist_profile_id.in_(playlist_profile_ids),
+        )
+        existing = set(self.session.execute(existing_stmt).all())
+        created = [
+            Target(item_id=item_id, playlist_profile_id=profile_id)
+            for item_id in item_ids
+            for profile_id in playlist_profile_ids
+            if (item_id, profile_id) not in existing
+        ]
+        self.session.add_all(created)
+        self.session.flush()
+        if commit:
+            self.session.commit()
+            for target in created:
+                self.session.refresh(target)
+        return created
+
+    def list_for_playlist(self, playlist_id: int) -> list[Target]:
+        stmt = (
+            select(Target)
+            .join(Item, Target.item_id == Item.id)
+            .join(PlaylistProfile, Target.playlist_profile_id == PlaylistProfile.id)
+            .where(Item.playlist_id == playlist_id, PlaylistProfile.playlist_id == playlist_id)
+        )
+        return list(self.session.scalars(stmt))
 
 
 __all__ = ["TargetRepository"]

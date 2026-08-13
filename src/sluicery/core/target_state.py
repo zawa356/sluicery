@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy.orm import Session
 
 from sluicery.db.models import ItemMembership, TargetStatus, Task, TaskStatus
@@ -80,6 +82,7 @@ def transition_item(
     item_id: int,
     membership: ItemMembership,
     *,
+    now: datetime | None = None,
     commit: bool = True,
 ) -> bool:
     """Item membership の active <-> delisted だけをCASで更新する。"""
@@ -90,7 +93,7 @@ def transition_item(
     if current == membership:
         raise InvalidStateTransition(f"Item: {current.value} -> {membership.value}")
     changed = ItemRepository(session).compare_and_set_membership(
-        item_id, {current}, membership, commit=commit
+        item_id, {current}, membership, now=now, commit=commit
     )
     if not changed:
         session.rollback()
