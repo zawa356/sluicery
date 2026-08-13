@@ -109,7 +109,7 @@ def test_index_creates_artifact_then_deletes_staging(session_factory, tmp_path: 
         ]
 
 
-def test_index_is_idempotent_and_cleanup_failure_does_not_fail(
+def test_index_is_idempotent_when_cleanup_is_disabled(
     session_factory, tmp_path: Path
 ) -> None:
     directory = tmp_path / "work" / "folder"
@@ -131,3 +131,29 @@ def test_index_is_idempotent_and_cleanup_failure_does_not_fail(
     assert source.exists()
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(Artifact)) == 1
+
+
+def test_index_cleanup_oserror_does_not_undo_database_result(
+    session_factory, tmp_path: Path, monkeypatch
+) -> None:
+    directory = tmp_path / "work" / "folder"
+    directory.mkdir(parents=True)
+    source = directory / "media.mkv"
+    source.write_bytes(b"media")
+    target_id, task_id = _graph(session_factory, source)
+
+    def fail_unlink(self: Path) -> None:
+        raise OSError("busy")
+
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    result = IndexHandler(session_factory, staging_dir=tmp_path).run(
+        {"target_id": target_id, "work_id": "work", "_execution": {"task_id": task_id}},
+        lambda _: None,
+    )
+
+    assert result.outcome == TaskOutcome.SUCCEEDED
+    assert result.payload_update["staging_deleted"] is False
+    assert source.exists()
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Artifact)) == 1
+        assert session.get(Target, target_id).status == TargetStatus.DOWNLOADED
