@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sqlalchemy.orm import Session, sessionmaker
 
+from sluicery.core.cookies import (
+    COOKIE_RUNTIME_DIR,
+    CookieConfigurationError,
+    add_cookie_argument,
+    materialize_cookie,
+)
 from sluicery.core.options import build_discover_args
 from sluicery.core.sync import SyncStats, apply_discovery, parse_discover_entries
 from sluicery.db.models import Playlist, RunStatus
@@ -21,10 +29,12 @@ class DiscoverHandler:
         *,
         runner: YtdlpRunner,
         env_allow_exec: bool = False,
+        cookie_runtime_dir: Path = COOKIE_RUNTIME_DIR,
     ) -> None:
         self._session_factory = session_factory
         self._runner = runner
         self._env_allow_exec = env_allow_exec
+        self._cookie_runtime_dir = cookie_runtime_dir
 
     def cancel(self) -> None:
         self._runner.cancel()
@@ -46,17 +56,30 @@ class DiscoverHandler:
                 env_allow_exec=self._env_allow_exec,
             )
             source_url = playlist.url
+            cookie_enabled = playlist.cookie_enabled
+            cookie_config = playlist.cookies_encrypted
 
         on_progress({"status": "discovering", "percent": None})
-        result = self._runner.run(
-            list(built.args),
-            timeout=TimeoutPolicy(
-                idle_sec=built.timeout.idle_sec,
-                absolute_sec=built.timeout.absolute_sec,
-                term_grace_sec=built.timeout.term_grace_sec,
-            ),
-            sensitive_values=(source_url,),
-        )
+        try:
+            with materialize_cookie(
+                cookie_enabled,
+                cookie_config,
+                runtime_dir=self._cookie_runtime_dir,
+            ) as cookie:
+                result = self._runner.run(
+                    add_cookie_argument(list(built.args), cookie),
+                    timeout=TimeoutPolicy(
+                        idle_sec=built.timeout.idle_sec,
+                        absolute_sec=built.timeout.absolute_sec,
+                        term_grace_sec=built.timeout.term_grace_sec,
+                    ),
+                    sensitive_values=(
+                        source_url,
+                        *(cookie.sensitive_values if cookie is not None else ()),
+                    ),
+                )
+        except CookieConfigurationError:
+            return self._failed(run_id, "PlaylistのCookie設定を読み込めません")
         if result.terminated_by == "cancel":
             self._finish_run(run_id, RunStatus.CANCELLED, SyncStats())
             return TaskResult(TaskOutcome.CANCELLED)

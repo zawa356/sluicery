@@ -99,6 +99,14 @@ nginx / Caddy 等のリバースプロキシを別途 `HTTP_PORT`（既定 8080�
 ブラウザが平文HTTPへセッションCookieを送らないようにしてください。`HttpOnly` と `SameSite=Lax` は
 常に付与されます。
 
+### 取得用Cookie
+
+PlaylistごとのCookie設定画面では、Netscape形式のCookieファイルをwrite-onlyで登録できます。
+内容は`SECRET_KEY`で暗号化してDBへ保存し、画面には設定済みかどうかだけを表示します。既定は
+無効であり、有効化にはアカウント停止リスクへの確認が必要です。実行時の平文はComposeが
+tmpfsとしてマウントする`/run/sluicery`だけへ600で展開し、成功・失敗にかかわらず削除します。
+`--cookies-from-browser`はコンテナ内にブラウザが無いため使用できません。
+
 ## 5. バックアップとリストア
 
 > **未実装:** バックアップ / リストアは要件定義 §20 の Phase 20 で実装予定です。

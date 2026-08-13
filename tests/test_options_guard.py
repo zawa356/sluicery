@@ -125,3 +125,15 @@ def test_simulate_is_not_warned_for_discover() -> None:
 def test_unbalanced_quotes_are_rejected() -> None:
     with pytest.raises(OptionValidationError, match="引用符"):
         guard_freeform("--format 'broken", source_label="Profile")
+
+
+@pytest.mark.parametrize("option", ["--cookies", "--cookies-from-browser"])
+def test_cookie_options_are_rejected_even_in_expert_mode(option: str) -> None:
+    with pytest.raises(OptionValidationError, match="Cookie|cookies"):
+        guard_freeform(
+            f"{option} value",
+            source_label="test",
+            expert_mode=True,
+            env_allow_exec=True,
+            profile_allow_exec=True,
+        )

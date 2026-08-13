@@ -7,6 +7,12 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from sluicery.core.cookies import (
+    COOKIE_RUNTIME_DIR,
+    CookieConfigurationError,
+    add_cookie_argument,
+    materialize_cookie,
+)
 from sluicery.core.options import build_download_args
 from sluicery.core.target_state import advance_target, transition_target
 from sluicery.db.models import Item, Playlist, PlaylistProfile, Profile, Target, TargetStatus
@@ -25,11 +31,13 @@ class DownloadHandler:
         staging_dir: Path,
         runner: YtdlpRunner,
         env_allow_exec: bool = False,
+        cookie_runtime_dir: Path = COOKIE_RUNTIME_DIR,
     ) -> None:
         self._session_factory = session_factory
         self._staging_dir = staging_dir
         self._runner = runner
         self._env_allow_exec = env_allow_exec
+        self._cookie_runtime_dir = cookie_runtime_dir
 
     def cancel(self) -> None:
         self._runner.cancel()
@@ -60,6 +68,8 @@ class DownloadHandler:
                 playlist_profile=playlist_profile,
                 env_allow_exec=self._env_allow_exec,
             )
+            cookie_enabled = playlist.cookie_enabled
+            cookie_config = playlist.cookies_encrypted
 
         def report(event: ProgressEvent) -> None:
             percent = None
@@ -76,16 +86,32 @@ class DownloadHandler:
                 }
             )
 
-        result = self._runner.run(
-            list(built.args),
-            timeout=TimeoutPolicy(
-                idle_sec=built.timeout.idle_sec,
-                absolute_sec=built.timeout.absolute_sec,
-                term_grace_sec=built.timeout.term_grace_sec,
-            ),
-            on_progress=report,
-            sensitive_values=(item.source_url,),
-        )
+        try:
+            with materialize_cookie(
+                cookie_enabled,
+                cookie_config,
+                runtime_dir=self._cookie_runtime_dir,
+            ) as cookie:
+                result = self._runner.run(
+                    add_cookie_argument(list(built.args), cookie),
+                    timeout=TimeoutPolicy(
+                        idle_sec=built.timeout.idle_sec,
+                        absolute_sec=built.timeout.absolute_sec,
+                        term_grace_sec=built.timeout.term_grace_sec,
+                    ),
+                    on_progress=report,
+                    sensitive_values=(
+                        item.source_url,
+                        *(cookie.sensitive_values if cookie is not None else ()),
+                    ),
+                )
+        except CookieConfigurationError:
+            return self._failure(
+                target_id,
+                Classification.FAILED,
+                "PlaylistのCookie設定を読み込めません",
+                reason_code="cookie_configuration",
+            )
         if result.terminated_by == "cancel":
             return TaskResult(TaskOutcome.CANCELLED)
         if result.classification == Classification.OK:

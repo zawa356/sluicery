@@ -319,6 +319,8 @@ class Playlist(Base, TimestampMixin):
     paused: Mapped[bool] = mapped_column(default=False)
     retention_policy_json: Mapped[dict | None] = mapped_column(JSON)
     dedup_hardlink: Mapped[bool] = mapped_column(default=False)
+    cookie_enabled: Mapped[bool] = mapped_column(default=False)
+    cookies_encrypted: Mapped[dict | None] = mapped_column(EncryptedJSON())
     last_discover_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     last_download_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 

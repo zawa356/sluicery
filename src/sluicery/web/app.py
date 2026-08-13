@@ -12,10 +12,20 @@ from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.datastructures import UploadFile
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from sluicery.config import Settings
+from sluicery.core.cookies import (
+    MAX_COOKIE_BYTES,
+    CookieConfigurationError,
+    clear_playlist_cookie,
+    playlist_cookie_configured,
+    save_playlist_cookie,
+    set_playlist_cookie_enabled,
+)
+from sluicery.db.models import Playlist
 from sluicery.web.auth import (
     LOGIN_ERROR_MESSAGE,
     SESSION_COOKIE_NAME,
@@ -256,6 +266,86 @@ def create_app(
             "placeholder.html",
             context(request, active_nav="settings", title="設定", phase="Part B"),
         )
+
+    def cookie_page_response(
+        request: Request,
+        playlist: Playlist,
+        *,
+        error: str | None = None,
+        status_code: int = 200,
+    ) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "playlist_cookies.html",
+            context(
+                request,
+                active_nav="playlists",
+                playlist_id=playlist.id,
+                playlist_name=playlist.name,
+                cookie_configured=playlist_cookie_configured(playlist),
+                cookie_enabled=playlist.cookie_enabled,
+                error=error,
+            ),
+            status_code=status_code,
+        )
+
+    @app.get("/playlists/{playlist_id}/cookies")
+    def playlist_cookies(request: Request, playlist_id: int) -> Response:
+        with session_factory() as db:
+            playlist = db.get(Playlist, playlist_id)
+            if playlist is None:
+                raise HTTPException(status_code=404)
+            return cookie_page_response(request, playlist)
+
+    @app.post("/playlists/{playlist_id}/cookies")
+    async def update_playlist_cookies(request: Request, playlist_id: int) -> Response:
+        form = await request.form()
+        action = str(form.get("action", ""))
+        confirmed = form.get("risk_confirmed") == "yes"
+        with session_factory() as db:
+            playlist = db.get(Playlist, playlist_id)
+            if playlist is None:
+                raise HTTPException(status_code=404)
+            try:
+                if action == "save_enable":
+                    upload = form.get("cookie_file")
+                    if not isinstance(upload, UploadFile) or not upload.filename:
+                        raise CookieConfigurationError("Cookieファイルを選択してください")
+                    raw = await upload.read(MAX_COOKIE_BYTES + 1)
+                    save_playlist_cookie(
+                        db,
+                        playlist,
+                        raw,
+                        enable_confirmed=confirmed,
+                    )
+                    message = "Cookieを暗号化保存し、このPlaylistで有効にしました"
+                elif action == "enable":
+                    set_playlist_cookie_enabled(
+                        db,
+                        playlist,
+                        True,
+                        enable_confirmed=confirmed,
+                    )
+                    message = "Cookieを有効にしました"
+                elif action == "disable":
+                    set_playlist_cookie_enabled(db, playlist, False)
+                    message = "Cookieを無効にしました"
+                elif action == "clear":
+                    clear_playlist_cookie(db, playlist)
+                    message = "Cookie設定を消去しました"
+                else:
+                    raise CookieConfigurationError("操作が不正です")
+            except CookieConfigurationError as exc:
+                return cookie_page_response(
+                    request,
+                    playlist,
+                    error=str(exc),
+                    status_code=400,
+                )
+
+        identity: SessionIdentity = request.state.auth
+        auth.add_flash(identity, "success", message)
+        return RedirectResponse(f"/playlists/{playlist_id}/cookies", status_code=303)
 
     @app.post("/logout")
     def logout(request: Request) -> Response:

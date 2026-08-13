@@ -37,3 +37,9 @@ button, .button { border: 0; border-radius: .35rem; padding: .58rem .9rem; backg
 .flash-error { border-color: var(--danger); color: #ffd7d7; }
 .error-page { text-align: center; margin-top: 15vh; }
 .error-page h1 { font-size: 4rem; margin-bottom: 0; }
+.status-list { display: grid; grid-template-columns: 9rem 1fr; max-width: 34rem; }
+.status-list dt, .status-list dd { margin: 0; padding: .4rem .6rem; border-bottom: 1px solid var(--border); }
+.checkbox-label { display: flex !important; align-items: flex-start; grid-template-columns: auto 1fr; }
+.checkbox-label input { width: auto; margin-top: .3rem; }
+.button-row { display: flex; gap: .6rem; flex-wrap: wrap; }
+.button-danger { background: var(--danger); color: #260707; }
