@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any
 
 from sluicery.core.settings import OperationalSettings
+from sluicery.core.target_state import sync_target_after_task
 from sluicery.db.models import Task, TaskStatus, TaskType, WorkerClass
 from sluicery.db.repositories.task import TaskRepository
 from sluicery.tasks.handlers import DUMMY_HANDLER_FACTORIES
@@ -133,6 +134,13 @@ def dispatch(args: argparse.Namespace, *, open_session) -> int | None:
                     file=sys.stderr,
                 )
                 return 1
+            session.refresh(selected_task)
+            if selected_task.status == TaskStatus.CANCELLED:
+                sync_target_after_task(
+                    session,
+                    selected_task,
+                    TaskStatus.CANCELLED,
+                )
             print(f"Task {selected_task.id} のキャンセルを要求しました")
             return 0
         if args.task_command == "retry":
