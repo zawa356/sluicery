@@ -31,6 +31,10 @@ class VerifyHandler:
     def cancel(self) -> None:
         self._runner.cancel()
 
+    @property
+    def log_paths(self) -> tuple[Path, ...]:
+        return self._runner.log_paths
+
     def run(self, payload: dict, on_progress: ProgressCallback) -> TaskResult:
         target_id = payload.get("target_id")
         if not isinstance(target_id, int):

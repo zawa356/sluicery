@@ -9,6 +9,7 @@ import pytest
 
 from sluicery.downloader.errors import Classification
 from sluicery.downloader.ytdlp import TimeoutPolicy, YtdlpRunner, mask_command_line
+from sluicery.runner.base import mask_log_text
 
 FAKE_YTDLP = Path(__file__).parent / "fixtures" / "fake_ytdlp.py"
 
@@ -171,6 +172,27 @@ def test_mask_command_line_redacts_inline_flag_value() -> None:
     assert masked == ["--password=********"]
 
 
+def test_mask_log_text_redacts_assignments_flags_urls_and_rclone_names() -> None:
+    raw = (
+        "password=plain-pass token:plain-token "
+        "--cookies /run/sluicery/cookies-private.txt "
+        "https://example.com/watch?v=1&access_token=url-secret "
+        "RCLONE_CONFIG_SLUICERY_1_PASS"
+    )
+
+    masked = mask_log_text(raw)
+
+    for secret in (
+        "plain-pass",
+        "plain-token",
+        "/run/sluicery/cookies-private.txt",
+        "url-secret",
+        "RCLONE_CONFIG_SLUICERY_1_PASS",
+    ):
+        assert secret not in masked
+    assert masked.count("********") >= 5
+
+
 @pytest.mark.parametrize(
     ("args", "secret"),
     [
@@ -184,9 +206,7 @@ def test_mask_command_line_redacts_inline_flag_value() -> None:
         (["https://example.com/#access_token=fragment-secret"], "fragment-secret"),
     ],
 )
-def test_mask_command_line_covers_auth_cookie_proxy_and_urls(
-    args: list[str], secret: str
-) -> None:
+def test_mask_command_line_covers_auth_cookie_proxy_and_urls(args: list[str], secret: str) -> None:
     rendered = " ".join(mask_command_line(args))
     assert secret not in rendered
     assert "********" in rendered

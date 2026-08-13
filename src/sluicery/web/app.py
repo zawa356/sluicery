@@ -6,6 +6,7 @@ import json
 import math
 import shlex
 import shutil
+from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -68,6 +69,7 @@ from sluicery.db.repositories.ytdlp_release import YtdlpReleaseRepository
 from sluicery.downloader.version import get_status, ytdlp_root
 from sluicery.downloader.ytdlp import mask_command_line
 from sluicery.layout import LayoutContext, LayoutValidationError, resolve_layout
+from sluicery.runner.base import mask_log_text
 from sluicery.storage import create_storage_adapter
 from sluicery.storage.base import StoragePathError, validate_relative_path
 from sluicery.web.auth import (
@@ -1298,6 +1300,62 @@ def create_app(
                 run_id=run_id,
                 progress_rows=progress_rows,
             ),
+        )
+
+    def resolve_run_log(run: Run) -> Path:
+        if not run.log_path:
+            raise HTTPException(status_code=404, detail="このRunにログはありません")
+        data_root = settings.DATA_DIR.resolve(strict=False)
+        candidate = Path(run.log_path)
+        if not candidate.is_absolute():
+            candidate = data_root / candidate
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            raise HTTPException(status_code=404, detail="ログファイルが見つかりません") from None
+        if not resolved.is_relative_to(data_root) or not resolved.is_file():
+            raise HTTPException(status_code=403, detail="ログパスがDATA_DIR境界外です")
+        return resolved
+
+    def load_run_and_log(run_id: int) -> tuple[Run, Path]:
+        with session_factory() as db:
+            run = db.get(Run, run_id)
+            if run is None:
+                raise HTTPException(status_code=404)
+            return run, resolve_run_log(run)
+
+    @app.get("/runs/{run_id}/log")
+    def run_log(request: Request, run_id: int, lines: int = 500) -> Response:
+        run, path = load_run_and_log(run_id)
+        limit = min(2000, max(1, lines))
+        try:
+            with path.open(encoding="utf-8", errors="replace") as source:
+                tail = "".join(deque(source, maxlen=limit))
+        except OSError:
+            raise HTTPException(status_code=404, detail="ログファイルを読めません") from None
+        return templates.TemplateResponse(
+            request,
+            "runs/log.html",
+            context(
+                request,
+                active_nav="runs",
+                run=run,
+                log_text=mask_log_text(tail),
+                lines=limit,
+            ),
+        )
+
+    @app.get("/runs/{run_id}/log/download")
+    def run_log_download(run_id: int) -> Response:
+        _run, path = load_run_and_log(run_id)
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            raise HTTPException(status_code=404, detail="ログファイルを読めません") from None
+        return Response(
+            mask_log_text(content),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="run-{run_id}.log"'},
         )
 
     @app.get("/reports")

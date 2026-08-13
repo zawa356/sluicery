@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.id }} ログ — sluicery{% endblock %}
+{% block content %}
+<div class="page-heading"><h1>Run {{ run.id }} ログ</h1><a href="/runs/{{ run.id }}">Run詳細へ戻る</a></div>
+<div class="notice"><p>末尾{{ lines }}行を表示しています。保存時と表示時の二段階でマスクします。</p><a class="button button-secondary" href="/runs/{{ run.id }}/log/download">マスク済み全文をダウンロード</a></div>
+<pre>{{ log_text }}</pre>
+{% endblock %}

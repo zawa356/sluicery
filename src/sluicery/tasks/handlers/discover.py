@@ -39,6 +39,10 @@ class DiscoverHandler:
     def cancel(self) -> None:
         self._runner.cancel()
 
+    @property
+    def log_paths(self) -> tuple[Path, ...]:
+        return self._runner.log_paths
+
     def run(self, payload: dict, on_progress: ProgressCallback) -> TaskResult:
         playlist_id = payload.get("playlist_id")
         dry_run = payload.get("dry_run", False)

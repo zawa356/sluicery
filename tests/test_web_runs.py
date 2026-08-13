@@ -245,3 +245,43 @@ def test_running_task_progress_polls_and_stops_after_completion(base_env, sessio
     assert completed.status_code == 200
     assert "ポーリングを停止しました" in completed.text
     assert "hx-trigger" not in completed.text
+
+
+def test_run_log_is_db_anchored_data_dir_bounded_and_masked(
+    base_env, session_factory, env_data_dirs, tmp_path
+) -> None:
+    log_dir = env_data_dirs["DATA_DIR"] / "logs"
+    log_dir.mkdir()
+    log_path = log_dir / "run-safe.log"
+    log_path.write_text(
+        "visible\npassword=log-secret\nhttps://example.com/watch?v=1&token=query-secret\n",
+        encoding="utf-8",
+    )
+    with session_factory() as db:
+        run = _run(status=RunStatus.SUCCEEDED)
+        run.log_path = str(log_path)
+        db.add(run)
+        db.commit()
+        run_id = run.id
+    client = _client(base_env, session_factory)
+
+    page = client.get(f"/runs/{run_id}/log?lines=2")
+    downloaded = client.get(f"/runs/{run_id}/log/download")
+
+    assert page.status_code == 200 and "visible" not in page.text
+    assert "log-secret" not in page.text and "query-secret" not in page.text
+    assert "password=********" in page.text and "token=********" in page.text
+    assert downloaded.status_code == 200
+    assert "log-secret" not in downloaded.text and "visible" in downloaded.text
+    assert "attachment" in downloaded.headers["content-disposition"]
+
+    outside = tmp_path / "outside.log"
+    outside.write_text("must-not-read", encoding="utf-8")
+    with session_factory() as db:
+        run = db.get(Run, run_id)
+        assert run is not None
+        run.log_path = str(outside)
+        db.commit()
+    rejected = client.get(f"/runs/{run_id}/log")
+    assert rejected.status_code == 403
+    assert "must-not-read" not in rejected.text
