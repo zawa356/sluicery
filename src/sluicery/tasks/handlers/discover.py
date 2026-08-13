@@ -88,11 +88,11 @@ class DiscoverHandler:
         return TaskResult(TaskOutcome.SUCCEEDED, payload_update={"stats": stats.to_dict()})
 
     def _failed(self, run_id: int | None, message: str) -> TaskResult:
-        self._finish_run(run_id, RunStatus.FAILED, SyncStats())
+        self._finish_run(run_id, RunStatus.FAILED, SyncStats(empty_result=True))
         return TaskResult(TaskOutcome.FAILED, message[-4000:])
 
     def _unavailable(self, run_id: int | None, message: str) -> TaskResult:
-        self._finish_run(run_id, RunStatus.FAILED, SyncStats())
+        self._finish_run(run_id, RunStatus.FAILED, SyncStats(empty_result=True))
         return TaskResult(TaskOutcome.UNAVAILABLE, message[-4000:])
 
     def _finish_run(self, run_id: int | None, status: RunStatus, stats: SyncStats) -> None:

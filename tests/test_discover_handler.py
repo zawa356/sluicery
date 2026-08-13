@@ -164,3 +164,36 @@ def test_discover_handler_dry_run_does_not_create_item(session_factory):
         run = session.get(Run, run_id)
         assert run is not None and run.stats_json is not None
         assert run.stats_json["new_items"] == 1
+
+
+def test_discover_error_records_empty_result_without_domain_changes(session_factory):
+    playlist_id, run_id, _ = _records(session_factory)
+    with session_factory() as session:
+        session.add(
+            Item(
+                playlist_id=playlist_id,
+                source_id="existing",
+                source_url="https://example.com/watch/existing",
+            )
+        )
+        session.commit()
+    runner = _Runner(
+        RunResult(
+            returncode=1,
+            classification=Classification.UNAVAILABLE,
+            stderr_tail="playlist unavailable",
+        )
+    )
+    handler = DiscoverHandler(session_factory, runner=runner)  # type: ignore[arg-type]
+
+    result = handler.run(
+        {"playlist_id": playlist_id, "_execution": {"run_id": run_id}}, lambda _: None
+    )
+
+    assert result.outcome == TaskOutcome.UNAVAILABLE
+    with session_factory() as session:
+        item = session.scalar(select(Item))
+        run = session.get(Run, run_id)
+        assert item is not None and item.membership.value == "active"
+        assert run is not None and run.status == RunStatus.FAILED
+        assert run.stats_json is not None and run.stats_json["empty_result"] is True
