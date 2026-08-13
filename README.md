@@ -61,8 +61,7 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 - 配信元での削除に追従してローカルファイルを削除する機能はありません（**仕様であり、意図的な設計**です）
 - メディアサーバー（Jellyfin / Navidrome 等）との連携は未実装
 - トランスコードは未実装
-- **現在は開発途上であり、Web UI は未実装です**（要件定義 §20 の実装順序 #9 以降）。現段階は CLI のみで
-  操作します
+- Web UI は単一管理者の認証と共通画面を備えています。同期機能の一部は引き続きCLIからも操作できます
 
 ## 前提条件
 
@@ -118,6 +117,9 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 `ADMIN_PASSWORD` が空ならランダムな初期パスワードを起動ログへ一度だけ表示します。パスワードは
 argon2でハッシュ化され、平文はDBへ保存しません。
 
+起動後は `http://localhost:8080/`（ポート変更時はその値）をブラウザで開きます。HTTPSの
+リバースプロキシ経由で利用する場合は `AUTH_COOKIE_SECURE=true` にしてください。
+
 ## 運用コマンド
 
 | コマンド | 内容 | 実装状況 | `make` 無し環境での等価コマンド |
@@ -157,10 +159,10 @@ Staging上で対応するTaskを持たないファイルは、削除せず一覧
 docker compose exec app python3 -m sluicery.cli staging orphans
 ```
 
-### 暫定のレコード管理 CLI
+### レコード管理 CLI
 
-Web UI（要件定義 §20 の Phase 9 以降）が実装されるまで、以下の CLI で合成確認に必要な
-Storage / Profile / Playlist レコードを管理できます。Storage は `local` と `remote`（rclone）に
+Web UIと併用して、以下の CLI でもStorage / Profile / Playlist レコードを管理できます。
+Storage は `local` と `remote`（rclone）に
 対応しています。remote で実装・実機検証する protocol は現時点では SMB だけです。
 
 ```bash
@@ -242,7 +244,7 @@ Phase 7までの暫定実装であり、通常の同期処理には使用しま�
 ## 現在の状態
 
 実装は要件定義 §20 の順序で段階的に進めています。現在地は [AISTATE.md](AISTATE.md) を参照してください。
-本リポジトリは開発途上であり、Web UI 等の未実装機能があります（上記「これは何か / 何ではないか」参照）。
+本リポジトリは開発途上であり、一部のWeb UI機能は段階的に実装中です。
 
 ## ライセンス
 

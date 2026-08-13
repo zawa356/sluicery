@@ -35,6 +35,20 @@ def _csrf(response) -> str:
     return match.group(1)
 
 
+def _login(client: TestClient, settings: Settings, password: str = "correct-password") -> None:
+    csrf_token = _csrf(client.get("/login"))
+    response = client.post(
+        "/login",
+        data={
+            "csrf_token": csrf_token,
+            "username": settings.ADMIN_USERNAME,
+            "password": password,
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+
 def test_initial_user_is_created_once_with_argon2(
     base_env, session_factory, capsys
 ) -> None:
@@ -291,3 +305,76 @@ def test_csrf_dependency_treats_only_get_as_exempt(base_env, session_factory) ->
 
     assert client.request("HEAD", "/").status_code == 403
     assert client.request("OPTIONS", "/").status_code == 403
+
+
+def test_ui_uses_local_assets_and_has_seven_navigation_groups(base_env, session_factory) -> None:
+    settings = _settings(base_env)
+    _create_admin(session_factory, settings)
+    client = TestClient(create_app(settings=settings, session_factory=session_factory))
+    _login(client, settings)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.text.count("<nav") == 1
+    for path in ("/playlists", "/profiles", "/storages", "/runs", "/reports", "/settings"):
+        assert f'href="{path}"' in response.text
+    assert "/static/app.css" in response.text
+    assert "/static/vendor/htmx-2.0.10.min.js" in response.text
+    assert "https://" not in response.text
+    assert "X-CSRF-Token" in response.text
+    assert client.get("/static/app.css").status_code == 200
+    htmx = client.get("/static/vendor/htmx-2.0.10.min.js")
+    assert htmx.status_code == 200
+    assert len(htmx.content) == 51_238
+
+
+def test_html_error_pages_hide_exception_detail(base_env, session_factory) -> None:
+    settings = _settings(base_env)
+    _create_admin(session_factory, settings)
+    app = create_app(settings=settings, session_factory=session_factory)
+
+    @app.get("/test-internal-error")
+    def test_internal_error() -> None:
+        raise RuntimeError("sensitive-stack-detail")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    _login(client, settings)
+
+    not_found = client.get("/does-not-exist")
+    forbidden = client.post("/logout")
+    internal = client.get("/test-internal-error")
+
+    assert not_found.status_code == 404
+    assert "ページが見つかりません" in not_found.text
+    assert forbidden.status_code == 403
+    assert "この操作は許可されていません" in forbidden.text
+    assert internal.status_code == 500
+    assert "処理中にエラーが発生しました" in internal.text
+    assert "sensitive-stack-detail" not in internal.text
+    assert "Traceback" not in internal.text
+
+
+def test_flash_message_is_displayed_once_after_password_change(base_env, session_factory) -> None:
+    settings = _settings(base_env)
+    _create_admin(session_factory, settings)
+    client = TestClient(create_app(settings=settings, session_factory=session_factory))
+    _login(client, settings)
+    password_page = client.get("/settings/password")
+    csrf_token = _csrf(password_page)
+
+    changed = client.post(
+        "/settings/password",
+        data={
+            "csrf_token": csrf_token,
+            "current_password": "correct-password",
+            "new_password": "new-password-value",
+        },
+        follow_redirects=False,
+    )
+    assert changed.status_code == 303
+
+    first = client.get("/login")
+    second = client.get("/login")
+    assert "パスワードを変更しました" in first.text
+    assert "パスワードを変更しました" not in second.text

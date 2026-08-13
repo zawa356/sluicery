@@ -50,6 +50,9 @@ curl http://localhost:8080/healthz
 docker compose exec app python3 -m sluicery.cli ytdlp status
 ```
 
+ブラウザで `http://<SERVER>:8080/` を開き、初期管理者でログインします。`ADMIN_PASSWORD` を空に
+した場合の初期パスワードは、管理者を新規作成した起動のログにだけ表示されます。
+
 ## 2. `.env` 全項目リファレンス
 
 | 変数 | 既定値 | 内容 |
