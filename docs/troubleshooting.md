@@ -99,10 +99,12 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 
 **症状**：複数Playlistの`sync run --all`中、download Taskが短時間に連続してHTTP 403になる。
 
-**原因**：Phase 8実機検証で、配信元が取得要求を拒否するケースを確認した。配信元の一時的な
-制限、抽出仕様、または利用可能なformatの変化をログだけでは一意に区別できない。
+**原因**：Phase 8実機検証時のイメージにはYouTubeのJavaScript challengeを処理するランタイムが
+なく、保存済みログで「対応するJavaScriptランタイムなし」の警告を確認した。これに加え、配信元の
+一時的な制限や利用可能なformatの変化が個別に重なる場合がある。
 
-**対処**：ワーカーの並列度やレート上限を引き上げず、対象Runを停止する。Taskの`last_error`と
-Targetの`last_error`から、抽出失敗と`Requested format is not available`を分ける。yt-dlpの状態と
-Profileのformatを確認し、十分時間を置いてから少数で再開する。中断時のStagingファイルは
-`--continue`に使うため自動削除されない。
+**対処**：Deno同梱後のイメージへ更新し、`deno --version`と少数の`ytdlp probe`で検出を確認する。
+HTTP 403とボット確認は自動的に`blocked`となり、既定で1時間空けて再試行される。ワーカーの
+並列度やレート上限を引き上げず、十分時間を置いて3〜5件だけで再確認する。形式非互換は
+`Requested format is not available`として`unavailable`になるため、Profileのformatも確認する。
+中断時のStagingファイルは`--continue`に使うため自動削除されない。
