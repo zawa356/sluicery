@@ -118,3 +118,21 @@ def test_internal_setting_cannot_be_changed_from_web(base_env, session_factory) 
     )
 
     assert response.status_code == 404
+
+
+def test_invalid_download_window_is_rejected_from_web(base_env, session_factory) -> None:
+    client = _client(base_env, session_factory)
+    page = client.get("/settings")
+
+    response = client.post(
+        "/settings/update",
+        data={
+            "csrf_token": _csrf(page),
+            "key": "schedule.download_window",
+            "value": "25:00-05:00",
+        },
+    )
+
+    assert response.status_code == 422
+    with session_factory() as db:
+        assert core_settings.get(db, "schedule.download_window") is None
