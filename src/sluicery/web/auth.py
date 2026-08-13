@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from sluicery.config import Settings
 from sluicery.core.settings import OperationalSettings
-from sluicery.db.models import User
+from sluicery.db.models import AuthSession, User
 from sluicery.db.repositories.auth_session import AuthSessionRepository
 from sluicery.db.repositories.user import UserRepository
 
@@ -221,6 +221,29 @@ class AuthService:
     def delete_session(self, token: str) -> None:
         with self._session_factory() as db:
             AuthSessionRepository(db).delete_by_token_hash(hash_session_token(token))
+
+    def add_flash(self, identity: SessionIdentity, level: str, message: str) -> None:
+        safe_level = level if level in {"success", "info", "warning", "error"} else "info"
+        with self._session_factory() as db:
+            row = db.get(AuthSession, identity.session_id)
+            if row is None or row.token_hash != hash_session_token(identity.token):
+                return
+            messages = list(row.flash_json or [])
+            messages.append({"level": safe_level, "message": message})
+            row.flash_json = messages[-20:]
+            db.commit()
+
+    def pop_flashes(self, identity: SessionIdentity) -> list[dict[str, str]]:
+        with self._session_factory() as db:
+            row = db.get(AuthSession, identity.session_id)
+            if row is None or row.token_hash != hash_session_token(identity.token):
+                return []
+            messages = list(row.flash_json or [])
+            if not messages:
+                return []
+            row.flash_json = None
+            db.commit()
+            return messages
 
 
 _dummy_hash: str | None = None

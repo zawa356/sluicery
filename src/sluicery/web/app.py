@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-import html
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
@@ -22,19 +25,7 @@ from sluicery.web.auth import (
 )
 
 RequestHandler = Callable[[Request], Awaitable[Response]]
-
-
-def _login_page(*, csrf_token: str, error: str | None = None, username: str = "") -> str:
-    error_html = f"<p>{html.escape(error)}</p>" if error else ""
-    return f"""<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\">
-<title>ログイン - sluicery</title></head><body><main><h1>sluicery</h1>{error_html}
-<form method=\"post\" action=\"/login\">
-<input type=\"hidden\" name=\"csrf_token\" value=\"{html.escape(csrf_token)}\">
-<label>ユーザー名
-<input name=\"username\" value=\"{html.escape(username)}\" autocomplete=\"username\"
-required></label>
-<label>パスワード<input type=\"password\" name=\"password\" autocomplete=\"current-password\"
-required></label><button type=\"submit\">ログイン</button></form></main></body></html>"""
+WEB_DIR = Path(__file__).resolve().parent
 
 
 def _set_session_cookie(
@@ -65,11 +56,13 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
         auth: AuthService,
         csrf: CsrfProtector,
         settings: Settings,
+        templates: Jinja2Templates,
     ) -> None:
         super().__init__(app)
         self.auth = auth
         self.csrf = csrf
         self.settings = settings
+        self.templates = templates
 
     async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
         path = request.url.path
@@ -90,7 +83,16 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             if request.method == "GET":
                 response: Response = RedirectResponse("/login", status_code=303)
             else:
-                response = HTMLResponse("CSRF検証に失敗しました", status_code=403)
+                response = self.templates.TemplateResponse(
+                    request,
+                    "errors/403.html",
+                    {
+                        "auth": identity,
+                        "csrf_token": request.state.csrf_token,
+                        "flashes": [],
+                    },
+                    status_code=403,
+                )
         else:
             response = await call_next(request)
 
@@ -133,6 +135,8 @@ def create_app(
     session_factory: sessionmaker[Session] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="sluicery", dependencies=[Depends(require_csrf)])
+    templates = Jinja2Templates(directory=WEB_DIR / "templates")
+    app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
@@ -145,16 +149,41 @@ def create_app(
     csrf = CsrfProtector(settings.SECRET_KEY)
     app.state.auth = auth
     app.state.csrf = csrf
-    app.add_middleware(AuthenticationMiddleware, auth=auth, csrf=csrf, settings=settings)
+    app.state.templates = templates
+    app.add_middleware(
+        AuthenticationMiddleware,
+        auth=auth,
+        csrf=csrf,
+        settings=settings,
+        templates=templates,
+    )
 
-    @app.get("/login", response_class=HTMLResponse)
+    def context(request: Request, **values: Any) -> dict[str, Any]:
+        identity: SessionIdentity = request.state.auth
+        return {
+            "auth": identity,
+            "csrf_token": request.state.csrf_token,
+            "flashes": auth.pop_flashes(identity),
+            **values,
+        }
+
+    def error_context(request: Request, **values: Any) -> dict[str, Any]:
+        identity: SessionIdentity | None = getattr(request.state, "auth", None)
+        return {
+            "auth": identity,
+            "csrf_token": getattr(request.state, "csrf_token", ""),
+            "flashes": [],
+            **values,
+        }
+
+    @app.get("/login")
     def login_page(request: Request) -> Response:
         identity: SessionIdentity = request.state.auth
         if identity.authenticated:
             return RedirectResponse("/", status_code=303)
-        return HTMLResponse(_login_page(csrf_token=request.state.csrf_token))
+        return templates.TemplateResponse(request, "login.html", context(request))
 
-    @app.post("/login", response_class=HTMLResponse)
+    @app.post("/login")
     async def login(request: Request) -> Response:
         form = await request.form()
         username = str(form.get("username", ""))
@@ -162,25 +191,71 @@ def create_app(
         identity: SessionIdentity = request.state.auth
         result = auth.authenticate(identity.token, username, password)
         if not result.ok or result.session is None:
-            return HTMLResponse(
-                _login_page(
-                    csrf_token=request.state.csrf_token,
-                    error=LOGIN_ERROR_MESSAGE,
-                    username=username,
-                ),
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                context(request, error=LOGIN_ERROR_MESSAGE, username=username),
                 status_code=401,
             )
         request.state.new_session_cookie = result.session.signed_cookie
         request.state.auth = result.session.identity
         return RedirectResponse("/", status_code=303)
 
-    @app.get("/", response_class=HTMLResponse)
-    def home(request: Request) -> str:
-        identity: SessionIdentity = request.state.auth
-        csrf_token = html.escape(request.state.csrf_token)
-        return f"""<h1>sluicery</h1><p>{html.escape(identity.username or '')}</p>
-<form method="post" action="/logout"><input type="hidden" name="csrf_token"
-value="{csrf_token}"><button type="submit">ログアウト</button></form>"""
+    @app.get("/")
+    def home(request: Request) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "dashboard.html",
+            context(request, active_nav="dashboard"),
+        )
+
+    @app.get("/playlists")
+    def playlists(request: Request) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "placeholder.html",
+            context(request, active_nav="playlists", title="Playlist", phase="Part B"),
+        )
+
+    @app.get("/profiles")
+    def profiles(request: Request) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "placeholder.html",
+            context(request, active_nav="profiles", title="Profile", phase="Part B"),
+        )
+
+    @app.get("/storages")
+    def storages(request: Request) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "placeholder.html",
+            context(request, active_nav="storages", title="Storage", phase="Part B"),
+        )
+
+    @app.get("/runs")
+    def runs(request: Request) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "placeholder.html",
+            context(request, active_nav="runs", title="Run 履歴", phase="Part C"),
+        )
+
+    @app.get("/reports")
+    def reports(request: Request) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "placeholder.html",
+            context(request, active_nav="reports", title="レポート", phase="Phase 13"),
+        )
+
+    @app.get("/settings")
+    def settings_page(request: Request) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "placeholder.html",
+            context(request, active_nav="settings", title="設定", phase="Part B"),
+        )
 
     @app.post("/logout")
     def logout(request: Request) -> Response:
@@ -189,27 +264,76 @@ value="{csrf_token}"><button type="submit">ログアウト</button></form>"""
         request.state.clear_session_cookie = True
         return RedirectResponse("/login", status_code=303)
 
-    @app.get("/settings/password", response_class=HTMLResponse)
-    def password_page(request: Request) -> str:
-        return f"""<h1>パスワード変更</h1><form method="post">
-<input type="hidden" name="csrf_token" value="{html.escape(request.state.csrf_token)}">
-<input type="password" name="current_password" required>
-<input type="password" name="new_password" minlength="12" required>
-<button type="submit">変更</button></form>"""
+    @app.get("/settings/password")
+    def password_page(request: Request) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "password.html",
+            context(request, active_nav="settings"),
+        )
 
-    @app.post("/settings/password", response_class=HTMLResponse)
+    @app.post("/settings/password")
     async def change_password(request: Request) -> Response:
         form = await request.form()
         current_password = str(form.get("current_password", ""))
         new_password = str(form.get("new_password", ""))
         identity: SessionIdentity = request.state.auth
         if len(new_password) < 12:
-            return HTMLResponse("パスワードは12文字以上にしてください", status_code=422)
+            return templates.TemplateResponse(
+                request,
+                "password.html",
+                context(
+                    request,
+                    active_nav="settings",
+                    error="新しいパスワードは12文字以上にしてください",
+                ),
+                status_code=422,
+            )
         assert identity.user_id is not None
         if not auth.change_password(identity.user_id, current_password, new_password):
-            return HTMLResponse("現在のパスワードが違います", status_code=400)
-        request.state.clear_session_cookie = True
+            return templates.TemplateResponse(
+                request,
+                "password.html",
+                context(request, active_nav="settings", error="現在のパスワードが違います"),
+                status_code=400,
+            )
+        anonymous = auth.create_session()
+        auth.add_flash(
+            anonymous.identity,
+            "success",
+            "パスワードを変更しました。再ログインしてください",
+        )
+        request.state.auth = anonymous.identity
+        request.state.csrf_token = csrf.token_for(anonymous.token)
+        request.state.new_session_cookie = anonymous.signed_cookie
         return RedirectResponse("/login", status_code=303)
+
+    @app.exception_handler(403)
+    async def forbidden(request: Request, exc: HTTPException) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "errors/403.html",
+            error_context(request),
+            status_code=403,
+        )
+
+    @app.exception_handler(404)
+    async def not_found(request: Request, exc: HTTPException) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "errors/404.html",
+            error_context(request),
+            status_code=404,
+        )
+
+    @app.exception_handler(Exception)
+    async def internal_error(request: Request, exc: Exception) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "errors/500.html",
+            error_context(request),
+            status_code=500,
+        )
 
     return app
 

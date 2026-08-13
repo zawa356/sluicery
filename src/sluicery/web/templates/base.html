@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}sluicery{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+  <script src="{{ url_for('static', path='/vendor/htmx-2.0.10.min.js') }}" defer></script>
+</head>
+<body{% if csrf_token %} hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'{% endif %}>
+  {% if auth and auth.authenticated %}
+  <header class="site-header">
+    <a class="brand" href="/">sluicery</a>
+    <nav aria-label="メインナビゲーション">
+      <a href="/"{% if active_nav == 'dashboard' %} aria-current="page"{% endif %}>ダッシュボード</a>
+      <a href="/playlists"{% if active_nav == 'playlists' %} aria-current="page"{% endif %}>Playlist</a>
+      <a href="/profiles"{% if active_nav == 'profiles' %} aria-current="page"{% endif %}>Profile</a>
+      <a href="/storages"{% if active_nav == 'storages' %} aria-current="page"{% endif %}>Storage</a>
+      <a href="/runs"{% if active_nav == 'runs' %} aria-current="page"{% endif %}>Run</a>
+      <a href="/reports"{% if active_nav == 'reports' %} aria-current="page"{% endif %}>レポート</a>
+      <a href="/settings"{% if active_nav == 'settings' %} aria-current="page"{% endif %}>設定</a>
+    </nav>
+    <form method="post" action="/logout" class="logout-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="button-secondary">ログアウト</button>
+    </form>
+  </header>
+  {% endif %}
+
+  <main class="container">
+    {% for flash in flashes %}
+      <div class="flash flash-{{ flash.level }}" role="status">{{ flash.message }}</div>
+    {% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer>sluicery — single-user playlist sync server</footer>
+</body>
+</html>

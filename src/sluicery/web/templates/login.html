@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}ログイン — sluicery{% endblock %}
+{% block content %}
+<section class="login-panel">
+  <h1>sluicery</h1>
+  <p class="muted">管理者アカウントでログインしてください。</p>
+  {% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+  <form method="post" action="/login" class="stacked-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>ユーザー名
+      <input name="username" value="{{ username or '' }}" autocomplete="username" required autofocus>
+    </label>
+    <label>パスワード
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit">ログイン</button>
+  </form>
+</section>
+{% endblock %}
