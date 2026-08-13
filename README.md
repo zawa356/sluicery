@@ -165,7 +165,7 @@ docker compose exec app python3 -m sluicery.cli staging orphans
 
 ### レコード管理 CLI
 
-Web UIと併用して、以下の CLI でもStorage / Profile / Playlist レコードを管理できます。
+Web UIと併用して、以下の CLI でもStorage / Profile / Playlistレコードと運用設定を管理できます。CLIは自動化とデバッグのための恒久的な操作手段として維持します。
 Storage は `local` と `remote`（rclone）に
 対応しています。remote で実装・実機検証する protocol は現時点では SMB だけです。
 

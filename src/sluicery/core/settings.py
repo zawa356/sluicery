@@ -27,6 +27,7 @@ Phase 2 では定義と読み書きのみを行う。実際に参照する処理
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -142,14 +143,25 @@ class UnknownSettingKeyError(KeyError):
 def _cast(type_: type, raw: Any) -> Any:
     if raw is None or type_ is type(None):
         return raw
-    if type_ is bool and isinstance(raw, str):
-        return raw.strip().lower() in ("1", "true", "yes", "on")
+    if type_ is bool:
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            normalized = raw.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+        raise ValueError("真偽値は true または false で指定してください")
     if type_ is list:
         parsed = json.loads(raw) if isinstance(raw, str) else raw
         if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
             raise ValueError("JSON文字列の配列を指定してください")
         return parsed
-    return type_(raw)
+    casted = type_(raw)
+    if type_ is float and not math.isfinite(casted):
+        raise ValueError("有限の数値を指定してください")
+    return casted
 
 
 def get(session: Session, key: str) -> Any:
