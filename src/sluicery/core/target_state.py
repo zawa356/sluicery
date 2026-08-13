@@ -77,6 +77,41 @@ def transition_target(
     return True
 
 
+def advance_target(session: Session, target_id: int, status: TargetStatus) -> bool:
+    """再試行を含め、通常遷移を1段ずつ踏んで実行段階まで進める。
+
+    shutdown後に既に同じ段階なら何もしない。failed / blockedからの再開は
+    pendingへ戻してから queued → downloading → processing の順を省略しない。
+    """
+    target = TargetRepository(session).get(target_id)
+    if target is None:
+        raise LookupError(f"Target {target_id} が見つかりません")
+    current = target.status
+    if current == status:
+        return False
+    order = [
+        TargetStatus.PENDING,
+        TargetStatus.QUEUED,
+        TargetStatus.DOWNLOADING,
+        TargetStatus.PROCESSING,
+        TargetStatus.DOWNLOADED,
+    ]
+    if status not in order:
+        raise InvalidStateTransition(f"Target advance: {current.value} -> {status.value}")
+    if current in {TargetStatus.FAILED, TargetStatus.BLOCKED}:
+        transition_target(session, target_id, TargetStatus.PENDING)
+        current = TargetStatus.PENDING
+    if current not in order:
+        raise InvalidStateTransition(f"Target advance: {current.value} -> {status.value}")
+    current_index = order.index(current)
+    destination_index = order.index(status)
+    if current_index > destination_index:
+        raise InvalidStateTransition(f"Target advance: {current.value} -> {status.value}")
+    for next_status in order[current_index + 1 : destination_index + 1]:
+        transition_target(session, target_id, next_status)
+    return True
+
+
 def transition_item(
     session: Session,
     item_id: int,
@@ -170,6 +205,7 @@ def sync_target_after_task(
 __all__ = [
     "InvalidStateTransition",
     "StateTransitionConflict",
+    "advance_target",
     "sync_target_after_task",
     "transition_item",
     "transition_target",
