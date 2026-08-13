@@ -41,10 +41,15 @@ class RunRepository(BaseRepository[Run]):
         now: datetime | None = None,
         commit: bool = True,
     ) -> bool:
+        statement = update(Run).where(Run.id == run_id)
+        if status != RunStatus.CANCELLED:
+            statement = statement.where(Run.status != RunStatus.CANCELLED)
         result = self.session.execute(
-            update(Run)
-            .where(Run.id == run_id)
-            .values(status=status, stats_json=stats, finished_at=now or datetime.now(UTC))
+            statement.values(
+                status=status,
+                stats_json=stats,
+                finished_at=now or datetime.now(UTC),
+            )
         )
         if commit:
             self.session.commit()

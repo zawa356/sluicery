@@ -41,7 +41,7 @@ from sluicery.core.options import (
 )
 from sluicery.core.settings import OperationalSettings
 from sluicery.core.sync import enqueue_discover_run, execute_download_run
-from sluicery.core.target_state import transition_target
+from sluicery.core.target_state import sync_target_after_task, transition_target
 from sluicery.db.models import (
     Item,
     ItemMembership,
@@ -65,6 +65,7 @@ from sluicery.db.repositories.playlist_profile import PlaylistProfileRepository
 from sluicery.db.repositories.profile import ProfileRepository
 from sluicery.db.repositories.run import RunRepository
 from sluicery.db.repositories.storage import StorageRepository
+from sluicery.db.repositories.task import TaskRepository
 from sluicery.db.repositories.ytdlp_release import YtdlpReleaseRepository
 from sluicery.downloader.version import get_status, ytdlp_root
 from sluicery.downloader.ytdlp import mask_command_line
@@ -1227,6 +1228,15 @@ def create_app(
                 )
             }
             progress_rows = load_run_progress(db, run_id)
+            cancelable = sum(
+                status_counts.get(status.value, 0)
+                for status in (
+                    TaskStatus.PENDING,
+                    TaskStatus.QUEUED,
+                    TaskStatus.RUNNING,
+                    TaskStatus.BLOCKED,
+                )
+            )
         return templates.TemplateResponse(
             request,
             "runs/detail.html",
@@ -1243,6 +1253,13 @@ def create_app(
                 status_filter=status_filter,
                 task_statuses=[value.value for value in TaskStatus],
                 progress_rows=progress_rows,
+                cancelable_count=cancelable,
+                cancelable_statuses={
+                    TaskStatus.PENDING.value,
+                    TaskStatus.QUEUED.value,
+                    TaskStatus.RUNNING.value,
+                    TaskStatus.BLOCKED.value,
+                },
                 now=datetime.now(UTC),
             ),
         )
@@ -1357,6 +1374,63 @@ def create_app(
             media_type="text/plain; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="run-{run_id}.log"'},
         )
+
+    def sync_cancelled_targets(db: Session, run_id: int) -> None:
+        for task in db.scalars(
+            select(Task).where(Task.run_id == run_id, Task.status == TaskStatus.CANCELLED)
+        ):
+            sync_target_after_task(db, task, TaskStatus.CANCELLED)
+
+    @app.post("/tasks/{task_id}/cancel")
+    def task_cancel(request: Request, task_id: int) -> Response:
+        with session_factory() as db:
+            task = db.get(Task, task_id)
+            if task is None:
+                raise HTTPException(status_code=404)
+            run_id = task.run_id
+            changed = TaskRepository(db).request_cancel(task_id)
+            db.refresh(task)
+            if task.status == TaskStatus.CANCELLED:
+                sync_target_after_task(db, task, TaskStatus.CANCELLED)
+                if run_id is not None:
+                    sync_cancelled_targets(db, run_id)
+        auth.add_flash(
+            request.state.auth,
+            "success" if changed else "error",
+            (
+                f"Task {task_id}のキャンセルを要求しました"
+                if changed
+                else f"Task {task_id}はキャンセルできる状態ではありません"
+            ),
+        )
+        return RedirectResponse(
+            f"/runs/{run_id}" if run_id is not None else "/runs", status_code=303
+        )
+
+    @app.post("/runs/{run_id}/cancel")
+    def run_cancel(request: Request, run_id: int) -> Response:
+        with session_factory() as db:
+            run = db.get(Run, run_id)
+            if run is None:
+                raise HTTPException(status_code=404)
+            changed = TaskRepository(db).request_cancel_run(run_id)
+            if changed:
+                RunRepository(db).finish(
+                    run_id,
+                    RunStatus.CANCELLED,
+                    dict(run.stats_json or {}),
+                )
+                sync_cancelled_targets(db, run_id)
+        auth.add_flash(
+            request.state.auth,
+            "success" if changed else "error",
+            (
+                f"Run {run_id}の{changed}件へキャンセルを要求しました"
+                if changed
+                else f"Run {run_id}にキャンセル可能なTaskはありません"
+            ),
+        )
+        return RedirectResponse(f"/runs/{run_id}", status_code=303)
 
     @app.get("/reports")
     def reports(request: Request) -> Response:
