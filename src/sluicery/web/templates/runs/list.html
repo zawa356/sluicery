@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Run履歴 — sluicery{% endblock %}
+{% macro duration(run) %}{% set end = run.finished_at or now %}{{ '%.1f'|format((end - run.started_at).total_seconds()) }}秒{% endmacro %}
+{% block content %}
+<div class="page-heading"><h1>Run履歴</h1><span>{{ total }}件</span></div>
+<form method="get" class="inline-form"><label>状態<select name="status_filter"><option value="">すべて</option>{% for status in statuses %}<option value="{{ status }}"{% if status_filter == status %} selected{% endif %}>{{ status }}</option>{% endfor %}</select></label><button>絞り込む</button></form>
+<div class="panel section-block"><table><thead><tr><th>ID</th><th>開始</th><th>Playlist</th><th>trigger</th><th>kind</th><th>Run結果</th><th>Task状態</th><th>統計</th><th>所要時間</th></tr></thead><tbody>
+{% for row in rows %}{% set run = row.run %}<tr><td><a href="/runs/{{ run.id }}">{{ run.id }}</a></td><td>{{ run.started_at }}</td><td>{{ row.playlist_name }}</td><td>{{ run.trigger.value }}</td><td>{{ run.kind }}</td><td>{% if run.kind == 'download' %}投入{{ run.status.value }}{% else %}{{ run.status.value }}{% endif %}</td><td>{% for status, count in row.task_counts.items() %}{{ status }}={{ count }}{% if not loop.last %}, {% endif %}{% else %}Taskなし{% endfor %}</td><td>{% for key, value in (run.stats_json or {}).items() %}{{ key }}={{ value }}{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}</td><td>{{ duration(run) }}</td></tr>
+{% else %}<tr><td colspan="9">該当するRunはありません。</td></tr>{% endfor %}</tbody></table></div>
+<nav class="pagination" aria-label="ページネーション">{% if page > 1 %}<a href="?page={{ page - 1 }}&status_filter={{ status_filter }}">前へ</a>{% endif %}<span>{{ page }} / {{ pages }}</span>{% if page < pages %}<a href="?page={{ page + 1 }}&status_filter={{ status_filter }}">次へ</a>{% endif %}</nav>
+{% endblock %}
