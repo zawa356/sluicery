@@ -25,7 +25,8 @@
   </section>
   <section class="metric-card">
     <h2>次回実行予定</h2>
-    <p class="muted">スケジューラ未実装（Part D）</p>
+    {% if next_runs %}<ul class="compact-list">{% for row in next_runs %}<li><a href="/playlists/{{ row.playlist_id }}">{{ playlist_names.get(row.playlist_id, row.playlist_id) }}</a> {{ row.kind }}<br><small>{{ row.display }}</small></li>{% endfor %}</ul><small>表示タイムゾーン: {{ schedule_timezone }}</small>
+    {% else %}<p class="muted">登録された次回実行予定はありません。</p>{% endif %}
   </section>
 </div>
 

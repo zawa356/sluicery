@@ -10,6 +10,8 @@
 <label>URL<input type="url" name="url" required value="{{ values.get('url', playlist.url if playlist else '') }}"></label>
 <label>種別<select name="kind_hint">{% for kind in kinds %}<option value="{{ kind }}"{% if values.get('kind_hint', playlist.kind_hint.value if playlist else 'video') == kind %} selected{% endif %}>{{ kind }}</option>{% endfor %}</select></label>
 <label>yt-dlp自由引数<textarea name="ytdlp_args" rows="3">{{ values.get('ytdlp_args', playlist.ytdlp_args if playlist and playlist.ytdlp_args else '') }}</textarea></label>
+<div class="form-grid"><label>discover cron<input name="discover_cron" placeholder="グローバル既定を使用" value="{{ values.get('discover_cron', playlist.discover_cron if playlist and playlist.discover_cron else '') }}"></label>
+<label>download cron<input name="download_cron" placeholder="グローバル既定を使用" value="{{ values.get('download_cron', playlist.download_cron if playlist and playlist.download_cron else '') }}"></label></div>
 <label class="checkbox-label"><input type="checkbox" name="enabled" value="yes"{% if values.get('enabled', playlist.enabled if playlist else true) in [true, 'yes', 'on'] %} checked{% endif %}>有効</label>
 <label class="checkbox-label"><input type="checkbox" name="paused" value="yes"{% if values.get('paused', playlist.paused if playlist else false) in [true, 'yes', 'on'] %} checked{% endif %}>一時停止</label>
 <button type="submit">保存</button>

@@ -79,7 +79,13 @@ def test_playlist_create_edit_and_list(base_env, session_factory) -> None:
     edit_page = client.get(f"{detail_url}/edit")
     updated = client.post(
         f"{detail_url}/edit",
-        data=_playlist_form(_csrf(edit_page), name="Renamed Playlist", paused="yes"),
+        data=_playlist_form(
+            _csrf(edit_page),
+            name="Renamed Playlist",
+            paused="yes",
+            discover_cron="5 */2 * * *",
+            download_cron="15 */4 * * *",
+        ),
         follow_redirects=False,
     )
     assert updated.status_code == 303
@@ -90,6 +96,8 @@ def test_playlist_create_edit_and_list(base_env, session_factory) -> None:
         assert playlist is not None
         assert playlist.paused is True
         assert playlist.url == "https://example.com/playlist"
+        assert playlist.discover_cron == "5 */2 * * *"
+        assert playlist.download_cron == "15 */4 * * *"
 
 
 def test_playlist_form_rejects_cookie_argument(base_env, session_factory) -> None:
@@ -103,6 +111,20 @@ def test_playlist_form_rejects_cookie_argument(base_env, session_factory) -> Non
 
     assert response.status_code == 422
     assert "PlaylistのCookie設定" in response.text
+    with session_factory() as db:
+        assert db.scalar(select(func.count()).select_from(Playlist)) == 0
+
+
+def test_playlist_form_rejects_invalid_cron(base_env, session_factory) -> None:
+    client, _settings = _client(base_env, session_factory)
+    csrf = _csrf(client.get("/playlists/new"))
+
+    response = client.post(
+        "/playlists/new",
+        data=_playlist_form(csrf, discover_cron="not-a-cron"),
+    )
+
+    assert response.status_code == 422
     with session_factory() as db:
         assert db.scalar(select(func.count()).select_from(Playlist)) == 0
 

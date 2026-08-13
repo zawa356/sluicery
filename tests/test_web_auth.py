@@ -430,7 +430,8 @@ def test_dashboard_shows_operational_summary(base_env, session_factory) -> None:
     assert "failed" in dashboard.text
     assert "missing" in dashboard.text
     assert "delisted" in dashboard.text
-    assert "スケジューラ未実装" in dashboard.text
+    assert "次回実行予定" in dashboard.text
+    assert "登録された次回実行予定はありません" in dashboard.text
     assert "直近のRun" in dashboard.text
     assert "Storage" in dashboard.text
 

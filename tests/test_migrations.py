@@ -32,11 +32,30 @@ def test_upgrade_downgrade_upgrade(tmp_path: Path) -> None:
 
     assert {"user", "auth_session", "storage", "item", "target", "task", "setting"} <= tables
     engine = create_engine(f"sqlite:///{db_path}")
-    playlist_columns = {
-        column["name"] for column in inspect(engine).get_columns("playlist")
-    }
+    playlist_columns = {column["name"] for column in inspect(engine).get_columns("playlist")}
     engine.dispose()
     assert {"cookie_enabled", "cookies_encrypted"} <= playlist_columns
+
+
+def test_run_skipped_status_round_trips(tmp_path: Path) -> None:
+    db_path = tmp_path / "run-skipped.db"
+    cfg = _alembic_config(db_path)
+    command.upgrade(cfg, "head")
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """INSERT INTO run (trigger, kind, status, started_at, finished_at)
+                   VALUES ('schedule', 'discover', 'skipped', CURRENT_TIMESTAMP,
+                           CURRENT_TIMESTAMP)"""
+            )
+        )
+
+    command.downgrade(cfg, "b8c9d0e1f2a3")
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT status FROM run")).scalar_one() == "cancelled"
+    command.upgrade(cfg, "head")
+    engine.dispose()
 
 
 def test_profile_tristate_migration_preserves_values_and_round_trips(tmp_path: Path) -> None:
