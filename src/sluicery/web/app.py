@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.datastructures import UploadFile
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -27,14 +27,24 @@ from sluicery.core.cookies import (
     save_playlist_cookie,
     set_playlist_cookie_enabled,
 )
+from sluicery.core.naming import NamingValidationError, sanitize_component
+from sluicery.core.options import OptionValidationError, guard_freeform, validate_source_url
+from sluicery.core.sync import enqueue_discover_run, execute_download_run
+from sluicery.core.target_state import transition_target
 from sluicery.db.models import (
     Item,
     ItemMembership,
     Playlist,
+    PlaylistKindHint,
+    PlaylistProfile,
+    Profile,
+    Run,
     Storage,
     Target,
     TargetStatus,
 )
+from sluicery.db.repositories.playlist import PlaylistRepository
+from sluicery.db.repositories.playlist_profile import PlaylistProfileRepository
 from sluicery.db.repositories.run import RunRepository
 from sluicery.db.repositories.ytdlp_release import YtdlpReleaseRepository
 from sluicery.downloader.version import get_status, ytdlp_root
@@ -310,11 +320,320 @@ def create_app(
 
     @app.get("/playlists")
     def playlists(request: Request) -> Response:
+        with session_factory() as db:
+            rows = []
+            for playlist in db.scalars(select(Playlist).order_by(Playlist.id)):
+                item_count = db.scalar(
+                    select(func.count())
+                    .select_from(Item)
+                    .where(Item.playlist_id == playlist.id)
+                ) or 0
+                rows.append({"playlist": playlist, "item_count": item_count})
         return templates.TemplateResponse(
             request,
-            "placeholder.html",
-            context(request, active_nav="playlists", title="Playlist", phase="Part B"),
+            "playlists/list.html",
+            context(request, active_nav="playlists", rows=rows),
         )
+
+    def playlist_form_values(form: Any) -> dict[str, Any]:
+        name = str(form.get("name", "")).strip()
+        if not name:
+            raise ValueError("名前を入力してください")
+        try:
+            folder_name = sanitize_component(str(form.get("folder_name", "")))
+            url = validate_source_url(str(form.get("url", "")))
+            kind_hint = PlaylistKindHint(str(form.get("kind_hint", "video")))
+            ytdlp_args = str(form.get("ytdlp_args", "")).strip() or None
+            guard_freeform(ytdlp_args, source_label="Playlist")
+        except (NamingValidationError, OptionValidationError, ValueError) as exc:
+            raise ValueError(str(exc)) from exc
+        return {
+            "name": name,
+            "folder_name": folder_name,
+            "url": url,
+            "kind_hint": kind_hint,
+            "ytdlp_args": ytdlp_args,
+            "enabled": form.get("enabled") == "yes",
+            "paused": form.get("paused") == "yes",
+        }
+
+    def playlist_editor_response(
+        request: Request,
+        *,
+        playlist: Playlist | None = None,
+        values: dict[str, Any] | None = None,
+        error: str | None = None,
+        status_code: int = 200,
+    ) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "playlists/form.html",
+            context(
+                request,
+                active_nav="playlists",
+                playlist=playlist,
+                values=values or {},
+                error=error,
+                kinds=[kind.value for kind in PlaylistKindHint],
+            ),
+            status_code=status_code,
+        )
+
+    @app.get("/playlists/new")
+    def playlist_new(request: Request) -> Response:
+        return playlist_editor_response(request)
+
+    @app.post("/playlists/new")
+    async def playlist_create(request: Request) -> Response:
+        form = await request.form()
+        try:
+            values = playlist_form_values(form)
+        except ValueError as exc:
+            return playlist_editor_response(
+                request,
+                values=dict(form),
+                error=str(exc),
+                status_code=422,
+            )
+        with session_factory() as db:
+            playlist = PlaylistRepository(db).create(**values, dedup_hardlink=False)
+        auth.add_flash(request.state.auth, "success", "Playlistを作成しました")
+        return RedirectResponse(f"/playlists/{playlist.id}", status_code=303)
+
+    @app.get("/playlists/{playlist_id}/edit")
+    def playlist_edit(request: Request, playlist_id: int) -> Response:
+        with session_factory() as db:
+            playlist = db.get(Playlist, playlist_id)
+            if playlist is None:
+                raise HTTPException(status_code=404)
+            return playlist_editor_response(request, playlist=playlist)
+
+    @app.post("/playlists/{playlist_id}/edit")
+    async def playlist_update(request: Request, playlist_id: int) -> Response:
+        form = await request.form()
+        with session_factory() as db:
+            playlist = db.get(Playlist, playlist_id)
+            if playlist is None:
+                raise HTTPException(status_code=404)
+            try:
+                values = playlist_form_values(form)
+            except ValueError as exc:
+                return playlist_editor_response(
+                    request,
+                    playlist=playlist,
+                    values=dict(form),
+                    error=str(exc),
+                    status_code=422,
+                )
+            PlaylistRepository(db).update(playlist, **values)
+        auth.add_flash(request.state.auth, "success", "Playlistを更新しました")
+        return RedirectResponse(f"/playlists/{playlist_id}", status_code=303)
+
+    @app.get("/playlists/{playlist_id}")
+    def playlist_detail(
+        request: Request,
+        playlist_id: int,
+        page: int = 1,
+        status_filter: str | None = None,
+        q: str = "",
+    ) -> Response:
+        page = max(1, page)
+        per_page = 50
+        with session_factory() as db:
+            playlist = db.get(Playlist, playlist_id)
+            if playlist is None:
+                raise HTTPException(status_code=404)
+            stmt = (
+                select(Target, Item, Profile)
+                .join(Item, Target.item_id == Item.id)
+                .join(PlaylistProfile, Target.playlist_profile_id == PlaylistProfile.id)
+                .join(Profile, PlaylistProfile.profile_id == Profile.id)
+                .where(Item.playlist_id == playlist_id)
+            )
+            if status_filter:
+                try:
+                    stmt = stmt.where(Target.status == TargetStatus(status_filter))
+                except ValueError:
+                    raise HTTPException(status_code=422, detail="不正な状態です") from None
+            if q.strip():
+                pattern = f"%{q.strip()}%"
+                stmt = stmt.where(
+                    Item.title.ilike(pattern) | Item.source_id.ilike(pattern)
+                )
+            total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+            target_rows = [
+                tuple(row)
+                for row in db.execute(
+                    stmt.order_by(Item.playlist_index.is_(None), Item.playlist_index, Target.id)
+                    .offset((page - 1) * per_page)
+                    .limit(per_page)
+                )
+            ]
+            assignments = list(
+                db.execute(
+                    select(PlaylistProfile, Profile, Storage)
+                    .join(Profile, PlaylistProfile.profile_id == Profile.id)
+                    .join(Storage, PlaylistProfile.storage_id == Storage.id)
+                    .where(PlaylistProfile.playlist_id == playlist_id)
+                    .order_by(PlaylistProfile.sort_order, PlaylistProfile.id)
+                )
+            )
+            profiles = list(db.scalars(select(Profile).order_by(Profile.name)))
+            storages = list(db.scalars(select(Storage).order_by(Storage.name)))
+        return templates.TemplateResponse(
+            request,
+            "playlists/detail.html",
+            context(
+                request,
+                active_nav="playlists",
+                playlist=playlist,
+                target_rows=target_rows,
+                statuses=[status.value for status in TargetStatus],
+                status_filter=status_filter or "",
+                q=q,
+                page=page,
+                pages=max(1, (total + per_page - 1) // per_page),
+                total=total,
+                assignments=assignments,
+                profiles=profiles,
+                storages=storages,
+            ),
+        )
+
+    @app.post("/playlists/{playlist_id}/run")
+    async def playlist_run(request: Request, playlist_id: int) -> Response:
+        form = await request.form()
+        kind = str(form.get("kind", "discover"))
+        try:
+            with session_factory() as db:
+                if kind == "discover":
+                    run, _task = enqueue_discover_run(db, playlist_id)
+                elif kind == "download":
+                    run = execute_download_run(db, playlist_id)
+                else:
+                    raise ValueError("実行種別が不正です")
+        except (LookupError, ValueError) as exc:
+            auth.add_flash(request.state.auth, "error", str(exc))
+        else:
+            auth.add_flash(request.state.auth, "success", f"Run {run.id}を開始しました")
+        return RedirectResponse(f"/playlists/{playlist_id}", status_code=303)
+
+    @app.post("/playlists/{playlist_id}/assignments")
+    async def playlist_assign(request: Request, playlist_id: int) -> Response:
+        form = await request.form()
+        try:
+            profile_id = int(str(form.get("profile_id", "")))
+            storage_id = int(str(form.get("storage_id", "")))
+            subpath = str(form.get("subpath", "{playlist.folder_name}"))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="割当値が不正です") from None
+        with session_factory() as db:
+            if db.get(Playlist, playlist_id) is None:
+                raise HTTPException(status_code=404)
+            if db.get(Profile, profile_id) is None or db.get(Storage, storage_id) is None:
+                raise HTTPException(status_code=422, detail="ProfileまたはStorageが不正です")
+            existing = db.scalar(
+                select(PlaylistProfile).where(
+                    PlaylistProfile.playlist_id == playlist_id,
+                    PlaylistProfile.profile_id == profile_id,
+                )
+            )
+            if existing is not None:
+                auth.add_flash(request.state.auth, "error", "Profileは割当済みです")
+            else:
+                PlaylistProfileRepository(db).create(
+                    playlist_id=playlist_id,
+                    profile_id=profile_id,
+                    storage_id=storage_id,
+                    subpath=subpath,
+                    enabled=True,
+                    sort_order=0,
+                )
+                auth.add_flash(request.state.auth, "success", "Profileを割り当てました")
+        return RedirectResponse(f"/playlists/{playlist_id}", status_code=303)
+
+    @app.post("/playlists/{playlist_id}/assignments/{assignment_id}/delete")
+    def playlist_detach(request: Request, playlist_id: int, assignment_id: int) -> Response:
+        with session_factory() as db:
+            assignment = db.get(PlaylistProfile, assignment_id)
+            if assignment is None or assignment.playlist_id != playlist_id:
+                raise HTTPException(status_code=404)
+            count = db.scalar(
+                select(func.count())
+                .select_from(Target)
+                .where(Target.playlist_profile_id == assignment_id)
+            ) or 0
+            if count:
+                auth.add_flash(request.state.auth, "error", "Targetが存在する割当は解除できません")
+            else:
+                PlaylistProfileRepository(db).delete(assignment)
+                auth.add_flash(request.state.auth, "success", "割当を解除しました")
+        return RedirectResponse(f"/playlists/{playlist_id}", status_code=303)
+
+    @app.post("/playlists/{playlist_id}/targets/{target_id}/action")
+    async def playlist_target_action(
+        request: Request, playlist_id: int, target_id: int
+    ) -> Response:
+        form = await request.form()
+        action = str(form.get("action", ""))
+        with session_factory() as db:
+            target = db.get(Target, target_id)
+            item = db.get(Item, target.item_id) if target else None
+            if target is None or item is None or item.playlist_id != playlist_id:
+                raise HTTPException(status_code=404)
+            try:
+                if action == "ignore":
+                    transition_target(db, target_id, TargetStatus.IGNORED)
+                elif action == "retry" and target.status in {
+                    TargetStatus.FAILED,
+                    TargetStatus.BLOCKED,
+                }:
+                    transition_target(db, target_id, TargetStatus.PENDING)
+                elif action == "retry" and target.status == TargetStatus.IGNORED:
+                    target.status = TargetStatus.PENDING
+                    target.last_error = None
+                    db.commit()
+                else:
+                    raise ValueError("この状態では操作できません")
+            except ValueError as exc:
+                auth.add_flash(request.state.auth, "error", str(exc))
+            else:
+                auth.add_flash(request.state.auth, "success", "Target状態を更新しました")
+        return RedirectResponse(f"/playlists/{playlist_id}", status_code=303)
+
+    @app.post("/playlists/{playlist_id}/delete")
+    async def playlist_delete(request: Request, playlist_id: int) -> Response:
+        form = await request.form()
+        mode = str(form.get("mode", ""))
+        with session_factory() as db:
+            playlist = db.get(Playlist, playlist_id)
+            if playlist is None:
+                raise HTTPException(status_code=404)
+            if mode == "keep_items":
+                PlaylistRepository(db).update(playlist, enabled=False, paused=True)
+                message = "Playlistを無効化・一時停止しました。Itemとメディアは保持されます"
+            elif mode == "delete_items":
+                run_count = db.scalar(
+                    select(func.count()).select_from(Run).where(Run.playlist_id == playlist_id)
+                ) or 0
+                if run_count:
+                    auth.add_flash(
+                        request.state.auth,
+                        "error",
+                        "Run履歴が参照するPlaylistは削除できません",
+                    )
+                    return RedirectResponse(f"/playlists/{playlist_id}", status_code=303)
+                db.execute(delete(Item).where(Item.playlist_id == playlist_id))
+                db.execute(
+                    delete(PlaylistProfile).where(PlaylistProfile.playlist_id == playlist_id)
+                )
+                db.delete(playlist)
+                db.commit()
+                message = "PlaylistとItem関連DBレコードを削除しました。メディアは削除していません"
+            else:
+                raise HTTPException(status_code=422, detail="削除方法を選択してください")
+        auth.add_flash(request.state.auth, "success", message)
+        return RedirectResponse("/playlists", status_code=303)
 
     @app.get("/profiles")
     def profiles(request: Request) -> Response:

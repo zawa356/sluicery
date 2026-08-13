@@ -55,3 +55,11 @@ progress { width: 100%; accent-color: var(--accent); }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: .6rem .7rem; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { color: var(--muted); font-size: .86rem; }
+.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.page-heading h1, .page-heading h2 { margin: 0; }
+.inline-form { display: flex; align-items: center; gap: .5rem; margin-top: 1rem; }
+.inline-form input, .inline-form select { width: auto; min-width: 10rem; }
+.pagination { display: flex; justify-content: center; gap: 1rem; padding: 1rem; }
+.truncate { max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.danger-zone { border-color: #713c42; }
+button:disabled { opacity: .45; cursor: not-allowed; }

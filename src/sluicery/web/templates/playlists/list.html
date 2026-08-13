@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Playlist — sluicery{% endblock %}
+{% block content %}
+<div class="page-heading"><h1>Playlist</h1><a class="button" href="/playlists/new">新規作成</a></div>
+<div class="panel">
+<table><thead><tr><th>ID</th><th>名前</th><th>種別</th><th>状態</th><th>Item</th><th>最終discover</th><th>最終download</th></tr></thead>
+<tbody>{% for row in rows %}{% set p = row.playlist %}
+<tr><td>{{ p.id }}</td><td><a href="/playlists/{{ p.id }}">{{ p.name }}</a></td><td>{{ p.kind_hint.value }}</td>
+<td>{% if not p.enabled %}無効{% elif p.paused %}一時停止{% else %}有効{% endif %}</td><td>{{ row.item_count }}</td>
+<td>{{ p.last_discover_at or "—" }}</td><td>{{ p.last_download_at or "—" }}</td></tr>
+{% else %}<tr><td colspan="7">Playlistはありません。</td></tr>{% endfor %}</tbody></table>
+</div>
+{% endblock %}
