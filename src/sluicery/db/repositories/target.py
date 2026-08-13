@@ -5,7 +5,14 @@ from typing import Any
 
 from sqlalchemy import func, select, update
 
-from sluicery.db.models import Item, PlaylistProfile, Target, TargetStatus
+from sluicery.db.models import (
+    Item,
+    ItemMembership,
+    PlaylistProfile,
+    Storage,
+    Target,
+    TargetStatus,
+)
 from sluicery.db.repositories.base import BaseRepository
 
 
@@ -95,6 +102,34 @@ class TargetRepository(BaseRepository[Target]):
             .where(Item.playlist_id == playlist_id, PlaylistProfile.playlist_id == playlist_id)
         )
         return list(self.session.scalars(stmt))
+
+    def list_download_candidates(
+        self, playlist_id: int, *, retry_limit: int
+    ) -> list[tuple[Target, Item, PlaylistProfile, Storage]]:
+        stmt = (
+            select(Target, Item, PlaylistProfile, Storage)
+            .join(Item, Target.item_id == Item.id)
+            .join(PlaylistProfile, Target.playlist_profile_id == PlaylistProfile.id)
+            .join(Storage, PlaylistProfile.storage_id == Storage.id)
+            .where(
+                Item.playlist_id == playlist_id,
+                Item.membership == ItemMembership.ACTIVE,
+                PlaylistProfile.playlist_id == playlist_id,
+                PlaylistProfile.enabled.is_(True),
+                (
+                    (Target.status == TargetStatus.PENDING)
+                    | ((Target.status == TargetStatus.FAILED) & (Target.retry_count < retry_limit))
+                    | (Target.status == TargetStatus.BLOCKED)
+                ),
+            )
+            .order_by(
+                Item.playlist_index.is_(None),
+                Item.playlist_index,
+                PlaylistProfile.sort_order,
+                Target.id,
+            )
+        )
+        return [tuple(row) for row in self.session.execute(stmt).all()]
 
 
 __all__ = ["TargetRepository"]

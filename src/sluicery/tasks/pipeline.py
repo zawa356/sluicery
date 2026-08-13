@@ -8,7 +8,8 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from sluicery.db.models import Task, TaskStatus, TaskType, WorkerClass
+from sluicery.db.models import TargetStatus, Task, TaskStatus, TaskType, WorkerClass
+from sluicery.db.repositories.target import TargetRepository
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,36 @@ def enqueue_pipeline(
     return PipelineTasks(resolved_work_id, *tasks)
 
 
+def enqueue_target_pipeline(
+    session: Session,
+    target_id: int,
+    *,
+    run_id: int | None = None,
+    work_id: str | None = None,
+    max_attempts: int = 5,
+) -> PipelineTasks | None:
+    """pending Target の queued 遷移と5 Task生成を同じtransactionで確定する。"""
+    if not TargetRepository(session).compare_and_set_status(
+        target_id,
+        {TargetStatus.PENDING},
+        TargetStatus.QUEUED,
+        commit=False,
+    ):
+        session.rollback()
+        return None
+    try:
+        return enqueue_pipeline(
+            session,
+            target_id,
+            run_id=run_id,
+            work_id=work_id,
+            max_attempts=max_attempts,
+        )
+    except Exception:
+        session.rollback()
+        raise
+
+
 def dependency_payload(session: Session, task_id: int) -> dict[str, Any]:
     """Taskの直前依存が成功済みであることを確認してpayloadを返す。"""
     task = session.get(Task, task_id)
@@ -95,5 +126,6 @@ __all__ = [
     "PipelineTasks",
     "dependency_payload",
     "enqueue_pipeline",
+    "enqueue_target_pipeline",
     "execution_task_id",
 ]

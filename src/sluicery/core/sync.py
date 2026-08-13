@@ -5,17 +5,25 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from sqlalchemy.orm import Session
 
-from sluicery.core.target_state import transition_item
-from sluicery.db.models import ItemMembership
+from sluicery.core.settings import OperationalSettings
+from sluicery.core.target_state import transition_item, transition_target
+from sluicery.db.models import ItemMembership, Storage, TargetStatus
 from sluicery.db.repositories.item import ItemRepository
 from sluicery.db.repositories.playlist import PlaylistRepository
 from sluicery.db.repositories.playlist_profile import PlaylistProfileRepository
 from sluicery.db.repositories.target import TargetRepository
+from sluicery.storage import create_storage_adapter
+from sluicery.storage.base import StorageAdapter, evaluate_capacity
+from sluicery.tasks.pipeline import enqueue_target_pipeline
+
+
+class AdapterFactory(Protocol):
+    def __call__(self, storage: Storage, settings: OperationalSettings) -> StorageAdapter: ...
 
 
 @dataclass(frozen=True)
@@ -126,6 +134,112 @@ def apply_discovery(
     return stats
 
 
+def queue_download_phase(
+    session: Session,
+    playlist_id: int,
+    *,
+    run_id: int | None = None,
+    max_targets: int | None = None,
+    max_attempts: int | None = None,
+    adapter_factory: AdapterFactory = create_storage_adapter,
+    now: datetime | None = None,
+) -> SyncStats:
+    """Storageを事前確認し、取得可能なTargetへ上限付きでチェーンを投入する。"""
+    queued_at = now or datetime.now(UTC)
+    playlist = PlaylistRepository(session).get(playlist_id)
+    if playlist is None:
+        raise LookupError(f"Playlist {playlist_id} が見つかりません")
+    if not playlist.enabled or playlist.paused:
+        raise ValueError("無効または一時停止中のPlaylistは同期できません")
+
+    settings = OperationalSettings(session)
+    target_limit = settings.sync_max_targets_per_run if max_targets is None else max_targets
+    retry_limit = settings.worker_max_attempts if max_attempts is None else max_attempts
+    if target_limit < 1 or retry_limit < 1:
+        raise ValueError("同期上限と再試行上限は1以上で指定してください")
+
+    candidates = TargetRepository(session).list_download_candidates(
+        playlist_id, retry_limit=retry_limit
+    )
+    storage_checks: dict[int, tuple[bool, str | None]] = {}
+    eligible_ids: list[int] = []
+    for target, _item, _assignment, storage in candidates:
+        check = storage_checks.get(storage.id)
+        if check is None:
+            check = _check_storage(storage, settings, adapter_factory)
+            storage_checks[storage.id] = check
+        usable, reason = check
+        if not usable:
+            transition_target(
+                session,
+                target.id,
+                TargetStatus.BLOCKED,
+                error=reason,
+                blocked_reason=reason,
+            )
+            continue
+        if target.status in {TargetStatus.FAILED, TargetStatus.BLOCKED}:
+            transition_target(session, target.id, TargetStatus.PENDING)
+        eligible_ids.append(target.id)
+
+    queued = 0
+    remaining = 0
+    for target_id in eligible_ids:
+        if queued >= target_limit:
+            remaining += 1
+            continue
+        chain = enqueue_target_pipeline(
+            session,
+            target_id,
+            run_id=run_id,
+            max_attempts=retry_limit,
+        )
+        if chain is not None:
+            queued += 1
+
+    PlaylistRepository(session).set_last_download_at(playlist_id, queued_at)
+    counts = TargetRepository(session).count_by_status(playlist_id)
+    return SyncStats(
+        targets_queued=queued,
+        targets_remaining=remaining,
+        downloaded=counts.get(TargetStatus.DOWNLOADED, 0),
+        failed=counts.get(TargetStatus.FAILED, 0),
+        blocked=counts.get(TargetStatus.BLOCKED, 0),
+    )
+
+
+def _check_storage(
+    storage: Storage,
+    settings: OperationalSettings,
+    adapter_factory: AdapterFactory,
+) -> tuple[bool, str | None]:
+    if not storage.enabled:
+        return False, "Storageが無効です"
+    try:
+        adapter = adapter_factory(storage, settings)
+        connection = adapter.test_connection()
+        if not connection.ok:
+            failure = next(
+                (stage for stage in connection.stages if stage.status.value == "failed"), None
+            )
+            if failure is not None:
+                return (
+                    False,
+                    f"Storage事前確認失敗: {failure.stage.value}/{failure.reason_code}",
+                )
+            return False, "Storage事前確認の後始末に失敗しました"
+        capacity = evaluate_capacity(
+            adapter.free_space(),
+            warn_bytes=settings.storage_free_space_warn_bytes,
+            stop_bytes=settings.storage_free_space_stop_bytes,
+        )
+        if capacity.should_block:
+            return False, "Storageの空き容量が停止閾値を下回っています"
+    except Exception as exc:  # noqa: BLE001 - adapter生成・外部I/O失敗はTarget blockedへ集約
+        return False, f"Storage事前確認を実行できません: {type(exc).__name__}"
+    return True, None
+
+
 def _source_url(raw: dict[str, Any]) -> str | None:
     for key in ("webpage_url", "original_url", "url"):
         value = _text(raw.get(key))
@@ -152,4 +266,9 @@ def _integer(value: object) -> int | None:
     return None
 
 
-__all__ = ["SyncStats", "apply_discovery", "parse_discover_entries"]
+__all__ = [
+    "SyncStats",
+    "apply_discovery",
+    "parse_discover_entries",
+    "queue_download_phase",
+]
