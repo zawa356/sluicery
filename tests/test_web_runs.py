@@ -7,9 +7,18 @@ from fastapi.testclient import TestClient
 
 from sluicery.config import Settings
 from sluicery.db.models import (
+    Item,
+    Playlist,
+    PlaylistKindHint,
+    PlaylistProfile,
+    Profile,
     Run,
     RunStatus,
     RunTrigger,
+    Storage,
+    StorageKind,
+    Target,
+    TargetStatus,
     Task,
     TaskStatus,
     TaskType,
@@ -150,3 +159,89 @@ def test_run_detail_task_status_filter(base_env, session_factory) -> None:
     assert "blocked（cancel要求済み）" not in filtered.text
     assert "blocked" in filtered.text
     assert "running（cancel要求済み）" not in filtered.text
+
+
+def test_running_task_progress_polls_and_stops_after_completion(base_env, session_factory) -> None:
+    with session_factory() as db:
+        playlist = Playlist(
+            name="Progress list",
+            folder_name="progress-list",
+            url="https://example.com/progress",
+            kind_hint=PlaylistKindHint.VIDEO,
+        )
+        db.add(playlist)
+        db.flush()
+        item = Item(
+            playlist_id=playlist.id,
+            source_id="item-1",
+            source_url="https://example.com/watch/item-1",
+            title="Progress title",
+        )
+        db.add(item)
+        db.flush()
+        profile = Profile(name="Progress profile", kind="video", layout_strategy="flat")
+        storage = Storage(
+            name="Progress storage", kind=StorageKind.LOCAL, config_json={"path": "out"}
+        )
+        db.add_all([profile, storage])
+        db.flush()
+        assignment = PlaylistProfile(
+            playlist_id=playlist.id,
+            profile_id=profile.id,
+            storage_id=storage.id,
+            subpath="progress",
+        )
+        db.add(assignment)
+        db.flush()
+        target = Target(
+            item_id=item.id,
+            playlist_profile_id=assignment.id,
+            status=TargetStatus.DOWNLOADING,
+        )
+        db.add(target)
+        db.flush()
+        run = _run(status=RunStatus.RUNNING, kind="download")
+        run.finished_at = None
+        db.add(run)
+        db.flush()
+        task = Task(
+            type=TaskType.DOWNLOAD,
+            target_ref_type="target",
+            target_ref_id=target.id,
+            worker_class=WorkerClass.NETWORK,
+            status=TaskStatus.RUNNING,
+            max_attempts=5,
+            run_id=run.id,
+            started_at=datetime.now(UTC),
+            payload_json={
+                "progress": {
+                    "status": "downloading",
+                    "percent": 42.5,
+                    "speed": 2048,
+                    "eta": 7,
+                }
+            },
+        )
+        db.add(task)
+        db.commit()
+        run_id = run.id
+        task_id = task.id
+    client = _client(base_env, session_factory)
+
+    detail = client.get(f"/runs/{run_id}")
+
+    assert detail.status_code == 200
+    assert 'hx-trigger="every 3s"' in detail.text
+    assert "Progress title" in detail.text
+    assert "42.5%" in detail.text and "2.0 KiB/s" in detail.text and "7秒" in detail.text
+
+    with session_factory() as db:
+        task = db.get(Task, task_id)
+        assert task is not None
+        task.status = TaskStatus.SUCCEEDED
+        task.finished_at = datetime.now(UTC)
+        db.commit()
+    completed = client.get(f"/runs/{run_id}/progress")
+    assert completed.status_code == 200
+    assert "ポーリングを停止しました" in completed.text
+    assert "hx-trigger" not in completed.text

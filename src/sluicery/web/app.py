@@ -1224,6 +1224,7 @@ def create_app(
                     .group_by(Task.status)
                 )
             }
+            progress_rows = load_run_progress(db, run_id)
         return templates.TemplateResponse(
             request,
             "runs/detail.html",
@@ -1239,7 +1240,63 @@ def create_app(
                 total=total,
                 status_filter=status_filter,
                 task_statuses=[value.value for value in TaskStatus],
+                progress_rows=progress_rows,
                 now=datetime.now(UTC),
+            ),
+        )
+
+    def load_run_progress(db: Session, run_id: int) -> list[dict[str, Any]]:
+        tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.run_id == run_id, Task.status == TaskStatus.RUNNING)
+                .order_by(Task.started_at, Task.id)
+            )
+        )
+        target_ids = {task.target_ref_id for task in tasks if task.target_ref_type == "target"}
+        playlist_ids = {task.target_ref_id for task in tasks if task.target_ref_type == "playlist"}
+        target_labels = {
+            target_id: title or source_id
+            for target_id, title, source_id in db.execute(
+                select(Target.id, Item.title, Item.source_id)
+                .join(Item, Item.id == Target.item_id)
+                .where(Target.id.in_(target_ids))
+            )
+        }
+        playlist_labels = {
+            playlist_id: name
+            for playlist_id, name in db.execute(
+                select(Playlist.id, Playlist.name).where(Playlist.id.in_(playlist_ids))
+            )
+        }
+        rows = []
+        for task in tasks:
+            progress = (task.payload_json or {}).get("progress", {})
+            if not isinstance(progress, dict):
+                progress = {}
+            if task.target_ref_type == "target":
+                label = target_labels.get(task.target_ref_id, f"Target #{task.target_ref_id}")
+            elif task.target_ref_type == "playlist":
+                label = playlist_labels.get(task.target_ref_id, f"Playlist #{task.target_ref_id}")
+            else:
+                label = f"{task.target_ref_type} #{task.target_ref_id}"
+            rows.append({"task": task, "target_label": label, "progress": progress})
+        return rows
+
+    @app.get("/runs/{run_id}/progress")
+    def run_progress(request: Request, run_id: int) -> Response:
+        with session_factory() as db:
+            if db.get(Run, run_id) is None:
+                raise HTTPException(status_code=404)
+            progress_rows = load_run_progress(db, run_id)
+        return templates.TemplateResponse(
+            request,
+            "runs/_progress.html",
+            context(
+                request,
+                active_nav="runs",
+                run_id=run_id,
+                progress_rows=progress_rows,
             ),
         )
 

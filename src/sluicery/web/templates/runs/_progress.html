@@ -1,0 +1,5 @@
+<section id="run-progress" class="panel section-block"{% if progress_rows %} hx-get="/runs/{{ run.id if run is defined else run_id }}/progress" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+<h2>実行中のTask</h2>
+{% if progress_rows %}<table><thead><tr><th>Task</th><th>種別</th><th>対象</th><th>状態</th><th>進捗率</th><th>速度</th><th>ETA</th></tr></thead><tbody>{% for row in progress_rows %}{% set progress = row.progress %}<tr><td>{{ row.task.id }}</td><td>{{ row.task.type.value }}</td><td>{{ row.target_label }}</td><td>{{ progress.get('status', 'running') }}</td><td>{% if progress.get('percent') is not none %}{{ '%.1f'|format(progress.get('percent')) }}%{% else %}—{% endif %}</td><td>{% if progress.get('speed') is not none %}{{ progress.get('speed')|filesize }}/s{% else %}—{% endif %}</td><td>{% if progress.get('eta') is not none %}{{ progress.get('eta') }}秒{% else %}—{% endif %}</td></tr>{% endfor %}</tbody></table><p class="muted">3秒ごとに更新します。</p>
+{% else %}<p class="muted">実行中のTaskはありません。ポーリングを停止しました。</p>{% endif %}
+</section>
