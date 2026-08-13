@@ -406,6 +406,35 @@ def test_ui_uses_local_assets_and_has_seven_navigation_groups(base_env, session_
     assert len(htmx.content) == 51_238
 
 
+def test_dashboard_shows_operational_summary(base_env, session_factory) -> None:
+    settings = _settings(base_env)
+    _create_admin(session_factory, settings)
+    with session_factory() as db:
+        db.add(
+            Playlist(
+                name="Dashboard Playlist",
+                folder_name="dashboard-playlist",
+                url="https://example.com/list",
+                kind_hint=PlaylistKindHint.VIDEO,
+            )
+        )
+        db.commit()
+    client = TestClient(create_app(settings=settings, session_factory=session_factory))
+    _login(client, settings)
+
+    dashboard = client.get("/")
+
+    assert dashboard.status_code == 200
+    assert "yt-dlp" in dashboard.text
+    assert "Staging" in dashboard.text
+    assert "failed" in dashboard.text
+    assert "missing" in dashboard.text
+    assert "delisted" in dashboard.text
+    assert "スケジューラ未実装" in dashboard.text
+    assert "直近のRun" in dashboard.text
+    assert "Storage" in dashboard.text
+
+
 def test_html_error_pages_hide_exception_detail(base_env, session_factory) -> None:
     settings = _settings(base_env)
     _create_admin(session_factory, settings)
