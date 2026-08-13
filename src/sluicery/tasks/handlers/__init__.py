@@ -1,3 +1,4 @@
+from sluicery.tasks.handlers.discover import DiscoverHandler
 from sluicery.tasks.handlers.download import DownloadHandler
 from sluicery.tasks.handlers.dummy import DUMMY_HANDLER_FACTORIES, TaskHandler
 from sluicery.tasks.handlers.index import IndexHandler
@@ -8,6 +9,7 @@ from sluicery.tasks.handlers.verify import VerifyHandler
 
 __all__ = [
     "DUMMY_HANDLER_FACTORIES",
+    "DiscoverHandler",
     "DownloadHandler",
     "IndexHandler",
     "PostprocessHandler",

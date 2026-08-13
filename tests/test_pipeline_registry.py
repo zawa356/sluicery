@@ -13,5 +13,12 @@ def test_pipeline_registry_contains_five_handlers(
 
     factories = build_pipeline_handler_factories(session_factory, load_settings())
 
-    assert set(factories) == {"download", "verify", "postprocess", "publish", "index"}
+    assert set(factories) == {
+        "discover",
+        "download",
+        "verify",
+        "postprocess",
+        "publish",
+        "index",
+    }
     assert all(callable(factory) for factory in factories.values())
