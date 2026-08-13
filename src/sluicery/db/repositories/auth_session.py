@@ -20,10 +20,6 @@ class AuthSessionRepository(BaseRepository[AuthSession]):
         self.session.execute(delete(AuthSession).where(AuthSession.token_hash == token_hash))
         self.session.commit()
 
-    def delete_for_user(self, user_id: int) -> None:
-        self.session.execute(delete(AuthSession).where(AuthSession.user_id == user_id))
-        self.session.commit()
-
     def delete_expired(self, now: datetime) -> None:
         self.session.execute(delete(AuthSession).where(AuthSession.expires_at <= now))
         self.session.commit()

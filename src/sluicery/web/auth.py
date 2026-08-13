@@ -14,6 +14,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from itsdangerous import BadSignature, URLSafeSerializer
+from sqlalchemy import delete
 from sqlalchemy.orm import Session, sessionmaker
 
 from sluicery.config import Settings
@@ -129,9 +130,11 @@ class AuthService:
     def create_session(self, *, user_id: int | None = None) -> NewSession:
         token = secrets.token_urlsafe(_SESSION_TOKEN_BYTES)
         with self._session_factory() as db:
+            repo = AuthSessionRepository(db)
+            repo.delete_expired(_now())
             max_age = OperationalSettings(db).auth_session_max_age_sec
             expires_at = _now() + timedelta(seconds=max_age)
-            row = AuthSessionRepository(db).create(
+            row = repo.create(
                 token_hash=hash_session_token(token),
                 user_id=user_id,
                 expires_at=expires_at,
@@ -214,8 +217,8 @@ class AuthService:
             user.password_hash = _PASSWORD_HASHER.hash(new_password)
             user.failed_login_attempts = 0
             user.locked_until = None
+            db.execute(delete(AuthSession).where(AuthSession.user_id == user_id))
             db.commit()
-            AuthSessionRepository(db).delete_for_user(user_id)
         return True
 
     def delete_session(self, token: str) -> None:

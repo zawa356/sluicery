@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from argon2 import PasswordHasher
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from sqlalchemy import event, select
 
 from sluicery.config import Settings
 from sluicery.db.models import AuthSession, Playlist, PlaylistKindHint
 from sluicery.db.repositories.user import UserRepository
-from sluicery.web.app import create_app
+from sluicery.web.app import create_app, require_csrf
 from sluicery.web.auth import (
     LOGIN_ERROR_MESSAGE,
     SESSION_COOKIE_NAME,
@@ -98,6 +101,26 @@ def test_session_stores_only_token_hash(base_env, session_factory) -> None:
         assert row.token_hash == hash_session_token(created.token)
         assert created.token not in row.token_hash
         assert row.expires_at > datetime.now(UTC)
+
+
+def test_session_creation_removes_expired_rows(base_env, session_factory) -> None:
+    settings = _settings(base_env)
+    service = AuthService(session_factory, settings)
+    expired = service.create_session()
+    with session_factory() as db:
+        row = db.get(AuthSession, expired.identity.session_id)
+        assert row is not None
+        row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        db.commit()
+
+    service.create_session()
+
+    with session_factory() as db:
+        assert db.scalar(
+            select(AuthSession).where(
+                AuthSession.token_hash == hash_session_token(expired.token)
+            )
+        ) is None
 
 
 def test_authentication_is_whitelist_based_and_login_rotates_session(
@@ -225,6 +248,42 @@ def test_password_change_revokes_all_sessions(base_env, session_factory) -> None
     assert replacement.ok is True
 
 
+def test_password_change_and_session_revocation_are_atomic(
+    base_env, session_factory, engine
+) -> None:
+    settings = _settings(base_env)
+    _create_admin(session_factory, settings)
+    service = AuthService(session_factory, settings)
+    anonymous = service.create_session()
+    authenticated = service.authenticate(
+        anonymous.token, settings.ADMIN_USERNAME, "correct-password"
+    ).session
+    assert authenticated is not None
+
+    def reject_session_delete(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("DELETE FROM auth_session"):
+            raise RuntimeError("injected delete failure")
+
+    event.listen(engine, "before_cursor_execute", reject_session_delete)
+    try:
+        with pytest.raises(RuntimeError, match="injected delete failure"):
+            service.change_password(
+                authenticated.identity.user_id,
+                "correct-password",
+                "new-password",
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", reject_session_delete)
+
+    assert service.load_session(authenticated.signed_cookie) is not None
+    retry = service.authenticate(
+        service.create_session().token,
+        settings.ADMIN_USERNAME,
+        "correct-password",
+    )
+    assert retry.ok is True
+
+
 def test_csrf_is_required_for_login_and_bound_to_session(base_env, session_factory) -> None:
     settings = _settings(base_env)
     _create_admin(session_factory, settings)
@@ -305,6 +364,24 @@ def test_csrf_dependency_treats_only_get_as_exempt(base_env, session_factory) ->
 
     assert client.request("HEAD", "/").status_code == 403
     assert client.request("OPTIONS", "/").status_code == 403
+
+
+def test_every_state_changing_api_route_has_global_csrf_dependency(
+    base_env, session_factory
+) -> None:
+    settings = _settings(base_env)
+    _create_admin(session_factory, settings)
+    app = create_app(settings=settings, session_factory=session_factory)
+
+    mutation_routes = [
+        route
+        for route in app.routes
+        if isinstance(route, APIRoute) and route.methods != {"GET"}
+    ]
+
+    assert mutation_routes
+    for route in mutation_routes:
+        assert any(dependency.call is require_csrf for dependency in route.dependant.dependencies)
 
 
 def test_ui_uses_local_assets_and_has_seven_navigation_groups(base_env, session_factory) -> None:
