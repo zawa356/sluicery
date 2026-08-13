@@ -61,7 +61,7 @@ def _graph(session_factory, file_path: Path) -> tuple[int, int]:
             type=TaskType.DOWNLOAD,
             target_ref_type="target",
             target_ref_id=target.id,
-            payload_json={"file_path": str(file_path)},
+            payload_json={"file_path": str(file_path), "format_id": "137+140"},
             worker_class=WorkerClass.NETWORK,
             status=TaskStatus.SUCCEEDED,
         )
@@ -109,6 +109,7 @@ def test_verify_records_metadata_without_duration_judgement(
     assert result.payload_update["duration"] == 13
     assert result.payload_update["video_codec"] == "av1"
     assert result.payload_update["audio_codec"] == "opus"
+    assert result.payload_update["format_id"] == "137+140"
 
 
 def test_verify_json_failure_keeps_file_and_records_reason(session_factory, tmp_path: Path) -> None:

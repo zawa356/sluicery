@@ -31,6 +31,7 @@ def test_run_captures_progress_and_print_lines(tmp_path: Path) -> None:
     assert len(result.progress_events) == 3
     assert [e.downloaded_bytes for e in result.progress_events] == [0, 1, 2]
     assert result.stdout_lines == ["done"]
+    assert result.result_metadata == [{"file_path": "done", "format_id": "137+140"}]
     assert seen == result.progress_events
     assert result.log_path is not None and result.log_path.exists()
 

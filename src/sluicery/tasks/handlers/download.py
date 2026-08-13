@@ -96,10 +96,21 @@ class DownloadHandler:
         if result.terminated_by == "cancel":
             return TaskResult(TaskOutcome.CANCELLED)
         if result.classification == Classification.OK:
-            return self._success(target_id, work_id, result.stdout_lines)
+            return self._success(
+                target_id,
+                work_id,
+                result.stdout_lines,
+                result.result_metadata,
+            )
         return self._failure(target_id, result.classification, result.stderr_tail)
 
-    def _success(self, target_id: int, work_id: str, output_lines: list[str]) -> TaskResult:
+    def _success(
+        self,
+        target_id: int,
+        work_id: str,
+        output_lines: list[str],
+        result_metadata: list[dict[str, object]],
+    ) -> TaskResult:
         paths = [Path(line) for line in output_lines if line.strip()]
         if not paths:
             return self._failure(
@@ -119,11 +130,19 @@ class DownloadHandler:
                 Classification.FAILED,
                 "生成ファイルがStagingのwork-id境界外です",
             )
+        format_id = None
+        if result_metadata:
+            latest = result_metadata[-1]
+            metadata_path = latest.get("file_path")
+            raw_format_id = latest.get("format_id")
+            if metadata_path == str(resolved) and isinstance(raw_format_id, str):
+                format_id = raw_format_id
         return TaskResult(
             TaskOutcome.SUCCEEDED,
             payload_update={
                 "file_path": str(resolved),
                 "filesize": resolved.stat().st_size,
+                "format_id": format_id,
             },
         )
 

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from sluicery.downloader.errors import Classification, classify
 from sluicery.downloader.progress import ProgressEvent, parse_progress_line
-from sluicery.downloader.protocol import PRINT_PREFIX, PROGRESS_PREFIX
+from sluicery.downloader.protocol import PRINT_PREFIX, PROGRESS_PREFIX, RESULT_PREFIX
 from sluicery.runner.base import BaseRunner, TimeoutPolicy, mask_command_line
 
 
@@ -22,6 +23,7 @@ class RunResult:
     log_path: Path | None = None
     duration_sec: float = 0.0
     terminated_by: str | None = None
+    result_metadata: list[dict[str, object]] = field(default_factory=list)
 
 
 class YtdlpRunner(BaseRunner):
@@ -53,6 +55,7 @@ class YtdlpRunner(BaseRunner):
     ) -> RunResult:
         stdout_lines: list[str] = []
         progress_events: list[ProgressEvent] = []
+        result_metadata: list[dict[str, object]] = []
 
         def read_stdout(line: str) -> None:
             if line.startswith(PROGRESS_PREFIX):
@@ -63,6 +66,13 @@ class YtdlpRunner(BaseRunner):
                         on_progress(event)
             elif line.startswith(PRINT_PREFIX):
                 stdout_lines.append(line[len(PRINT_PREFIX) :])
+            elif line.startswith(RESULT_PREFIX):
+                try:
+                    value = json.loads(line[len(RESULT_PREFIX) :])
+                except (json.JSONDecodeError, ValueError):
+                    return
+                if isinstance(value, dict):
+                    result_metadata.append(value)
 
         process_result = self._run_process(
             args,
@@ -85,6 +95,7 @@ class YtdlpRunner(BaseRunner):
             log_path=process_result.log_path,
             duration_sec=process_result.duration_sec,
             terminated_by=process_result.terminated_by,
+            result_metadata=result_metadata,
         )
 
 

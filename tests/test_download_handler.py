@@ -77,13 +77,24 @@ def test_download_success_records_staging_file(session_factory, tmp_path: Path) 
     work.mkdir()
     output = work / "item.mkv"
     output.write_bytes(b"media")
-    runner = _FakeRunner(RunResult(0, Classification.OK, stdout_lines=[str(output)]))
+    runner = _FakeRunner(
+        RunResult(
+            0,
+            Classification.OK,
+            stdout_lines=[str(output)],
+            result_metadata=[{"file_path": str(output.resolve()), "format_id": "137+140"}],
+        )
+    )
     handler = DownloadHandler(session_factory, staging_dir=tmp_path, runner=runner)  # type: ignore[arg-type]
 
     result = handler.run({"target_id": target_id, "work_id": "work-1"}, lambda _: None)
 
     assert result.outcome == TaskOutcome.SUCCEEDED
-    assert result.payload_update == {"file_path": str(output.resolve()), "filesize": 5}
+    assert result.payload_update == {
+        "file_path": str(output.resolve()),
+        "filesize": 5,
+        "format_id": "137+140",
+    }
     assert runner.sensitive_values == ("https://example.com/item",)
     with session_factory() as session:
         assert session.get(Target, target_id).status == TargetStatus.DOWNLOADING
