@@ -21,7 +21,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from sluicery.core.settings import OperationalSettings
 from sluicery.core.target_state import sync_target_after_task
-from sluicery.db.models import Run, Task, TaskStatus, WorkerClass
+from sluicery.db.models import Run, RunStatus, Task, TaskStatus, TaskType, WorkerClass
+from sluicery.db.repositories.run import RunRepository
 from sluicery.db.repositories.task import TaskRepository
 from sluicery.runner.base import mask_log_text
 from sluicery.tasks.handlers import DUMMY_HANDLER_FACTORIES, TaskHandler
@@ -435,6 +436,16 @@ class StaleTaskReaper:
                         TaskStatus.UNAVAILABLE,
                         error=task.error_message or "stale Taskが再試行上限に達しました",
                     )
+                    if task.type == TaskType.DISCOVER and task.run_id is not None:
+                        run = session.get(Run, task.run_id)
+                        if run is not None and run.status == RunStatus.RUNNING:
+                            stats = dict(run.stats_json or {})
+                            stats.update({"empty_result": True, "stale_recovered": True})
+                            RunRepository(session).finish(
+                                run.id,
+                                RunStatus.FAILED,
+                                stats,
+                            )
         if recovered:
             logger.warning("Recovered stale tasks", extra={"task_ids": recovered})
         return recovered

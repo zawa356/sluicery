@@ -20,6 +20,7 @@ from apscheduler.schedulers.background import (  # type: ignore[import-untyped]
     BackgroundScheduler,
 )
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
+from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -30,13 +31,15 @@ from sluicery.core.sync import (
     enqueue_discover_run,
     execute_download_run,
 )
-from sluicery.db.models import Playlist, RunStatus, RunTrigger
+from sluicery.db.models import Playlist, Run, RunStatus, RunTrigger, Task, TaskStatus
 from sluicery.db.repositories.playlist import PlaylistRepository
 from sluicery.db.repositories.run import RunRepository
 
 logger = logging.getLogger(__name__)
 
 _JOB_PREFIX = "sluicery:playlist:"
+_RECONCILE_JOB_ID = "sluicery:maintenance:reconcile"
+_MISFIRE_GRACE_SEC = 24 * 60 * 60
 _active_service: SchedulerService | None = None
 _active_service_lock = threading.Lock()
 _WINDOW_RE = re.compile(r"^(\d{2}):(\d{2})-(\d{2}):(\d{2})$")
@@ -143,6 +146,16 @@ def _dispatch_scheduled_job(playlist_id: int, kind: str) -> None:
     service.execute_job(playlist_id, kind)
 
 
+def _reconcile_active_scheduler() -> None:
+    service = _active_service
+    if service is None:
+        return
+    try:
+        service.reconcile()
+    except Exception:  # noqa: BLE001 - 定期整合ジョブを一時的DB競合で失わない
+        logger.warning("Periodic scheduler reconciliation failed", exc_info=True)
+
+
 class SchedulerService:
     """SQLAlchemyJobStoreを使い、appプロセス内だけで動くscheduler境界。"""
 
@@ -173,6 +186,16 @@ class SchedulerService:
         try:
             self._scheduler.start(paused=True)
             self._started = True
+            self._scheduler.add_job(
+                _reconcile_active_scheduler,
+                "interval",
+                seconds=60,
+                id=_RECONCILE_JOB_ID,
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=60,
+            )
             self.reconcile()
             if not paused:
                 self._scheduler.resume()
@@ -200,6 +223,7 @@ class SchedulerService:
         """DB設定をジョブへ反映し、対象外Playlistのジョブを除去する。"""
         if not self._started:
             return
+        self.recover_orphan_runs()
         with self._session_factory() as session:
             settings = OperationalSettings(session)
             jitter = settings.schedule_jitter_minutes
@@ -230,21 +254,68 @@ class SchedulerService:
                         extra={"playlist_id": playlist.id, "kind": kind},
                     )
                     continue
-                self._scheduler.add_job(
-                    _dispatch_scheduled_job,
-                    trigger=trigger,
-                    id=job_id,
-                    args=(playlist.id, kind),
-                    replace_existing=True,
-                    coalesce=True,
-                    max_instances=1,
-                    misfire_grace_time=24 * 60 * 60,
-                )
+                existing = self._scheduler.get_job(job_id)
+                if not self._job_matches(existing, trigger, playlist.id, kind):
+                    self._scheduler.add_job(
+                        _dispatch_scheduled_job,
+                        trigger=trigger,
+                        id=job_id,
+                        args=(playlist.id, kind),
+                        replace_existing=True,
+                        coalesce=True,
+                        max_instances=1,
+                        misfire_grace_time=_MISFIRE_GRACE_SEC,
+                    )
                 desired.add(job_id)
 
         for job in self._managed_jobs():
             if job.id not in desired:
                 self._scheduler.remove_job(job.id)
+
+    def recover_orphan_runs(self) -> list[int]:
+        """未完了Taskのないrunning Runを終端し、異常終了の残骸を残さない。"""
+        active_statuses = {
+            TaskStatus.PENDING,
+            TaskStatus.QUEUED,
+            TaskStatus.RUNNING,
+            TaskStatus.BLOCKED,
+        }
+        recovered: list[int] = []
+        with self._session_factory() as session:
+            settings = OperationalSettings(session)
+            stale_before = self._clock().astimezone(UTC) - timedelta(
+                seconds=settings.worker_stale_threshold_sec
+            )
+            running_runs = list(
+                session.scalars(
+                    select(Run).where(
+                        Run.status == RunStatus.RUNNING,
+                        Run.started_at < stale_before,
+                    )
+                )
+            )
+            for run in running_runs:
+                tasks = list(session.scalars(select(Task).where(Task.run_id == run.id)))
+                if any(task.status in active_statuses for task in tasks):
+                    continue
+                stats = dict(run.stats_json or {})
+                stats["recovered_orphan"] = True
+                if tasks and all(task.status == TaskStatus.SUCCEEDED for task in tasks):
+                    status = RunStatus.SUCCEEDED
+                    task_stats = (tasks[-1].payload_json or {}).get("stats")
+                    if isinstance(task_stats, dict):
+                        stats.update(task_stats)
+                elif tasks and any(task.status == TaskStatus.CANCELLED for task in tasks):
+                    status = RunStatus.CANCELLED
+                else:
+                    status = RunStatus.FAILED
+                RunRepository(session).finish(run.id, status, stats, commit=False)
+                recovered.append(run.id)
+            if recovered:
+                session.commit()
+        if recovered:
+            logger.warning("Recovered orphan running runs", extra={"run_ids": recovered})
+        return recovered
 
     def execute_job(self, playlist_id: int, kind: str) -> None:
         """永続ジョブの実行入口。秘密値をjob argsへ保存しない。"""
@@ -312,6 +383,26 @@ class SchedulerService:
 
     def _managed_jobs(self) -> list[Job]:
         return [job for job in self._scheduler.get_jobs() if job.id.startswith(_JOB_PREFIX)]
+
+    def _job_matches(
+        self,
+        job: Job | None,
+        trigger: SymmetricCronTrigger,
+        playlist_id: int,
+        kind: str,
+    ) -> bool:
+        if job is None or not isinstance(job.trigger, SymmetricCronTrigger):
+            return False
+        existing_trigger = job.trigger
+        return (
+            existing_trigger.expression == trigger.expression
+            and str(existing_trigger.timezone) == str(trigger.timezone)
+            and existing_trigger.jitter == trigger.jitter
+            and tuple(job.args) == (playlist_id, kind)
+            and job.coalesce is True
+            and job.max_instances == 1
+            and job.misfire_grace_time == _MISFIRE_GRACE_SEC
+        )
 
     def _record_skipped(self, playlist_id: int, kind: str, reason: str) -> None:
         with self._session_factory() as session:

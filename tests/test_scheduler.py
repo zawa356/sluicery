@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+import time
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import inspect, select
@@ -14,8 +15,16 @@ from sluicery.db.models import (
     RunStatus,
     RunTrigger,
     Task,
+    TaskStatus,
+    TaskType,
+    WorkerClass,
 )
-from sluicery.scheduler import SchedulerService, SymmetricCronTrigger, parse_download_window
+from sluicery.scheduler import (
+    SchedulerService,
+    SymmetricCronTrigger,
+    parse_download_window,
+    playlist_job_id,
+)
 
 
 def _playlist(
@@ -175,3 +184,128 @@ def test_scheduled_download_outside_window_records_skip_without_tasks(
         assert run.stats_json is not None
         assert run.stats_json["skip_reason"] == "outside_download_window"
         assert list(session.scalars(select(Task))) == []
+
+
+def test_reconcile_removes_deleted_playlist_jobs_and_sets_misfire_policy(
+    engine, session_factory
+) -> None:
+    playlist_id = _playlist(session_factory)
+    with session_factory() as session:
+        core_settings.set_override(session, "schedule.jitter_minutes", 0)
+    service = SchedulerService(engine, session_factory, "UTC")
+    service.start(paused=True)
+    try:
+        jobs = [
+            job
+            for job in service._scheduler.get_jobs()  # noqa: SLF001 - policy inspection
+            if job.id.startswith("sluicery:playlist:")
+        ]
+        assert len(jobs) == 2
+        assert all(job.coalesce is True for job in jobs)
+        assert all(job.misfire_grace_time == 24 * 60 * 60 for job in jobs)
+        assert all(job.max_instances == 1 for job in jobs)
+        with session_factory() as session:
+            playlist = session.get(Playlist, playlist_id)
+            assert playlist is not None
+            session.delete(playlist)
+            session.commit()
+        service.reconcile()
+        assert service.next_runs(playlist_id) == []
+    finally:
+        service.shutdown()
+
+
+def test_reconcile_recovers_only_runs_without_active_tasks(engine, session_factory) -> None:
+    playlist_id = _playlist(session_factory)
+    now = datetime(2026, 8, 14, 0, 0, tzinfo=UTC)
+    with session_factory() as session:
+        orphan = Run(
+            trigger=RunTrigger.SCHEDULE,
+            kind="discover",
+            playlist_id=playlist_id,
+            status=RunStatus.RUNNING,
+            started_at=now - timedelta(minutes=10),
+        )
+        active = Run(
+            trigger=RunTrigger.MANUAL,
+            kind="discover",
+            playlist_id=playlist_id,
+            status=RunStatus.RUNNING,
+            started_at=now - timedelta(minutes=10),
+        )
+        session.add_all([orphan, active])
+        session.flush()
+        session.add(
+            Task(
+                type=TaskType.DISCOVER,
+                target_ref_type="playlist",
+                target_ref_id=playlist_id,
+                payload_json={"playlist_id": playlist_id},
+                worker_class=WorkerClass.NETWORK,
+                status=TaskStatus.QUEUED,
+                max_attempts=5,
+                run_id=active.id,
+            )
+        )
+        session.commit()
+        orphan_id, active_id = orphan.id, active.id
+    service = SchedulerService(engine, session_factory, "UTC", clock=lambda: now)
+
+    assert service.recover_orphan_runs() == [orphan_id]
+
+    with session_factory() as session:
+        recovered = session.get(Run, orphan_id)
+        still_active = session.get(Run, active_id)
+        assert recovered is not None and recovered.status == RunStatus.FAILED
+        assert recovered.stats_json == {"recovered_orphan": True}
+        assert still_active is not None and still_active.status == RunStatus.RUNNING
+
+
+def test_reconcile_preserves_overdue_job_when_configuration_is_unchanged(
+    engine, session_factory
+) -> None:
+    playlist_id = _playlist(session_factory)
+    with session_factory() as session:
+        core_settings.set_override(session, "schedule.jitter_minutes", 0)
+    service = SchedulerService(engine, session_factory, "UTC")
+    service.start(paused=True)
+    overdue = datetime.now(UTC) - timedelta(hours=2)
+    job_id = playlist_job_id(playlist_id, "discover")
+    try:
+        service._scheduler.modify_job(job_id, next_run_time=overdue)  # noqa: SLF001
+        service.reconcile()
+        job = service._scheduler.get_job(job_id)  # noqa: SLF001
+        assert job is not None
+        assert job.next_run_time == overdue
+    finally:
+        service.shutdown()
+
+
+def test_misfire_coalesces_multiple_due_times_to_one_run(engine, session_factory) -> None:
+    playlist_id = _playlist(session_factory, discover_cron="* * * * *")
+    with session_factory() as session:
+        core_settings.set_override(session, "schedule.jitter_minutes", 0)
+        enqueue_discover_run(session, playlist_id)
+    service = SchedulerService(engine, session_factory, "UTC")
+    service.start(paused=True)
+    job_id = playlist_job_id(playlist_id, "discover")
+    try:
+        service._scheduler.modify_job(  # noqa: SLF001 - deterministic misfire injection
+            job_id,
+            next_run_time=datetime.now(UTC) - timedelta(minutes=3),
+        )
+        service.reconcile()
+        service._scheduler.resume()  # noqa: SLF001
+        deadline = time.monotonic() + 3
+        count = 0
+        while time.monotonic() < deadline:
+            with session_factory() as session:
+                count = len(
+                    list(session.scalars(select(Run).where(Run.trigger == RunTrigger.SCHEDULE)))
+                )
+            if count:
+                break
+            time.sleep(0.05)
+        assert count == 1
+    finally:
+        service.shutdown()

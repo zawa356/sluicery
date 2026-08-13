@@ -10,7 +10,7 @@ from sluicery.db.models import Run, RunStatus, RunTrigger, TaskStatus, TaskType,
 from sluicery.db.repositories.task import TaskRepository
 from sluicery.tasks.handlers.dummy import DUMMY_HANDLER_FACTORIES
 from sluicery.tasks.queue import TaskOutcome, TaskResult
-from sluicery.tasks.worker import Worker, WorkerConfig, make_worker_id
+from sluicery.tasks.worker import StaleTaskReaper, Worker, WorkerConfig, make_worker_id
 
 NOW = datetime(2026, 8, 12, 0, 0, tzinfo=UTC)
 
@@ -48,6 +48,34 @@ def _enqueue(session_factory, task_type: TaskType, **overrides) -> int:
         }
         values.update(overrides)
         return TaskRepository(session).create(**values).id
+
+
+def test_stale_terminal_discover_finishes_its_run(session_factory) -> None:
+    with session_factory() as session:
+        run = Run(trigger=RunTrigger.SCHEDULE, kind="discover", status=RunStatus.RUNNING)
+        session.add(run)
+        session.commit()
+        task_id = _enqueue(
+            session_factory,
+            TaskType.DISCOVER,
+            target_ref_type="playlist",
+            status=TaskStatus.RUNNING,
+            worker_id="gone",
+            started_at=NOW - timedelta(seconds=200),
+            heartbeat_at=NOW - timedelta(seconds=200),
+            max_attempts=1,
+            run_id=run.id,
+        )
+        run_id = run.id
+
+    reaper = StaleTaskReaper(session_factory, _config(), clock=lambda: NOW)
+
+    assert reaper.run_once() == [task_id]
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        assert run is not None and run.status == RunStatus.FAILED
+        assert run.stats_json is not None
+        assert run.stats_json["stale_recovered"] is True
 
 
 @pytest.mark.parametrize(
