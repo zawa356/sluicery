@@ -188,6 +188,21 @@ def set_override(session: Session, key: str, value: Any) -> None:
         raise UnknownSettingKeyError(key)
 
     casted = _cast(spec.type_, value)
+    if key in {"schedule.discover_cron", "schedule.download_cron"}:
+        from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
+
+        try:
+            CronTrigger.from_crontab(casted)
+        except ValueError as exc:
+            raise ValueError("cron式は5フィールドで正しく指定してください") from exc
+    elif key == "schedule.download_window":
+        # scheduler側と同じparserを設定保存の境界でも使う。local importにより
+        # scheduler -> OperationalSettings の通常importとの循環を避ける。
+        from sluicery.scheduler import parse_download_window
+
+        parse_download_window(casted)
+    elif key == "schedule.jitter_minutes" and casted < 0:
+        raise ValueError("schedule.jitter_minutesは0以上にしてください")
     encoded = json.dumps(casted, ensure_ascii=False)
     SettingRepository(session).set_override(key, encoded)
 

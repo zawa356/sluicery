@@ -52,19 +52,41 @@ def _playlist(
 def test_symmetric_cron_jitter_moves_in_both_directions(monkeypatch) -> None:
     timezone = ZoneInfo("Asia/Tokyo")
     now = datetime(2026, 8, 13, 0, 0, tzinfo=timezone)
-    trigger = SymmetricCronTrigger.from_expression(
+    monkeypatch.setattr("sluicery.scheduler.random.uniform", lambda _low, _high: -300)
+    early_trigger = SymmetricCronTrigger.from_expression(
+        "0 6 * * *",
+        timezone=timezone,
+        jitter_minutes=5,
+    )
+    monkeypatch.setattr("sluicery.scheduler.random.uniform", lambda _low, _high: 300)
+    late_trigger = SymmetricCronTrigger.from_expression(
         "0 6 * * *",
         timezone=timezone,
         jitter_minutes=5,
     )
 
-    monkeypatch.setattr("sluicery.scheduler.random.uniform", lambda _low, _high: -300)
-    early = trigger.get_next_fire_time(None, now)
-    monkeypatch.setattr("sluicery.scheduler.random.uniform", lambda _low, _high: 300)
-    late = trigger.get_next_fire_time(None, now)
+    early = early_trigger.get_next_fire_time(None, now)
+    late = late_trigger.get_next_fire_time(None, now)
 
     assert early == datetime(2026, 8, 13, 5, 55, tzinfo=timezone)
     assert late == datetime(2026, 8, 13, 6, 5, tzinfo=timezone)
+
+
+def test_negative_jitter_advances_to_the_next_cron_occurrence(monkeypatch) -> None:
+    timezone = ZoneInfo("Asia/Tokyo")
+    monkeypatch.setattr("sluicery.scheduler.random.uniform", lambda _low, _high: -300)
+    trigger = SymmetricCronTrigger.from_expression(
+        "0 */6 * * *",
+        timezone=timezone,
+        jitter_minutes=5,
+    )
+    now = datetime(2026, 8, 13, 0, 0, tzinfo=timezone)
+
+    first = trigger.get_next_fire_time(None, now)
+    assert first == datetime(2026, 8, 13, 5, 55, tzinfo=timezone)
+
+    second = trigger.get_next_fire_time(first, first)
+    assert second == datetime(2026, 8, 13, 11, 55, tzinfo=timezone)
 
 
 def test_scheduler_registers_independent_persistent_jobs_in_configured_timezone(
@@ -186,6 +208,24 @@ def test_scheduled_download_outside_window_records_skip_without_tasks(
         assert list(session.scalars(select(Task))) == []
 
 
+def test_paused_playlist_does_not_record_outside_window_skip(engine, session_factory) -> None:
+    playlist_id = _playlist(session_factory, paused=True)
+    with session_factory() as session:
+        core_settings.set_override(session, "schedule.download_window", "23:00-05:00")
+    service = SchedulerService(
+        engine,
+        session_factory,
+        "Asia/Tokyo",
+        clock=lambda: datetime(2026, 8, 14, 3, 0, tzinfo=ZoneInfo("UTC")),
+    )
+
+    service.execute_job(playlist_id, "download")
+
+    with session_factory() as session:
+        assert list(session.scalars(select(Run))) == []
+        assert list(session.scalars(select(Task))) == []
+
+
 def test_reconcile_removes_deleted_playlist_jobs_and_sets_misfire_policy(
     engine, session_factory
 ) -> None:
@@ -233,7 +273,21 @@ def test_reconcile_recovers_only_runs_without_active_tasks(engine, session_facto
             status=RunStatus.RUNNING,
             started_at=now - timedelta(minutes=10),
         )
-        session.add_all([orphan, active])
+        live_taskless_download = Run(
+            trigger=RunTrigger.MANUAL,
+            kind="download",
+            playlist_id=playlist_id,
+            status=RunStatus.RUNNING,
+            started_at=now - timedelta(minutes=10),
+        )
+        old_taskless_download = Run(
+            trigger=RunTrigger.MANUAL,
+            kind="download",
+            playlist_id=playlist_id,
+            status=RunStatus.RUNNING,
+            started_at=now - timedelta(hours=25),
+        )
+        session.add_all([orphan, active, live_taskless_download, old_taskless_download])
         session.flush()
         session.add(
             Task(
@@ -249,16 +303,52 @@ def test_reconcile_recovers_only_runs_without_active_tasks(engine, session_facto
         )
         session.commit()
         orphan_id, active_id = orphan.id, active.id
+        live_download_id = live_taskless_download.id
+        old_download_id = old_taskless_download.id
     service = SchedulerService(engine, session_factory, "UTC", clock=lambda: now)
 
-    assert service.recover_orphan_runs() == [orphan_id]
+    assert set(service.recover_orphan_runs()) == {orphan_id, old_download_id}
 
     with session_factory() as session:
         recovered = session.get(Run, orphan_id)
         still_active = session.get(Run, active_id)
+        live_download = session.get(Run, live_download_id)
+        old_download = session.get(Run, old_download_id)
         assert recovered is not None and recovered.status == RunStatus.FAILED
         assert recovered.stats_json == {"recovered_orphan": True}
         assert still_active is not None and still_active.status == RunStatus.RUNNING
+        assert live_download is not None and live_download.status == RunStatus.RUNNING
+        assert old_download is not None and old_download.status == RunStatus.FAILED
+
+
+def test_periodic_reconcile_does_not_recover_a_live_taskless_run(
+    engine, session_factory
+) -> None:
+    playlist_id = _playlist(session_factory)
+    now = datetime(2026, 8, 14, 0, 0, tzinfo=UTC)
+    service = SchedulerService(engine, session_factory, "UTC", clock=lambda: now)
+    service.start(paused=True)
+    try:
+        with session_factory() as session:
+            live = Run(
+                trigger=RunTrigger.MANUAL,
+                kind="download",
+                playlist_id=playlist_id,
+                status=RunStatus.RUNNING,
+                started_at=now - timedelta(minutes=10),
+            )
+            session.add(live)
+            session.commit()
+            live_id = live.id
+
+        service.reconcile()
+
+        with session_factory() as session:
+            unchanged = session.get(Run, live_id)
+            assert unchanged is not None
+            assert unchanged.status == RunStatus.RUNNING
+    finally:
+        service.shutdown()
 
 
 def test_reconcile_preserves_overdue_job_when_configuration_is_unchanged(

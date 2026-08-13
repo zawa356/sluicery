@@ -4,7 +4,7 @@
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
 最終更新: 2026-08-14
-対応コミット: Phase 12実装・実機検証完了（レビュー③前）
+対応コミット: Phase 12（スケジューラ）完了
 
 ## プロジェクト概要
 
@@ -18,26 +18,27 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - [x] 9. 単一管理者認証、CSRF、Web UI骨格、Playlist Cookie
 - [x] 10. ダッシュボード、Playlist / Profile / Storage CRUD、運用設定画面
 - [x] 11. Run履歴、HTMX進捗、マスク済みログ、Task / Runキャンセル
-- [ ] 12. app専用スケジューラ、分離cron、時間帯、ジッター、整合、misfire（実装・実機検証済み、レビュー③待ち）
-- [ ] 13–20. 整合性、後処理、yt-dlp更新、通知、バックアップ、フック、mount、仕上げ
+- [x] 12. app専用スケジューラ、分離cron、時間帯、ジッター、整合、misfire
+- [ ] 13–20. 整合性、フォーマット検査、yt-dlp更新、retention、設定移行、フック、mount、仕上げ
 
 ## 直近の作業
 
 - `app`だけでAPSchedulerを起動し、既存SQLiteのSQLAlchemyJobStoreへPlaylist IDと種別だけを永続化した。workerとホストcron / systemdにはschedulerを置かない
-- Playlistごとのdiscover / download独立cron、グローバルfallback、`TZ`解釈、±jitter、paused除外、ダッシュボードと詳細の次回予定を実装した
+- Playlistごとのdiscover / download独立cron、グローバルfallback、`TZ`解釈、永続する±jitter位相、paused除外、ダッシュボードと詳細の次回予定を実装した
 - `schedule.download_window`を開始含む・終了含まない時間帯として実装し、日跨ぎと開始終了同時刻（終日）を扱う。時間外の自動downloadはTaskを作らず`skipped` Runへ記録する
 - 同一Playlistの手動・自動discover / downloadをSQLiteの短い書込みtransactionで排他し、自動側の競合を`active_sync`理由の`skipped` Runへ残す
 - 起動時と60秒ごとにPlaylist設定と永続jobを整合する。設定不変のjobは置換せず期限超過時刻を保持し、`coalesce=true`で停止中の複数回分を復帰直後の1回へ畳む
-- 実機で独立設定反映、一時停止・削除job除去、時間帯外、手動競合、misfire、app専用起動、DB lock非発生を確認した。合成データと一時設定は削除済み
-- `RunStatus.skipped`マイグレーションのupgrade / downgrade / upgradeを実DBで確認した。scheduler focused test 11件、Ruff、mypyは成功済み
+- レビュー③で負方向jitterの重複候補、生存Runの誤回収、外部CLIとの回収競合、paused発火競合、不正schedule値のCLI保存、起動ログを修正した。重大な残存指摘はない
+- 2時間00分28秒の連続実機試験でdiscover / download各24回、全48回の安全なskip、scheduled Task 0、DB lock / scheduler error 0、SQLite整合性正常を確認した。合成データは削除済み
+- `RunStatus.skipped`マイグレーションのupgrade / downgrade / upgradeを実DBで確認した。全389テスト、Ruff、mypy 82ファイルが成功した
 
 ## 次にやること
 
-1. `docs/phase9-12_指示書.md` §18のレビュー③を実施し、`docs/reviews/phase12.md`へ記録する
-2. レビュー指摘をコード・テスト・文書へ反映し、`docs: レビュー③の指摘への対応`でコミットする
-3. 全pytest、Ruff、mypy、実サービス、DB head、履歴・秘密情報非混入を最終確認する
-4. Phase 12完了状態へ本ファイルを更新し、`checkpoint/step-12`タグを付ける（pushしない）
-5. 次フェーズは要件定義 §20のPhase 13（整合性チェック・relink・missing管理）から着手する
+1. Phase 13の指示書がある場合は最初に読み、要件定義 §11.3との差分と停止条件を確認する
+2. `artifact.relative_path`の実在確認と、同一Storage内の末尾`[source_id]`再走査をStorage種別共通の読み取り専用境界として設計する
+3. relink成功時はDBパスだけを更新し、再走査でも不在の場合だけ`artifact.missing_since`と`target.missing`を確定する。ファイルは削除・移動しない
+4. missingの既定放置、明示再取得、明示ignoreと、孤立ファイル / missing Targetの手動リンク画面・差分レポートを実装する
+5. integrity checkのcron登録はPhase 13実装後に既存app schedulerへ追加し、job引数へ秘密値やパスを保存しない
 
 ## 未解決・保留
 
@@ -48,8 +49,7 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 | 3 | README / deploymentのclone URLが`<repo>`のまま | public化時に差し替え |
 | 4 | ffmpegの`--download-sections` 1秒区間切り出しは`-11` | ffprobe通常検証は健全。D-036 |
 | 5 | ローカルコミットとタグのGitHub push | 公開前監査とユーザー承認前は禁止 |
-| 6 | `.local/docker-server.env`のSSH認証が拒否される | ローカルDockerで継続。最終実機確認までに要確認 |
-| 7 | Phase 12の数時間連続稼働 | 短時間の連続発火ではDB lockなし。長時間観測は継続課題 |
+| 6 | 外部検証VMへのSSH認証が拒否される | ローカルDockerで継続。次の外部実機確認までに要確認 |
 
 ## 重要な合意
 
@@ -80,6 +80,8 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 
 - SQLite WALでも書込み競合は起こり得る。scheduler、claim、heartbeat、進捗、状態更新のtransactionを短くする
 - scheduler起動時に設定不変の永続jobを置換すると、期限超過`next_run_time`が失われmisfireが発火しない
+- jitterは実発火時刻へ都度乱数を加えず、jobごとの位相として永続化する。負方向でも前回時刻をcron基準へ戻して次回を計算する
+- Taskなしdownload RunはStorage事前確認中または外部CLI実行中の可能性があるため、起動時も24時間未満は孤児回収しない
 - workerは運用設定を起動時に読むため、worker系設定変更後は該当workerの再起動が必要。scheduler系設定は60秒以内に反映される
 - download Runは投入完了時点で成功になる。メディア取得の成否はTarget / Taskを確認する
 - HTTP 403多発時は並列度を上げず停止する。Cookieを使う場合もPlaylist単位・少数で試す
