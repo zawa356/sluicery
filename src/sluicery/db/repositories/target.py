@@ -36,6 +36,7 @@ class TargetRepository(BaseRepository[Target]):
         increment_retry: bool = False,
         now: datetime | None = None,
         extra_values: dict[str, Any] | None = None,
+        commit: bool = True,
     ) -> bool:
         """遷移規則を持たない、所有権条件付き単一UPDATEのDBプリミティブ。"""
         values: dict[str, Any] = {
@@ -53,7 +54,8 @@ class TargetRepository(BaseRepository[Target]):
             .where(Target.id == target_id, Target.status.in_(expected))
             .values(**values)
         )
-        self.session.commit()
+        if commit:
+            self.session.commit()
         return bool(getattr(result, "rowcount", 0) or 0)
 
 
