@@ -15,6 +15,38 @@ class PlaylistRepository(BaseRepository[Playlist]):
         stmt = select(Playlist).where(Playlist.enabled.is_(True))
         return list(self.session.scalars(stmt))
 
+    def list_runnable(self) -> list[Playlist]:
+        stmt = (
+            select(Playlist)
+            .where(Playlist.enabled.is_(True), Playlist.paused.is_(False))
+            .order_by(Playlist.id)
+        )
+        return list(self.session.scalars(stmt))
+
+    def resolve_runnable(self, identifier: str) -> Playlist:
+        try:
+            playlist_id = int(identifier)
+        except ValueError:
+            playlist_id = None
+        if playlist_id is not None:
+            playlist = self.session.get(Playlist, playlist_id)
+            if playlist is not None and playlist.enabled and not playlist.paused:
+                return playlist
+        rows = list(
+            self.session.scalars(
+                select(Playlist).where(
+                    Playlist.name == identifier,
+                    Playlist.enabled.is_(True),
+                    Playlist.paused.is_(False),
+                )
+            )
+        )
+        if not rows:
+            raise LookupError(f"有効なPlaylistが見つかりません: {identifier}")
+        if len(rows) > 1:
+            raise ValueError("同名のPlaylistが複数あります。IDを指定してください")
+        return rows[0]
+
     def get_with_profiles(self, playlist_id: int) -> tuple[Playlist, list[PlaylistProfile]] | None:
         """Playlist と、それに紐づく PlaylistProfile 一覧を返す。
 

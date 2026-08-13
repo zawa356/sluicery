@@ -18,10 +18,9 @@ logs:
 shell:
 	$(COMPOSE) exec app /bin/bash
 
-# Phase 8 で全プレイリストの同期（discover → download）を実装する。
 sync:
-	@echo "ERROR: make sync は未実装です（Phase 8 で実装予定）"
-	@false
+	$(COMPOSE) exec --user "$$(id -u):$$(id -g)" app \
+		python3 -m sluicery.cli sync run --all
 
 # Phase 20 で DB + config + シークレットのバックアップを実装する。
 backup:
