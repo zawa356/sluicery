@@ -45,6 +45,9 @@ class SettingSpec:
 # 要件定義から拾える運用パラメータ。`defaults.video.*` / `defaults.music.*` は
 # Phase 4 のオプション合成で L3 として参照する。
 CODE_DEFAULTS: dict[str, SettingSpec] = {
+    "auth.session_max_age_sec": SettingSpec("auth.session_max_age_sec", int, 30 * 24 * 60 * 60),
+    "auth.max_login_attempts": SettingSpec("auth.max_login_attempts", int, 5),
+    "auth.lockout_sec": SettingSpec("auth.lockout_sec", int, 15 * 60),
     "staging.warn_pct": SettingSpec("staging.warn_pct", int, 80),
     "staging.stop_pct": SettingSpec("staging.stop_pct", int, 90),
     "log.retention_days": SettingSpec("log.retention_days", int, 30),
@@ -202,6 +205,18 @@ class OperationalSettings:
 
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    @property
+    def auth_session_max_age_sec(self) -> int:
+        return get(self._session, "auth.session_max_age_sec")
+
+    @property
+    def auth_max_login_attempts(self) -> int:
+        return get(self._session, "auth.max_login_attempts")
+
+    @property
+    def auth_lockout_sec(self) -> int:
+        return get(self._session, "auth.lockout_sec")
 
     @property
     def staging_warn_pct(self) -> int:

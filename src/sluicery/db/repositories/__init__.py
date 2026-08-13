@@ -6,6 +6,7 @@ Taskの所有権付き実行状態更新はアトミック性のため `TaskRepo
 """
 
 from sluicery.db.repositories.artifact import ArtifactRepository
+from sluicery.db.repositories.auth_session import AuthSessionRepository
 from sluicery.db.repositories.base import BaseRepository
 from sluicery.db.repositories.event_log import EventLogRepository
 from sluicery.db.repositories.item import ItemRepository
@@ -35,5 +36,6 @@ __all__ = [
     "TargetRepository",
     "TaskRepository",
     "UserRepository",
+    "AuthSessionRepository",
     "YtdlpReleaseRepository",
 ]

@@ -241,6 +241,25 @@ class User(Base, TimestampMixin):
     username: Mapped[str] = mapped_column(String(255))
     password_hash: Mapped[str] = mapped_column(String(255))
     last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AuthSession(Base):
+    """署名付き Cookie のサーバー側状態。生のセッション ID は保存しない。"""
+
+    __tablename__ = "auth_session"
+    __table_args__ = (
+        UniqueConstraint("token_hash"),
+        Index("ix_auth_session_expires_at", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_hash: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("user.id"))
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    flash_json: Mapped[list[dict[str, str]] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class Storage(Base, TimestampMixin):
