@@ -134,6 +134,12 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 | `make restore FILE=...` | バックアップから復元 | **未実装（Phase 20）** | — |
 | `make purge` | 削除対象を表示して確認した上でコンテナ・イメージ・volume を削除（bind mount 先の実体は削除しない） | 実装済み | `docker compose down --rmi local --volumes --remove-orphans` |
 
+Staging上で対応するTaskを持たないファイルは、削除せず一覧だけ確認できます。
+
+```bash
+docker compose exec app python3 -m sluicery.cli staging orphans
+```
+
 ### 暫定のレコード管理 CLI
 
 Web UI（要件定義 §20 の Phase 9 以降）が実装されるまで、以下の CLI で合成確認に必要な
@@ -169,12 +175,12 @@ docker compose exec app python3 -m sluicery.cli options preview \
 
 `storage test` は疎通・認証・一覧・書き込みを個別表示し、結果を DB に保存します。
 `storage space` は backend が空き容量取得に対応しない場合に「取得不可」と表示します。
-`storage push <storage> <local-path> <dest-rel>` は Phase 7 の pipeline 実装までの検証用で、
+`storage push <storage> <local-path> <dest-rel>` はStorage単体の検証用で、
 完成済みの単一ファイルを一時名で転送・検証後に最終化します。既定では同名を上書きしません。
 
 ### 暫定の Task 検証 CLI
 
-Phase 7 の実パイプラインが入るまで、`noop` / `sleep` / `fail` / `fail_unavailable` /
+Taskキュー単体の検証用に、`noop` / `sleep` / `fail` / `fail_unavailable` /
 `fail_blocked` / `spawn` のダミーTaskでキューを検証できます。本番で誤実行しないよう既定は無効です。
 検証環境でだけ有効化し、設定を読み直すためworkerを再起動してください。
 
