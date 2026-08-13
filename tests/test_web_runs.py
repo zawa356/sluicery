@@ -24,6 +24,7 @@ from sluicery.db.models import (
     TaskType,
     WorkerClass,
 )
+from sluicery.db.repositories.run import RunRepository
 from sluicery.web.app import create_app
 from sluicery.web.auth import ensure_initial_user
 
@@ -285,3 +286,65 @@ def test_run_log_is_db_anchored_data_dir_bounded_and_masked(
     rejected = client.get(f"/runs/{run_id}/log")
     assert rejected.status_code == 403
     assert "must-not-read" not in rejected.text
+
+
+def test_task_and_run_cancel_use_confirmation_and_repository_state(
+    base_env, session_factory
+) -> None:
+    with session_factory() as db:
+        run = _run(status=RunStatus.SUCCEEDED, kind="download")
+        db.add(run)
+        db.flush()
+        queued = Task(
+            type=TaskType.DOWNLOAD,
+            target_ref_type="phase6_test",
+            target_ref_id=1,
+            worker_class=WorkerClass.NETWORK,
+            status=TaskStatus.QUEUED,
+            max_attempts=5,
+            run_id=run.id,
+        )
+        running = Task(
+            type=TaskType.VERIFY,
+            target_ref_type="phase6_test",
+            target_ref_id=2,
+            worker_class=WorkerClass.COMPUTE,
+            status=TaskStatus.RUNNING,
+            worker_id="worker:test",
+            max_attempts=5,
+            run_id=run.id,
+        )
+        db.add_all([queued, running])
+        db.commit()
+        run_id, queued_id, running_id = run.id, queued.id, running.id
+    client = _client(base_env, session_factory)
+    detail = client.get(f"/runs/{run_id}")
+    assert "confirm(" in detail.text
+    assert "Runをキャンセル（2件）" in detail.text
+
+    task_response = client.post(
+        f"/tasks/{queued_id}/cancel",
+        data={"csrf_token": _csrf(detail)},
+        follow_redirects=False,
+    )
+    assert task_response.status_code == 303
+    with session_factory() as db:
+        queued = db.get(Task, queued_id)
+        assert queued is not None and queued.status == TaskStatus.CANCELLED
+
+    run_page = client.get(f"/runs/{run_id}")
+    run_response = client.post(
+        f"/runs/{run_id}/cancel",
+        data={"csrf_token": _csrf(run_page)},
+        follow_redirects=False,
+    )
+    assert run_response.status_code == 303
+    with session_factory() as db:
+        run = db.get(Run, run_id)
+        running = db.get(Task, running_id)
+        assert run is not None and run.status == RunStatus.CANCELLED
+        assert running is not None and running.status == TaskStatus.RUNNING
+        assert running.cancel_requested is True
+        assert RunRepository(db).finish(run_id, RunStatus.SUCCEEDED, {}) is False
+        db.refresh(run)
+        assert run.status == RunStatus.CANCELLED
