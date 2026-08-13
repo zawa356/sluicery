@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import threading
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
-from sluicery.db.models import TaskStatus, TaskType, WorkerClass
+from sluicery.db.models import Run, RunStatus, RunTrigger, TaskStatus, TaskType, WorkerClass
 from sluicery.db.repositories.task import TaskRepository
 from sluicery.tasks.handlers.dummy import DUMMY_HANDLER_FACTORIES
 from sluicery.tasks.queue import TaskOutcome, TaskResult
@@ -163,6 +164,56 @@ def test_worker_persists_handler_payload_update(session_factory) -> None:
         assert task.payload_json["work_id"] == "work"
         assert task.payload_json["file_path"] == "/tmp/a"
         assert task.payload_json["progress"]["status"] == "succeeded"
+
+
+def test_worker_aggregates_masked_external_logs_for_run(session_factory, env_data_dirs) -> None:
+    log_dir = env_data_dirs["DATA_DIR"] / "logs"
+    log_dir.mkdir()
+    source_log = log_dir / "runner.log"
+    source_log.write_text("password=worker-secret\nnormal line\n", encoding="utf-8")
+
+    class _LoggedHandler:
+        @property
+        def log_paths(self) -> tuple[Path, ...]:
+            return (source_log,)
+
+        def run(self, payload, on_progress) -> TaskResult:
+            return TaskResult(TaskOutcome.SUCCEEDED)
+
+        def cancel(self) -> None:
+            pass
+
+    with session_factory() as session:
+        run = Run(
+            trigger=RunTrigger.MANUAL,
+            kind="download",
+            status=RunStatus.SUCCEEDED,
+        )
+        session.add(run)
+        session.commit()
+        run_id = run.id
+    task_id = _enqueue(session_factory, TaskType.NOOP, run_id=run_id)
+    worker = Worker(
+        session_factory,
+        WorkerClass.NETWORK,
+        _config(),
+        worker_id="worker:test:log",
+        handler_factories={"noop": _LoggedHandler},
+        clock=lambda: NOW,
+    )
+
+    assert worker.run_once()
+
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        task = TaskRepository(session).get(task_id)
+        assert run is not None and run.log_path is not None
+        assert task is not None and task.log_excerpt is not None
+        aggregate = Path(run.log_path)
+    text = aggregate.read_text(encoding="utf-8")
+    assert "worker-secret" not in text
+    assert "password=********" in text
+    assert "normal line" in text
 
 
 class _BlockingHandler:

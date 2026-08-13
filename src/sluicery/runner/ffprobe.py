@@ -19,8 +19,18 @@ class ProbeResult:
 
 
 class FFprobeRunner(BaseRunner):
-    def __init__(self, executable: Path = Path("/usr/local/bin/ffprobe")) -> None:
-        super().__init__(executable, runner_name="FFprobeRunner", log_prefix="ffprobe")
+    def __init__(
+        self,
+        executable: Path = Path("/usr/local/bin/ffprobe"),
+        *,
+        log_dir: Path | None = None,
+    ) -> None:
+        super().__init__(
+            executable,
+            runner_name="FFprobeRunner",
+            log_prefix="ffprobe",
+            log_dir=log_dir,
+        )
 
     def probe(self, file_path: Path, *, timeout_sec: int) -> ProbeResult:
         stdout: list[str] = []

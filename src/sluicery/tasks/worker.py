@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import random
@@ -12,6 +13,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -19,8 +21,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from sluicery.core.settings import OperationalSettings
 from sluicery.core.target_state import sync_target_after_task
-from sluicery.db.models import Task, TaskStatus, WorkerClass
+from sluicery.db.models import Run, Task, TaskStatus, WorkerClass
 from sluicery.db.repositories.task import TaskRepository
+from sluicery.runner.base import mask_log_text
 from sluicery.tasks.handlers import DUMMY_HANDLER_FACTORIES, TaskHandler
 from sluicery.tasks.progress import ProgressWriter
 from sluicery.tasks.queue import TaskOutcome, TaskResult, retry_delay_sec
@@ -247,7 +250,51 @@ class Worker:
             {"status": result.outcome.value, "percent": final_percent},
             final=True,
         )
+        self._persist_handler_logs(task, handler)
         self._apply_result(task, result)
+
+    def _persist_handler_logs(self, task: Task, handler: TaskHandler) -> None:
+        if task.run_id is None:
+            return
+        paths = getattr(handler, "log_paths", ())
+        if not isinstance(paths, tuple) or not paths:
+            return
+        chunks: list[str] = []
+        log_parent: Path | None = None
+        for raw_path in paths:
+            if not isinstance(raw_path, Path):
+                continue
+            try:
+                path = raw_path.resolve(strict=True)
+                if not path.is_file():
+                    continue
+                content = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                logger.warning("Task log could not be read", extra={"task_id": task.id})
+                continue
+            log_parent = path.parent if log_parent is None else log_parent
+            chunks.append(mask_log_text(content))
+        if not chunks or log_parent is None:
+            return
+        aggregate = log_parent / f"run-{task.run_id}.log"
+        block = f"\n=== Task {task.id} ({task.type.value}) ===\n" + "\n".join(chunks)
+        try:
+            with aggregate.open("a", encoding="utf-8") as output:
+                fcntl.flock(output.fileno(), fcntl.LOCK_EX)
+                output.write(block)
+                output.flush()
+                os.fsync(output.fileno())
+                fcntl.flock(output.fileno(), fcntl.LOCK_UN)
+            with self._session_factory() as session:
+                stored_task = session.get(Task, task.id)
+                run = session.get(Run, task.run_id)
+                if stored_task is not None:
+                    stored_task.log_excerpt = mask_log_text(block[-4000:])
+                if run is not None:
+                    run.log_path = str(aggregate.resolve())
+                session.commit()
+        except OSError:
+            logger.warning("Run log could not be persisted", extra={"task_id": task.id})
 
     def _heartbeat_loop(
         self,
@@ -340,9 +387,7 @@ class Worker:
             if task is not None and TaskRepository(session).mark_unavailable(
                 task_id, self.worker_id, error_message=message, now=self._clock()
             ):
-                sync_target_after_task(
-                    session, task, TaskStatus.UNAVAILABLE, error=message
-                )
+                sync_target_after_task(session, task, TaskStatus.UNAVAILABLE, error=message)
 
     def _write_progress(self, task_id: int, progress: dict[str, Any]) -> None:
         with self._session_factory() as session:

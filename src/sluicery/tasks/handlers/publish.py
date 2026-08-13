@@ -39,12 +39,19 @@ class PublishHandler:
         self._staging_dir = staging_dir
         self._adapter_factory = adapter_factory
         self._adapter: StorageAdapter | None = None
+        self._log_paths: list[Path] = []
+        self._observed_runner: object | None = None
 
     def cancel(self) -> None:
         adapter = self._adapter
         runner = getattr(adapter, "_runner", None)
         if runner is not None and hasattr(runner, "cancel"):
             runner.cancel()
+
+    @property
+    def log_paths(self) -> tuple[Path, ...]:
+        current = getattr(self._observed_runner, "log_paths", ())
+        return tuple(dict.fromkeys([*self._log_paths, *current]))
 
     def run(self, payload: dict, on_progress: ProgressCallback) -> TaskResult:
         target_id = payload.get("target_id")
@@ -68,6 +75,7 @@ class PublishHandler:
             ops = OperationalSettings(session)
             adapter = self._adapter_factory(storage, ops)
             self._adapter = adapter
+            self._observed_runner = getattr(adapter, "_runner", None)
             warn_bytes = ops.storage_free_space_warn_bytes
             stop_bytes = ops.storage_free_space_stop_bytes
             try:
@@ -126,6 +134,8 @@ class PublishHandler:
         except StorageOperationError as exc:
             return self._failure(target_id, exc.classification, str(exc))
         finally:
+            runner = getattr(adapter, "_runner", None)
+            self._log_paths.extend(getattr(runner, "log_paths", ()))
             self._adapter = None
         if not result.success:
             return self._failure(target_id, result.classification, result.message)

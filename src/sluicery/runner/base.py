@@ -55,6 +55,15 @@ _SENSITIVE_QUERY_FRAGMENTS = (
     "user",
 )
 _RCLONE_ENV_NAME = re.compile(r"RCLONE_CONFIG_[A-Z0-9_]+")
+_URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
+_SENSITIVE_ASSIGNMENT = re.compile(
+    r"(?i)\b(password|passwd|passphrase|token|secret|api[_-]?key|authorization|cookie)\b"
+    r"(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
+_SENSITIVE_FLAG_VALUE = re.compile(
+    r"(?i)(--(?:password|video-password|cookies|cookies-from-browser|proxy|add-headers?)"
+    r"(?:=|\s+))[^\s]+"
+)
 
 
 def _mask_url_parameters(value: str) -> str:
@@ -136,6 +145,16 @@ def mask_output_text(
     if mask_rclone_env_names:
         masked = _RCLONE_ENV_NAME.sub("********", masked)
     return masked
+
+
+def mask_log_text(text: str) -> str:
+    """保存済みログをUIへ出す直前にも適用する防御的な二次マスク。"""
+    masked = _RCLONE_ENV_NAME.sub("********", text)
+    masked = _URL_IN_TEXT.sub(lambda match: _mask_url(match.group(0)), masked)
+    masked = _SENSITIVE_ASSIGNMENT.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}********", masked
+    )
+    return _SENSITIVE_FLAG_VALUE.sub(lambda match: f"{match.group(1)}********", masked)
 
 
 @dataclass(frozen=True)
@@ -230,6 +249,11 @@ class BaseRunner:
         self._lock = threading.Lock()
         self._proc: subprocess.Popen[str] | None = None
         self._cancel_requested = False
+        self._log_paths: list[Path] = []
+
+    @property
+    def log_paths(self) -> tuple[Path, ...]:
+        return tuple(self._log_paths)
 
     def cancel(self) -> None:
         with self._lock:
@@ -257,6 +281,7 @@ class BaseRunner:
         full_args = [str(self._executable), *args]
         self._log_dir.mkdir(parents=True, exist_ok=True)
         log_path = self._log_dir / f"{self._log_prefix}-{uuid4().hex}.log"
+        self._log_paths.append(log_path)
         start = time.monotonic()
         if stdin_text is not None:
             stdin = subprocess.PIPE
@@ -377,5 +402,6 @@ __all__ = [
     "ProcessRunResult",
     "TimeoutPolicy",
     "mask_command_line",
+    "mask_log_text",
     "mask_output_text",
 ]

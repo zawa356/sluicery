@@ -11,6 +11,8 @@ from sluicery.core.settings import OperationalSettings
 from sluicery.downloader.version import current_ytdlp_bin, ytdlp_root
 from sluicery.downloader.ytdlp import YtdlpRunner
 from sluicery.runner.ffprobe import FFprobeRunner
+from sluicery.storage import create_storage_adapter
+from sluicery.storage.rclone import RcloneRunner
 from sluicery.tasks.handlers.discover import DiscoverHandler
 from sluicery.tasks.handlers.download import DownloadHandler
 from sluicery.tasks.handlers.dummy import TaskHandler
@@ -54,13 +56,18 @@ def build_pipeline_handler_factories(
         ),
         "verify": lambda: VerifyHandler(
             session_factory,
-            runner=FFprobeRunner(),
+            runner=FFprobeRunner(log_dir=log_dir),
             timeout_sec=verify_timeout,
         ),
         "postprocess": lambda: PostprocessHandler(session_factory),
         "publish": lambda: PublishHandler(
             session_factory,
             staging_dir=staging_dir,
+            adapter_factory=lambda storage, ops: create_storage_adapter(
+                storage,
+                ops,
+                rclone_runner=RcloneRunner(log_dir=log_dir),
+            ),
         ),
         "index": lambda: IndexHandler(
             session_factory,
