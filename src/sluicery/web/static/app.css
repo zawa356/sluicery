@@ -63,3 +63,6 @@ th { color: var(--muted); font-size: .86rem; }
 .truncate { max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .danger-zone { border-color: #713c42; }
 button:disabled { opacity: .45; cursor: not-allowed; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+pre { overflow-x: auto; padding: .8rem; border: 1px solid var(--border); background: #0e1218; border-radius: .35rem; white-space: pre-wrap; }
+code { overflow-wrap: anywhere; }
