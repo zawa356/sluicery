@@ -18,7 +18,8 @@ from uuid import uuid4
 from sqlalchemy.orm import Session, sessionmaker
 
 from sluicery.core.settings import OperationalSettings
-from sluicery.db.models import Task, WorkerClass
+from sluicery.core.target_state import sync_target_after_task
+from sluicery.db.models import Task, TaskStatus, WorkerClass
 from sluicery.db.repositories.task import TaskRepository
 from sluicery.tasks.handlers import DUMMY_HANDLER_FACTORIES, TaskHandler
 from sluicery.tasks.progress import ProgressWriter
@@ -275,27 +276,32 @@ class Worker:
     def _apply_result(self, task: Task, result: TaskResult) -> None:
         with self._session_factory() as session:
             repo = TaskRepository(session)
+            final_status: TaskStatus | None = None
             if result.payload_update:
                 repo.write_result_payload(task.id, self.worker_id, result.payload_update)
             if result.outcome == TaskOutcome.SUCCEEDED:
                 repo.mark_succeeded(task.id, self.worker_id, now=self._clock())
             elif result.outcome == TaskOutcome.CANCELLED:
-                repo.mark_cancelled(task.id, self.worker_id, now=self._clock())
+                if repo.mark_cancelled(task.id, self.worker_id, now=self._clock()):
+                    final_status = TaskStatus.CANCELLED
             elif result.outcome == TaskOutcome.UNAVAILABLE:
-                repo.mark_unavailable(
+                if repo.mark_unavailable(
                     task.id,
                     self.worker_id,
                     error_message=result.message,
                     now=self._clock(),
-                )
+                ):
+                    final_status = TaskStatus.UNAVAILABLE
             elif result.outcome == TaskOutcome.BLOCKED:
-                repo.mark_blocked(
+                if repo.mark_blocked(
                     task.id,
                     self.worker_id,
                     retry_after_sec=self.config.blocked_retry_sec,
                     reason=result.message,
                     now=self._clock(),
-                )
+                ):
+                    settled = session.get(Task, task.id)
+                    final_status = settled.status if settled is not None else None
             else:
                 attempt = task.attempts + 1
                 delay = retry_delay_sec(
@@ -304,19 +310,31 @@ class Worker:
                     max_sec=self.config.retry_max_sec,
                     random_fraction=self._random_fraction(),
                 )
-                repo.mark_failed_for_retry(
+                final_status = repo.mark_failed_for_retry(
                     task.id,
                     self.worker_id,
                     retry_delay_sec=delay,
                     error_message=result.message,
                     now=self._clock(),
                 )
+            if final_status is not None:
+                sync_target_after_task(
+                    session,
+                    task,
+                    final_status,
+                    error=result.message,
+                    failed_attempt=result.outcome == TaskOutcome.FAILED,
+                )
 
     def _finish_unavailable(self, task_id: int, message: str) -> None:
         with self._session_factory() as session:
-            TaskRepository(session).mark_unavailable(
+            task = session.get(Task, task_id)
+            if task is not None and TaskRepository(session).mark_unavailable(
                 task_id, self.worker_id, error_message=message, now=self._clock()
-            )
+            ):
+                sync_target_after_task(
+                    session, task, TaskStatus.UNAVAILABLE, error=message
+                )
 
     def _write_progress(self, task_id: int, progress: dict[str, Any]) -> None:
         with self._session_factory() as session:
@@ -349,6 +367,15 @@ class StaleTaskReaper:
                 stale_before=stale_before,
                 now=now,
             )
+            for task_id in recovered:
+                task = session.get(Task, task_id)
+                if task is not None and task.status == TaskStatus.UNAVAILABLE:
+                    sync_target_after_task(
+                        session,
+                        task,
+                        TaskStatus.UNAVAILABLE,
+                        error=task.error_message or "stale Taskが再試行上限に達しました",
+                    )
         if recovered:
             logger.warning("Recovered stale tasks", extra={"task_ids": recovered})
         return recovered
