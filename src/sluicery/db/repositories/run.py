@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy import select, update
 
-from sluicery.db.models import Run, RunStatus
+from sluicery.db.models import Run, RunStatus, RunTrigger
 from sluicery.db.repositories.base import BaseRepository
 
 
@@ -15,6 +15,22 @@ class RunRepository(BaseRepository[Run]):
     def list_recent(self, limit: int = 20) -> list[Run]:
         stmt = select(Run).order_by(Run.started_at.desc()).limit(limit)
         return list(self.session.scalars(stmt))
+
+    def start(
+        self,
+        *,
+        trigger: RunTrigger,
+        kind: str,
+        playlist_id: int,
+        commit: bool = True,
+    ) -> Run:
+        run = Run(trigger=trigger, kind=kind, playlist_id=playlist_id, status=RunStatus.RUNNING)
+        self.session.add(run)
+        self.session.flush()
+        if commit:
+            self.session.commit()
+            self.session.refresh(run)
+        return run
 
     def finish(
         self,
