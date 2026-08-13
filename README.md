@@ -77,7 +77,7 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 
 **容量とリソース**（検証環境での実測値。詳細は [docs/deployment.md](docs/deployment.md) §7）
 
-- イメージサイズ：591MB
+- イメージサイズ：796MB（Deno 2.9.5 同梱後の開発機実測）
 - ビルド時間：約3分（初回、ビルドキャッシュ無しの状態から）
 - メモリ使用量：起動直後で `app`/`worker-network`/`worker-compute` 合計 約190MiB
 - Staging 領域の必要量 = 取得する最大ファイルサイズ × 並列度 + 余裕。ここを見誤ると同期が詰まります
@@ -85,6 +85,7 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 **ネットワーク**
 
 - 外向き HTTPS：PyPI（yt-dlp の導入・更新）、取得対象サイトへの到達性が必要
+- YouTube の JavaScript challenge は、イメージに同梱した Deno を yt-dlp が自動検出して処理します
 - 時刻同期：cron 式の解釈とタイムゾーンの整合のため
 
 **事前に用意するもの**
