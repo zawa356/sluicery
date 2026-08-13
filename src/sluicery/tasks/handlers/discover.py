@@ -63,7 +63,11 @@ class DiscoverHandler:
         if result.classification != Classification.OK:
             message = result.stderr_tail[-4000:] or result.classification.value
             if result.classification == Classification.BLOCKED:
-                return TaskResult(TaskOutcome.BLOCKED, message)
+                return TaskResult(
+                    TaskOutcome.BLOCKED,
+                    message,
+                    reason_code=result.reason_code,
+                )
             if result.classification == Classification.UNAVAILABLE:
                 return self._unavailable(run_id, message)
             return self._failed(run_id, message)

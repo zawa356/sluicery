@@ -36,6 +36,7 @@ def _config() -> WorkerConfig:
         retry_max_sec=10,
         max_attempts=5,
         blocked_retry_sec=30,
+        blocked_retry_403_sec=3600,
         progress_write_interval_sec=2,
         progress_write_percent_step=5,
         shutdown_grace_sec=1,

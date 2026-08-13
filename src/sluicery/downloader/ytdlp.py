@@ -17,6 +17,7 @@ from sluicery.runner.base import BaseRunner, TimeoutPolicy, mask_command_line
 class RunResult:
     returncode: int
     classification: Classification
+    reason_code: str = "unknown_error"
     stdout_lines: list[str] = field(default_factory=list)
     progress_events: list[ProgressEvent] = field(default_factory=list)
     stderr_tail: str = ""
@@ -83,12 +84,11 @@ class YtdlpRunner(BaseRunner):
             inherit_stdin=True,
             sensitive_values=sensitive_values,
         )
-        classification = classify(
-            process_result.returncode, process_result.stderr_text
-        ).classification
+        classification_result = classify(process_result.returncode, process_result.stderr_text)
         return RunResult(
             returncode=process_result.returncode,
-            classification=classification,
+            classification=classification_result.classification,
+            reason_code=classification_result.reason_code,
             stdout_lines=stdout_lines,
             progress_events=progress_events,
             stderr_tail=process_result.stderr_tail,

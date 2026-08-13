@@ -95,7 +95,12 @@ class DownloadHandler:
                 result.stdout_lines,
                 result.result_metadata,
             )
-        return self._failure(target_id, result.classification, result.stderr_tail)
+        return self._failure(
+            target_id,
+            result.classification,
+            result.stderr_tail,
+            reason_code=result.reason_code,
+        )
 
     def _success(
         self,
@@ -139,7 +144,14 @@ class DownloadHandler:
             },
         )
 
-    def _failure(self, target_id: int, classification: Classification, message: str) -> TaskResult:
+    def _failure(
+        self,
+        target_id: int,
+        classification: Classification,
+        message: str,
+        *,
+        reason_code: str | None = None,
+    ) -> TaskResult:
         mapping = {
             Classification.FAILED: (TaskOutcome.FAILED, TargetStatus.FAILED, True),
             Classification.UNAVAILABLE: (
@@ -160,7 +172,7 @@ class DownloadHandler:
                 blocked_reason=error if target_status == TargetStatus.BLOCKED else None,
                 increment_retry=increment_retry,
             )
-        return TaskResult(outcome, error)
+        return TaskResult(outcome, error, reason_code=reason_code)
 
 
 def _load_target_graph(

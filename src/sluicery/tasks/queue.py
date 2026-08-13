@@ -21,6 +21,7 @@ class TaskResult:
     outcome: TaskOutcome
     message: str | None = None
     payload_update: dict[str, Any] | None = None
+    reason_code: str | None = None
 
 
 def retry_delay_sec(
