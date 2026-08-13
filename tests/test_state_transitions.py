@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from sluicery.core.target_state import InvalidStateTransition, transition_item, transition_target
+from sluicery.core.target_state import (
+    InvalidStateTransition,
+    advance_target,
+    transition_item,
+    transition_target,
+)
 from sluicery.db.models import (
     Item,
     ItemMembership,
@@ -92,3 +97,20 @@ def test_item_membership_only_toggles_between_active_and_delisted(db_session):
 
     with pytest.raises(InvalidStateTransition, match="active -> active"):
         transition_item(db_session, item.id, ItemMembership.ACTIVE)
+
+
+@pytest.mark.parametrize("start", [TargetStatus.FAILED, TargetStatus.BLOCKED])
+def test_advance_target_resumes_through_every_normal_state(db_session, start):
+    _, target = _item_and_target(db_session, status=start)
+
+    advance_target(db_session, target.id, TargetStatus.PROCESSING)
+
+    db_session.refresh(target)
+    assert target.status == TargetStatus.PROCESSING
+
+
+def test_advance_target_rejects_backward_execution_stage(db_session):
+    _, target = _item_and_target(db_session, status=TargetStatus.PROCESSING)
+
+    with pytest.raises(InvalidStateTransition, match="processing -> downloading"):
+        advance_target(db_session, target.id, TargetStatus.DOWNLOADING)

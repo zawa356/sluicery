@@ -9,8 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from sluicery.core.settings import OperationalSettings
+from sluicery.core.target_state import advance_target, transition_target
 from sluicery.db.models import PlaylistProfile, Storage, Target, TargetStatus
-from sluicery.db.repositories.target import TargetRepository
 from sluicery.storage import create_storage_adapter
 from sluicery.storage.base import (
     StorageAdapter,
@@ -70,16 +70,9 @@ class PublishHandler:
             self._adapter = adapter
             warn_bytes = ops.storage_free_space_warn_bytes
             stop_bytes = ops.storage_free_space_stop_bytes
-            if not TargetRepository(session).compare_and_set_status(
-                target_id,
-                {
-                    TargetStatus.DOWNLOADING,
-                    TargetStatus.PROCESSING,
-                    TargetStatus.FAILED,
-                    TargetStatus.BLOCKED,
-                },
-                TargetStatus.PROCESSING,
-            ):
+            try:
+                advance_target(session, target_id, TargetStatus.PROCESSING)
+            except (LookupError, ValueError):
                 return TaskResult(TaskOutcome.FAILED, "Targetをprocessingへ遷移できません")
 
         raw_path = previous.get("file_path")
@@ -168,14 +161,9 @@ class PublishHandler:
         status = TargetStatus.BLOCKED if blocked else TargetStatus.FAILED
         error = message[-4000:]
         with self._session_factory() as session:
-            TargetRepository(session).compare_and_set_status(
+            transition_target(
+                session,
                 target_id,
-                {
-                    TargetStatus.DOWNLOADING,
-                    TargetStatus.PROCESSING,
-                    TargetStatus.FAILED,
-                    TargetStatus.BLOCKED,
-                },
                 status,
                 error=error,
                 blocked_reason=error if blocked else None,

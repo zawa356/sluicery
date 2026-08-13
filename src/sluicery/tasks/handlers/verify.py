@@ -8,8 +8,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from sluicery.core.target_state import advance_target, transition_target
 from sluicery.db.models import TargetStatus
-from sluicery.db.repositories.target import TargetRepository
 from sluicery.runner.ffprobe import FFprobeRunner
 from sluicery.tasks.handlers.dummy import ProgressCallback
 from sluicery.tasks.pipeline import dependency_payload, execution_task_id
@@ -37,11 +37,10 @@ class VerifyHandler:
             return TaskResult(TaskOutcome.FAILED, "verify payloadが不正です")
         with self._session_factory() as session:
             previous = dependency_payload(session, execution_task_id(payload))
-            TargetRepository(session).compare_and_set_status(
-                target_id,
-                {TargetStatus.DOWNLOADING, TargetStatus.PROCESSING, TargetStatus.FAILED},
-                TargetStatus.PROCESSING,
-            )
+            try:
+                advance_target(session, target_id, TargetStatus.PROCESSING)
+            except (LookupError, ValueError):
+                return TaskResult(TaskOutcome.FAILED, "Targetをprocessingへ遷移できません")
         raw_path = previous.get("file_path")
         if not isinstance(raw_path, str):
             return self._failed(target_id, "download結果にfile_pathがありません")
@@ -80,9 +79,9 @@ class VerifyHandler:
     def _failed(self, target_id: int, message: str) -> TaskResult:
         error = message[-4000:]
         with self._session_factory() as session:
-            TargetRepository(session).compare_and_set_status(
+            transition_target(
+                session,
                 target_id,
-                {TargetStatus.DOWNLOADING, TargetStatus.PROCESSING, TargetStatus.FAILED},
                 TargetStatus.FAILED,
                 error=error,
                 increment_retry=True,

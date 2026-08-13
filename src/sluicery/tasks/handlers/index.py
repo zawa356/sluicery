@@ -7,9 +7,9 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from sluicery.db.models import ArtifactRole, TargetStatus
+from sluicery.core.target_state import advance_target
+from sluicery.db.models import ArtifactRole, Target, TargetStatus
 from sluicery.db.repositories.artifact import ArtifactRepository
-from sluicery.db.repositories.target import TargetRepository
 from sluicery.hooks import EventLogHook, Hook, emit_safely
 from sluicery.tasks.handlers.dummy import ProgressCallback
 from sluicery.tasks.pipeline import dependency_payload, execution_task_id
@@ -66,14 +66,14 @@ class IndexHandler:
                 produced_by_task_id=task_id,
                 verified_at=verified_at,
             )
-            changed = TargetRepository(session).compare_and_set_status(
-                target_id,
-                {TargetStatus.PROCESSING, TargetStatus.DOWNLOADED},
-                TargetStatus.DOWNLOADED,
-                extra_values={"downloaded_at": datetime.now(UTC)},
-            )
-            if not changed:
+            try:
+                advance_target(session, target_id, TargetStatus.DOWNLOADED)
+            except (LookupError, ValueError):
                 return TaskResult(TaskOutcome.FAILED, "Targetをdownloadedへ遷移できません")
+            target = session.get(Target, target_id)
+            if target is not None and target.downloaded_at is None:
+                target.downloaded_at = datetime.now(UTC)
+                session.commit()
 
         staging_deleted = False
         source = Path(raw_source)

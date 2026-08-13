@@ -8,8 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from sluicery.core.options import build_download_args
+from sluicery.core.target_state import advance_target, transition_target
 from sluicery.db.models import Item, Playlist, PlaylistProfile, Profile, Target, TargetStatus
-from sluicery.db.repositories.target import TargetRepository
 from sluicery.downloader.errors import Classification
 from sluicery.downloader.progress import ProgressEvent
 from sluicery.downloader.ytdlp import TimeoutPolicy, YtdlpRunner
@@ -45,16 +45,9 @@ class DownloadHandler:
             if graph is None:
                 return TaskResult(TaskOutcome.UNAVAILABLE, f"Target {target_id} が見つかりません")
             target, item, playlist_profile, profile, playlist = graph
-            if not TargetRepository(session).compare_and_set_status(
-                target_id,
-                {
-                    TargetStatus.PENDING,
-                    TargetStatus.QUEUED,
-                    TargetStatus.FAILED,
-                    TargetStatus.DOWNLOADING,
-                },
-                TargetStatus.DOWNLOADING,
-            ):
+            try:
+                advance_target(session, target_id, TargetStatus.DOWNLOADING)
+            except (LookupError, ValueError):
                 return TaskResult(TaskOutcome.FAILED, "Targetをdownloadingへ遷移できません")
             built = build_download_args(
                 target,
@@ -159,15 +152,9 @@ class DownloadHandler:
         outcome, target_status, increment_retry = mapping[classification]
         error = message[-4000:] if message else classification.value
         with self._session_factory() as session:
-            TargetRepository(session).compare_and_set_status(
+            transition_target(
+                session,
                 target_id,
-                {
-                    TargetStatus.PENDING,
-                    TargetStatus.QUEUED,
-                    TargetStatus.DOWNLOADING,
-                    TargetStatus.FAILED,
-                    TargetStatus.BLOCKED,
-                },
                 target_status,
                 error=error,
                 blocked_reason=error if target_status == TargetStatus.BLOCKED else None,

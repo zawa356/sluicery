@@ -8,8 +8,12 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from sluicery.core.target_state import (
+    InvalidStateTransition,
+    StateTransitionConflict,
+    transition_target,
+)
 from sluicery.db.models import TargetStatus, Task, TaskStatus, TaskType, WorkerClass
-from sluicery.db.repositories.target import TargetRepository
 
 
 @dataclass(frozen=True)
@@ -78,13 +82,9 @@ def enqueue_target_pipeline(
     max_attempts: int = 5,
 ) -> PipelineTasks | None:
     """pending Target の queued 遷移と5 Task生成を同じtransactionで確定する。"""
-    if not TargetRepository(session).compare_and_set_status(
-        target_id,
-        {TargetStatus.PENDING},
-        TargetStatus.QUEUED,
-        commit=False,
-    ):
-        session.rollback()
+    try:
+        transition_target(session, target_id, TargetStatus.QUEUED, commit=False)
+    except (InvalidStateTransition, StateTransitionConflict):
         return None
     try:
         return enqueue_pipeline(
