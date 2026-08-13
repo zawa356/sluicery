@@ -7,13 +7,13 @@ import math
 import shlex
 import shutil
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete, func, select
@@ -345,17 +345,15 @@ def create_app(
     @app.get("/playlists")
     def playlists(request: Request) -> Response:
         with session_factory() as db:
-            rows = []
-            for playlist in db.scalars(select(Playlist).order_by(Playlist.id)):
-                item_count = (
-                    db.scalar(
-                        select(func.count())
-                        .select_from(Item)
-                        .where(Item.playlist_id == playlist.id)
-                    )
-                    or 0
+            rows = [
+                {"playlist": playlist, "item_count": item_count}
+                for playlist, item_count in db.execute(
+                    select(Playlist, func.count(Item.id))
+                    .outerjoin(Item, Item.playlist_id == Playlist.id)
+                    .group_by(Playlist.id)
+                    .order_by(Playlist.id)
                 )
-                rows.append({"playlist": playlist, "item_count": item_count})
+            ]
         return templates.TemplateResponse(
             request,
             "playlists/list.html",
@@ -669,17 +667,15 @@ def create_app(
     @app.get("/profiles")
     def profiles(request: Request) -> Response:
         with session_factory() as db:
-            rows = []
-            for profile in db.scalars(select(Profile).order_by(Profile.id)):
-                refs = (
-                    db.scalar(
-                        select(func.count())
-                        .select_from(PlaylistProfile)
-                        .where(PlaylistProfile.profile_id == profile.id)
-                    )
-                    or 0
+            rows = [
+                {"profile": profile, "refs": refs}
+                for profile, refs in db.execute(
+                    select(Profile, func.count(PlaylistProfile.id))
+                    .outerjoin(PlaylistProfile, PlaylistProfile.profile_id == Profile.id)
+                    .group_by(Profile.id)
+                    .order_by(Profile.id)
                 )
-                rows.append({"profile": profile, "refs": refs})
+            ]
         return templates.TemplateResponse(
             request,
             "profiles/list.html",
@@ -970,8 +966,8 @@ def create_app(
             domain = str(form.get("domain", "")).strip()
             if protocol != "smb":
                 raise ValueError("検証済みのremote protocolはSMBだけです")
-            if not host or not share or not user:
-                raise ValueError("remote Storageにはhost / share / userが必要です")
+            if not host or not share:
+                raise ValueError("remote Storageにはhost / shareが必要です")
             if "/" in share or "\\" in share or share in {".", ".."}:
                 raise ValueError("shareにパス区切りは使用できません")
             try:
@@ -990,13 +986,23 @@ def create_app(
                 "path": remote_path,
                 "port": port,
             }
+            existing_credentials = (
+                dict(current.credentials_encrypted)
+                if current is not None and isinstance(current.credentials_encrypted, dict)
+                else None
+            )
             if password:
+                if not user:
+                    raise ValueError("クレデンシャル変更にはuserが必要です")
                 credentials = {"user": user, "password": password, "domain": domain}
-            elif current is None or not isinstance(current.credentials_encrypted, dict):
+            elif existing_credentials is None:
                 raise ValueError("新規remote Storageにはpasswordが必要です")
+            elif user or domain:
+                raise ValueError(
+                    "クレデンシャルを変更する場合はuserとpasswordを両方入力してください"
+                )
             else:
-                credentials = dict(current.credentials_encrypted)
-                credentials.update({"user": user, "domain": domain})
+                credentials = existing_credentials
             values["credentials_encrypted"] = credentials
         return values, credentials
 
@@ -1009,11 +1015,7 @@ def create_app(
         status_code: int = 200,
     ) -> Response:
         config = storage.config_json if storage and isinstance(storage.config_json, dict) else {}
-        credentials = (
-            storage.credentials_encrypted
-            if storage and isinstance(storage.credentials_encrypted, dict)
-            else {}
-        )
+        credentials_configured = bool(storage and storage.credentials_encrypted is not None)
         return templates.TemplateResponse(
             request,
             "storages/form.html",
@@ -1023,9 +1025,7 @@ def create_app(
                 storage=storage,
                 values=values or {},
                 config=config,
-                credential_user=credentials.get("user", ""),
-                credential_domain=credentials.get("domain", ""),
-                credentials_configured=bool(credentials),
+                credentials_configured=credentials_configured,
                 error=error,
             ),
             status_code=status_code,
@@ -1041,7 +1041,11 @@ def create_app(
         try:
             values, _credentials = storage_form_values(form)
         except ValueError as exc:
-            safe_values = {key: value for key, value in form.items() if key != "password"}
+            safe_values = {
+                key: value
+                for key, value in form.items()
+                if key not in {"password", "user", "domain"}
+            }
             return storage_editor_response(
                 request, values=safe_values, error=str(exc), status_code=422
             )
@@ -1068,7 +1072,11 @@ def create_app(
             try:
                 values, _credentials = storage_form_values(form, storage)
             except ValueError as exc:
-                safe_values = {key: value for key, value in form.items() if key != "password"}
+                safe_values = {
+                    key: value
+                    for key, value in form.items()
+                    if key not in {"password", "user", "domain"}
+                }
                 return storage_editor_response(
                     request,
                     storage=storage,
@@ -1365,12 +1373,14 @@ def create_app(
     @app.get("/runs/{run_id}/log/download")
     def run_log_download(run_id: int) -> Response:
         _run, path = load_run_and_log(run_id)
-        try:
-            content = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            raise HTTPException(status_code=404, detail="ログファイルを読めません") from None
-        return Response(
-            mask_log_text(content),
+
+        def masked_lines() -> Iterator[str]:
+            with path.open(encoding="utf-8", errors="replace") as source:
+                for line in source:
+                    yield mask_log_text(line)
+
+        return StreamingResponse(
+            masked_lines(),
             media_type="text/plain; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="run-{run_id}.log"'},
         )
