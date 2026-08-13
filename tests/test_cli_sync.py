@@ -150,3 +150,32 @@ def test_sync_unknown_playlist_returns_error(session_factory, capsys):
 
     assert result == 1
     assert "有効なPlaylistが見つかりません" in capsys.readouterr().err
+
+
+def test_sync_run_all_discovers_every_playlist_before_any_download(session_factory, monkeypatch):
+    first = _playlist(session_factory, name="first")
+    second = _playlist(session_factory, name="second")
+    events = []
+
+    def discover(_open_session, playlist_id, **_kwargs):
+        events.append(("discover", playlist_id))
+        return _run("discover", playlist_id)
+
+    def download(_session, playlist_id):
+        events.append(("download", playlist_id))
+        return _run("download", playlist_id)
+
+    monkeypatch.setattr(cli_sync, "_execute_discover", discover)
+    monkeypatch.setattr(cli_sync, "execute_download_run", download)
+
+    result = cli_sync.dispatch(
+        _args("run", all_=True), open_session=session_factory, poll_interval_sec=0
+    )
+
+    assert result == 0
+    assert events == [
+        ("discover", first),
+        ("discover", second),
+        ("download", first),
+        ("download", second),
+    ]

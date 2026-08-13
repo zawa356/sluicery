@@ -72,6 +72,7 @@ def dispatch(
         return 0
 
     failed = False
+    download_playlists: list[tuple[int, str]] = []
     try:
         for playlist_id, playlist_name in playlists:
             print(f"Playlist {playlist_id} ({playlist_name})")
@@ -92,11 +93,21 @@ def dispatch(
                     continue
                 if args.dry_run or args.sync_command == "discover":
                     continue
-            if args.sync_command in {"download", "run"}:
+                # --all で先行Playlistのdownload Taskが後続discoverをFIFO待ちに
+                # しないよう、runは全discover完了後にdownloadフェーズへ進む。
+                download_playlists.append((playlist_id, playlist_name))
+                continue
+            if args.sync_command == "download":
                 with open_session() as session:
                     download = execute_download_run(session, playlist_id)
                 _print_run(download)
                 failed = failed or download.status != RunStatus.SUCCEEDED
+        for playlist_id, playlist_name in download_playlists:
+            print(f"Playlist {playlist_id} ({playlist_name}) download")
+            with open_session() as session:
+                download = execute_download_run(session, playlist_id)
+            _print_run(download)
+            failed = failed or download.status != RunStatus.SUCCEEDED
     except KeyboardInterrupt:
         print("\n中断しました。実行中Taskへキャンセルを要求します", file=sys.stderr)
         return 130
