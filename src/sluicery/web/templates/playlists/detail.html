@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}{{ playlist.name }} — sluicery{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>{{ playlist.name }}</h1><p class="muted">{{ playlist.folder_name }} / {{ playlist.kind_hint.value }}</p></div>
+<div class="button-row"><a class="button button-secondary" href="/playlists/{{ playlist.id }}/edit">編集</a><a class="button button-secondary" href="/playlists/{{ playlist.id }}/cookies">Cookie設定</a></div></div>
+
+<section class="panel section-block"><h2>手動実行</h2><div class="button-row">
+<form method="post" action="/playlists/{{ playlist.id }}/run"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button name="kind" value="discover"{% if not playlist.enabled or playlist.paused %} disabled{% endif %}>discover</button></form>
+<form method="post" action="/playlists/{{ playlist.id }}/run"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button name="kind" value="download"{% if not playlist.enabled or playlist.paused %} disabled{% endif %}>download</button></form>
+</div></section>
+
+<section class="panel section-block"><h2>Profile割当</h2>
+<table><thead><tr><th>Profile</th><th>Storage</th><th>subpath</th><th>操作</th></tr></thead><tbody>
+{% for assignment, profile, storage in assignments %}<tr><td>{{ profile.name }}</td><td>{{ storage.name }}</td><td>{{ assignment.subpath }}</td><td><form method="post" action="/playlists/{{ playlist.id }}/assignments/{{ assignment.id }}/delete" onsubmit="return confirm('割当を解除しますか？')"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button-secondary">解除</button></form></td></tr>
+{% else %}<tr><td colspan="4">割当はありません。</td></tr>{% endfor %}</tbody></table>
+{% if profiles and storages %}<form method="post" action="/playlists/{{ playlist.id }}/assignments" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<select name="profile_id">{% for profile in profiles %}<option value="{{ profile.id }}">{{ profile.name }}</option>{% endfor %}</select>
+<select name="storage_id">{% for storage in storages %}<option value="{{ storage.id }}">{{ storage.name }}</option>{% endfor %}</select>
+<input name="subpath" value="{playlist.folder_name}" required><button>割当</button></form>{% endif %}</section>
+
+<section class="panel section-block"><div class="page-heading"><h2>Item / Target（{{ total }}件）</h2>
+<form method="get" class="inline-form"><select name="status_filter"><option value="">全状態</option>{% for status in statuses %}<option value="{{ status }}"{% if status_filter == status %} selected{% endif %}>{{ status }}</option>{% endfor %}</select><input name="q" value="{{ q }}" placeholder="タイトル / source ID"><button>絞り込み</button></form></div>
+<table><thead><tr><th>番号</th><th>タイトル</th><th>Profile</th><th>状態</th><th>試行</th><th>最終エラー</th><th>操作</th></tr></thead><tbody>
+{% for target, item, profile in target_rows %}<tr><td>{{ item.playlist_index or "—" }}</td><td>{{ item.title or item.source_id }}</td><td>{{ profile.name }}</td><td>{{ target.status.value }}</td><td>{{ target.retry_count }}</td><td class="truncate">{{ target.last_error or "—" }}</td><td><form method="post" action="/playlists/{{ playlist.id }}/targets/{{ target.id }}/action"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">{% if target.status.value in ['failed','blocked','ignored'] %}<button name="action" value="retry">再試行</button>{% else %}<button name="action" value="ignore" class="button-secondary">ignore</button>{% endif %}</form></td></tr>
+{% else %}<tr><td colspan="7">対象はありません。</td></tr>{% endfor %}</tbody></table>
+<div class="pagination">{% if page > 1 %}<a href="?page={{ page-1 }}&status_filter={{ status_filter }}&q={{ q }}">前へ</a>{% endif %}<span>{{ page }} / {{ pages }}</span>{% if page < pages %}<a href="?page={{ page+1 }}&status_filter={{ status_filter }}&q={{ q }}">次へ</a>{% endif %}</div></section>
+
+<section class="panel danger-zone section-block"><h2>削除</h2><p><strong>どちらを選んでもメディアファイルは削除されません。</strong></p>
+<form method="post" action="/playlists/{{ playlist.id }}/delete" onsubmit="return confirm('選択した方法でPlaylistを削除しますか？')"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<label><input type="radio" name="mode" value="keep_items" required> Playlistを無効化し、Item / Target / Artifactを保持</label><br>
+<label><input type="radio" name="mode" value="delete_items" required> PlaylistとItem関連DBレコードを削除（メディアは保持）</label><br><button class="button-danger">実行</button></form></section>
+{% endblock %}
