@@ -15,7 +15,7 @@ from sluicery.db.models import (
     RunTrigger,
     Task,
 )
-from sluicery.scheduler import SchedulerService, SymmetricCronTrigger
+from sluicery.scheduler import SchedulerService, SymmetricCronTrigger, parse_download_window
 
 
 def _playlist(
@@ -127,3 +127,51 @@ def test_manual_and_scheduled_sync_share_playlist_exclusion(engine, session_fact
         assert scheduled.stats_json is not None
         assert scheduled.stats_json["skip_reason"] == "active_sync"
         assert session.scalar(select(Task).where(Task.run_id == manual_run.id)) is not None
+
+
+def test_download_window_supports_daytime_overnight_and_equal_boundaries() -> None:
+    daytime = parse_download_window("08:00-17:00")
+    overnight = parse_download_window("23:00-05:00")
+    all_day = parse_download_window("00:00-00:00")
+    assert daytime is not None and overnight is not None and all_day is not None
+
+    assert daytime.contains(datetime(2026, 8, 14, 8, 0))
+    assert not daytime.contains(datetime(2026, 8, 14, 17, 0))
+    assert overnight.contains(datetime(2026, 8, 14, 23, 30))
+    assert overnight.contains(datetime(2026, 8, 15, 4, 59))
+    assert not overnight.contains(datetime(2026, 8, 14, 12, 0))
+    assert all_day.contains(datetime(2026, 8, 14, 12, 0))
+
+
+def test_invalid_download_window_is_rejected() -> None:
+    for value in ("23:00", "24:00-05:00", "23:60-05:00"):
+        try:
+            parse_download_window(value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"不正なwindowを受理しました: {value}")
+
+
+def test_scheduled_download_outside_window_records_skip_without_tasks(
+    engine, session_factory
+) -> None:
+    playlist_id = _playlist(session_factory)
+    with session_factory() as session:
+        core_settings.set_override(session, "schedule.download_window", "23:00-05:00")
+    service = SchedulerService(
+        engine,
+        session_factory,
+        "Asia/Tokyo",
+        clock=lambda: datetime(2026, 8, 14, 3, 0, tzinfo=ZoneInfo("UTC")),
+    )
+
+    service.execute_job(playlist_id, "download")
+
+    with session_factory() as session:
+        run = session.scalar(select(Run).order_by(Run.id.desc()))
+        assert run is not None
+        assert run.status == RunStatus.SKIPPED
+        assert run.stats_json is not None
+        assert run.stats_json["skip_reason"] == "outside_download_window"
+        assert list(session.scalars(select(Task))) == []

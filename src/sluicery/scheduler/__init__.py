@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -37,6 +39,36 @@ logger = logging.getLogger(__name__)
 _JOB_PREFIX = "sluicery:playlist:"
 _active_service: SchedulerService | None = None
 _active_service_lock = threading.Lock()
+_WINDOW_RE = re.compile(r"^(\d{2}):(\d{2})-(\d{2}):(\d{2})$")
+
+
+@dataclass(frozen=True)
+class DownloadWindow:
+    start_minute: int
+    end_minute: int
+
+    def contains(self, moment: datetime) -> bool:
+        current = moment.hour * 60 + moment.minute
+        if self.start_minute == self.end_minute:
+            return True
+        if self.start_minute < self.end_minute:
+            return self.start_minute <= current < self.end_minute
+        return current >= self.start_minute or current < self.end_minute
+
+
+def parse_download_window(value: str | None) -> DownloadWindow | None:
+    if value is None or not value.strip():
+        return None
+    match = _WINDOW_RE.fullmatch(value.strip())
+    if match is None:
+        raise ValueError("download windowはHH:MM-HH:MM形式で指定してください")
+    start_hour, start_minute, end_hour, end_minute = (int(part) for part in match.groups())
+    if start_hour > 23 or end_hour > 23 or start_minute > 59 or end_minute > 59:
+        raise ValueError("download windowの時刻が範囲外です")
+    return DownloadWindow(
+        start_minute=start_hour * 60 + start_minute,
+        end_minute=end_hour * 60 + end_minute,
+    )
 
 
 class SymmetricCronTrigger(CronTrigger):
@@ -119,9 +151,12 @@ class SchedulerService:
         engine: Engine,
         session_factory: sessionmaker[Session],
         timezone_name: str,
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._session_factory = session_factory
         self.timezone = ZoneInfo(timezone_name)
+        self._clock = clock
         self._scheduler = BackgroundScheduler(
             timezone=self.timezone,
             jobstores={"default": SQLAlchemyJobStore(engine=engine)},
@@ -214,6 +249,19 @@ class SchedulerService:
     def execute_job(self, playlist_id: int, kind: str) -> None:
         """永続ジョブの実行入口。秘密値をjob argsへ保存しない。"""
         try:
+            if kind == "download":
+                with self._session_factory() as session:
+                    window = parse_download_window(
+                        OperationalSettings(session).schedule_download_window
+                    )
+                local_now = self._clock().astimezone(self.timezone)
+                if window is not None and not window.contains(local_now):
+                    self._record_skipped(playlist_id, kind, "outside_download_window")
+                    logger.info(
+                        "Scheduled download skipped outside the download window",
+                        extra={"playlist_id": playlist_id},
+                    )
+                    return
             with self._session_factory() as session:
                 if kind == "discover":
                     enqueue_discover_run(
@@ -287,9 +335,11 @@ class SchedulerService:
 
 
 __all__ = [
+    "DownloadWindow",
     "NextRun",
     "SchedulerService",
     "SymmetricCronTrigger",
     "playlist_job_id",
+    "parse_download_window",
     "validate_cron_expression",
 ]

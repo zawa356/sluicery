@@ -71,7 +71,11 @@ from sluicery.downloader.version import get_status, ytdlp_root
 from sluicery.downloader.ytdlp import mask_command_line
 from sluicery.layout import LayoutContext, LayoutValidationError, resolve_layout
 from sluicery.runner.base import mask_log_text
-from sluicery.scheduler import SchedulerService, validate_cron_expression
+from sluicery.scheduler import (
+    SchedulerService,
+    parse_download_window,
+    validate_cron_expression,
+)
 from sluicery.storage import create_storage_adapter
 from sluicery.storage.base import StoragePathError, validate_relative_path
 from sluicery.web.auth import (
@@ -1535,6 +1539,8 @@ def create_app(
             raise ValueError("進捗率の刻みは100以下にしてください")
         if key in {"schedule.discover_cron", "schedule.download_cron"}:
             validate_cron_expression(str(value), settings.TZ)
+        if key == "schedule.download_window":
+            parse_download_window(value)
         return value
 
     def validate_setting_relationships(db: Session, key: str, value: Any) -> None:
