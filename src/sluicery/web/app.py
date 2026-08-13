@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import shutil
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -28,16 +29,23 @@ from sluicery.core.cookies import (
     set_playlist_cookie_enabled,
 )
 from sluicery.core.naming import NamingValidationError, sanitize_component
-from sluicery.core.options import OptionValidationError, guard_freeform, validate_source_url
+from sluicery.core.options import (
+    OptionValidationError,
+    build_download_args,
+    guard_freeform,
+    validate_source_url,
+)
 from sluicery.core.sync import enqueue_discover_run, execute_download_run
 from sluicery.core.target_state import transition_target
 from sluicery.db.models import (
     Item,
     ItemMembership,
+    LayoutStrategy,
     Playlist,
     PlaylistKindHint,
     PlaylistProfile,
     Profile,
+    ProfileKind,
     Run,
     Storage,
     Target,
@@ -45,9 +53,12 @@ from sluicery.db.models import (
 )
 from sluicery.db.repositories.playlist import PlaylistRepository
 from sluicery.db.repositories.playlist_profile import PlaylistProfileRepository
+from sluicery.db.repositories.profile import ProfileRepository
 from sluicery.db.repositories.run import RunRepository
 from sluicery.db.repositories.ytdlp_release import YtdlpReleaseRepository
 from sluicery.downloader.version import get_status, ytdlp_root
+from sluicery.downloader.ytdlp import mask_command_line
+from sluicery.layout import LayoutContext, LayoutValidationError, resolve_layout
 from sluicery.web.auth import (
     LOGIN_ERROR_MESSAGE,
     SESSION_COOKIE_NAME,
@@ -637,11 +648,237 @@ def create_app(
 
     @app.get("/profiles")
     def profiles(request: Request) -> Response:
+        with session_factory() as db:
+            rows = []
+            for profile in db.scalars(select(Profile).order_by(Profile.id)):
+                refs = db.scalar(
+                    select(func.count())
+                    .select_from(PlaylistProfile)
+                    .where(PlaylistProfile.profile_id == profile.id)
+                ) or 0
+                rows.append({"profile": profile, "refs": refs})
         return templates.TemplateResponse(
             request,
-            "placeholder.html",
-            context(request, active_nav="profiles", title="Profile", phase="Part B"),
+            "profiles/list.html",
+            context(request, active_nav="profiles", rows=rows),
         )
+
+    tristate_fields = (
+        "audio_extract",
+        "embed_metadata",
+        "embed_thumbnail",
+        "embed_chapters",
+        "subtitle_auto",
+        "subtitle_embed",
+    )
+
+    def parse_tristate(value: object) -> bool | None:
+        if value == "inherit":
+            return None
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        raise ValueError("三状態の値が不正です")
+
+    def profile_form_values(form: Any, current: Profile | None = None) -> dict[str, Any]:
+        name = str(form.get("name", "")).strip()
+        if not name:
+            raise ValueError("名前を入力してください")
+        try:
+            kind = ProfileKind(str(form.get("kind", "video")))
+            strategy = LayoutStrategy(str(form.get("layout_strategy", "flat")))
+            ytdlp_args = str(form.get("ytdlp_args", "")).strip() or None
+            expert_mode = form.get("expert_mode") == "yes"
+            allow_exec = form.get("allow_exec") == "yes"
+            guard_freeform(
+                ytdlp_args,
+                source_label=f"Profile {name}",
+                expert_mode=expert_mode,
+                env_allow_exec=settings.ALLOW_EXEC,
+                profile_allow_exec=allow_exec,
+            )
+            output_template = str(form.get("output_template", "")).strip() or None
+            resolve_layout(
+                strategy.value,
+                LayoutContext(
+                    playlist_name="preview",
+                    playlist_folder_name="preview",
+                    profile_name=name,
+                    profile_kind=kind.value,
+                    subpath="preview",
+                    custom_output_template=output_template,
+                ),
+            )
+            concurrent_raw = str(form.get("concurrent_fragments", "")).strip()
+            concurrent = int(concurrent_raw) if concurrent_raw else None
+            if concurrent is not None and concurrent < 1:
+                raise ValueError("concurrent_fragmentsは1以上にしてください")
+            tristates = {
+                field: parse_tristate(form.get(field, "inherit"))
+                for field in tristate_fields
+            }
+        except (OptionValidationError, LayoutValidationError, ValueError) as exc:
+            raise ValueError(str(exc)) from exc
+        values: dict[str, Any] = {
+            "name": name,
+            "description": str(form.get("description", "")).strip() or None,
+            "kind": kind,
+            "layout_strategy": strategy,
+            "output_template": output_template,
+            "ytdlp_args": ytdlp_args,
+            "format_selector": str(form.get("format_selector", "")).strip() or None,
+            "container": str(form.get("container", "")).strip() or None,
+            "audio_format": str(form.get("audio_format", "")).strip() or None,
+            "audio_quality": str(form.get("audio_quality", "")).strip() or None,
+            "subtitle_langs": str(form.get("subtitle_langs", "")).strip() or None,
+            "concurrent_fragments": concurrent,
+            "expert_mode": expert_mode,
+            "allow_exec": allow_exec,
+            **tristates,
+        }
+        if current is None:
+            values["postprocess_chain_json"] = []
+        return values
+
+    def profile_editor_response(
+        request: Request,
+        *,
+        profile: Profile | None = None,
+        values: dict[str, Any] | None = None,
+        error: str | None = None,
+        status_code: int = 200,
+    ) -> Response:
+        refs: list[tuple[Playlist, PlaylistProfile]] = []
+        preview: dict[str, Any] | None = None
+        assert settings.STAGING_DIR is not None
+        if profile is not None:
+            with session_factory() as db:
+                refs = [
+                    tuple(row)
+                    for row in db.execute(
+                        select(Playlist, PlaylistProfile)
+                        .join(PlaylistProfile, Playlist.id == PlaylistProfile.playlist_id)
+                        .where(PlaylistProfile.profile_id == profile.id)
+                        .order_by(Playlist.name)
+                    )
+                ]
+                if refs:
+                    playlist, assignment = refs[0]
+                    persisted = db.get(Profile, profile.id)
+                    assert persisted is not None
+                    built = build_download_args(
+                        None,
+                        source_url=playlist.url,
+                        session=db,
+                        staging_dir=settings.STAGING_DIR,
+                        work_id="<work-id>",
+                        playlist=playlist,
+                        profile=persisted,
+                        playlist_profile=assignment,
+                        env_allow_exec=settings.ALLOW_EXEC,
+                    )
+                    preview = {
+                        "playlist": playlist.name,
+                        "command": shlex.join(["yt-dlp", *mask_command_line(built.args)]),
+                        "origins": [
+                            {
+                                "arguments": shlex.join(mask_command_line(origin.arguments)),
+                                "layer": origin.layer,
+                                "source": origin.source,
+                                "field": origin.field,
+                            }
+                            for origin in built.origins
+                        ],
+                        "warnings": built.warnings,
+                    }
+        return templates.TemplateResponse(
+            request,
+            "profiles/form.html",
+            context(
+                request,
+                active_nav="profiles",
+                profile=profile,
+                values=values or {},
+                error=error,
+                kinds=[kind.value for kind in ProfileKind],
+                strategies=[strategy.value for strategy in LayoutStrategy],
+                tristate_fields=tristate_fields,
+                refs=refs,
+                preview=preview,
+                env_allow_exec=settings.ALLOW_EXEC,
+            ),
+            status_code=status_code,
+        )
+
+    @app.get("/profiles/new")
+    def profile_new(request: Request) -> Response:
+        return profile_editor_response(request)
+
+    @app.post("/profiles/new")
+    async def profile_create(request: Request) -> Response:
+        form = await request.form()
+        try:
+            values = profile_form_values(form)
+        except ValueError as exc:
+            return profile_editor_response(
+                request, values=dict(form), error=str(exc), status_code=422
+            )
+        with session_factory() as db:
+            profile = ProfileRepository(db).create(**values)
+        auth.add_flash(request.state.auth, "success", "Profileを作成しました")
+        return RedirectResponse(f"/profiles/{profile.id}/edit", status_code=303)
+
+    @app.get("/profiles/{profile_id}/edit")
+    def profile_edit(request: Request, profile_id: int) -> Response:
+        with session_factory() as db:
+            profile = db.get(Profile, profile_id)
+            if profile is None:
+                raise HTTPException(status_code=404)
+            return profile_editor_response(request, profile=profile)
+
+    @app.post("/profiles/{profile_id}/edit")
+    async def profile_update(request: Request, profile_id: int) -> Response:
+        form = await request.form()
+        with session_factory() as db:
+            profile = db.get(Profile, profile_id)
+            if profile is None:
+                raise HTTPException(status_code=404)
+            try:
+                values = profile_form_values(form, profile)
+            except ValueError as exc:
+                return profile_editor_response(
+                    request,
+                    profile=profile,
+                    values=dict(form),
+                    error=str(exc),
+                    status_code=422,
+                )
+            ProfileRepository(db).update(profile, **values)
+        auth.add_flash(request.state.auth, "success", "Profileを更新しました")
+        return RedirectResponse(f"/profiles/{profile_id}/edit", status_code=303)
+
+    @app.post("/profiles/{profile_id}/delete")
+    def profile_delete(request: Request, profile_id: int) -> Response:
+        with session_factory() as db:
+            profile = db.get(Profile, profile_id)
+            if profile is None:
+                raise HTTPException(status_code=404)
+            refs = db.scalar(
+                select(func.count())
+                .select_from(PlaylistProfile)
+                .where(PlaylistProfile.profile_id == profile_id)
+            ) or 0
+            if refs:
+                auth.add_flash(
+                    request.state.auth,
+                    "error",
+                    "Playlistから参照されているProfileは削除できません",
+                )
+                return RedirectResponse(f"/profiles/{profile_id}/edit", status_code=303)
+            ProfileRepository(db).delete(profile)
+        auth.add_flash(request.state.auth, "success", "Profileを削除しました")
+        return RedirectResponse("/profiles", status_code=303)
 
     @app.get("/storages")
     def storages(request: Request) -> Response:

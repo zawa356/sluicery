@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ "Profile編集" if profile else "Profile作成" }} — sluicery{% endblock %}
+{% macro field_value(name, default='') %}{{ values.get(name, profile|attr(name) if profile and profile|attr(name) is not none else default) }}{% endmacro %}
+{% macro tri_select(name, label) %}{% set selected = values.get(name, 'true' if profile and profile|attr(name) is sameas true else 'false' if profile and profile|attr(name) is sameas false else 'inherit') %}
+<label>{{ label }}<select name="{{ name }}"><option value="inherit"{% if selected in ['inherit', none] %} selected{% endif %}>継承</option><option value="true"{% if selected in ['true', true] %} selected{% endif %}>有効</option><option value="false"{% if selected in ['false', false] %} selected{% endif %}>無効</option></select></label>{% endmacro %}
+{% block content %}
+<h1>{{ "Profile編集" if profile else "Profile作成" }}</h1>
+{% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+<form method="post" class="stacked-form panel">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<div class="form-grid">
+<label>名前<input name="name" required value="{{ field_value('name') }}"></label>
+<label>種別<select name="kind">{% for kind in kinds %}<option value="{{ kind }}"{% if values.get('kind', profile.kind.value if profile else 'video') == kind %} selected{% endif %}>{{ kind }}</option>{% endfor %}</select></label>
+<label>説明<input name="description" value="{{ field_value('description') }}"></label>
+<label>レイアウト<select name="layout_strategy">{% for strategy in strategies %}<option value="{{ strategy }}"{% if values.get('layout_strategy', profile.layout_strategy.value if profile else 'flat') == strategy %} selected{% endif %}>{{ strategy }}</option>{% endfor %}</select></label>
+<label>format selector<input name="format_selector" value="{{ field_value('format_selector') }}"></label>
+<label>container<input name="container" value="{{ field_value('container') }}"></label>
+<label>audio format<input name="audio_format" value="{{ field_value('audio_format') }}"></label>
+<label>audio quality<input name="audio_quality" value="{{ field_value('audio_quality') }}"></label>
+<label>subtitle languages<input name="subtitle_langs" value="{{ field_value('subtitle_langs') }}"></label>
+<label>concurrent fragments<input type="number" min="1" name="concurrent_fragments" value="{{ field_value('concurrent_fragments') }}"></label>
+</div>
+<label>custom output template<input name="output_template" value="{{ field_value('output_template') }}"></label>
+<label>yt-dlp自由引数<textarea name="ytdlp_args" rows="3">{{ field_value('ytdlp_args') }}</textarea></label>
+<div class="form-grid">
+{{ tri_select('audio_extract', '音声抽出') }}{{ tri_select('embed_metadata', 'メタデータ埋込') }}
+{{ tri_select('embed_thumbnail', 'サムネイル埋込') }}{{ tri_select('embed_chapters', 'チャプター埋込') }}
+{{ tri_select('subtitle_auto', '自動字幕') }}{{ tri_select('subtitle_embed', '字幕埋込') }}
+</div>
+<label class="checkbox-label"><input type="checkbox" name="expert_mode" value="yes"{% if values.get('expert_mode', profile.expert_mode if profile else false) in [true, 'yes', 'on'] %} checked{% endif %}>expert mode（予約引数は警告付き）</label>
+<label class="checkbox-label"><input type="checkbox" name="allow_exec" value="yes"{% if values.get('allow_exec', profile.allow_exec if profile else false) in [true, 'yes', 'on'] %} checked{% endif %}>Profileでexecを許可{% if not env_allow_exec %}（環境側ALLOW_EXEC=falseのため実行不可）{% endif %}</label>
+<button type="submit">保存</button>
+</form>
+
+{% if profile %}<section class="panel section-block"><h2>参照しているPlaylist</h2><ul>{% for playlist, assignment in refs %}<li><a href="/playlists/{{ playlist.id }}">{{ playlist.name }}</a> — {{ assignment.subpath }}</li>{% else %}<li>参照なし</li>{% endfor %}</ul></section>
+<section class="panel section-block"><h2>コマンドラインプレビュー</h2>{% if preview %}<p>Playlist: {{ preview.playlist }}</p><pre>{{ preview.command }}</pre>{% for warning in preview.warnings %}<div class="flash flash-warning">{{ warning }}</div>{% endfor %}<table><thead><tr><th>層</th><th>由来</th><th>フィールド</th><th>引数</th></tr></thead><tbody>{% for origin in preview.origins %}<tr><td>{{ origin.layer }}</td><td>{{ origin.source }}</td><td>{{ origin.field or '—' }}</td><td><code>{{ origin.arguments }}</code></td></tr>{% endfor %}</tbody></table>{% else %}<p class="muted">Playlistへ割り当てるとプレビューを表示します。</p>{% endif %}<button disabled>フォーマット検査（Phase 14で実装予定）</button></section>
+<section class="panel danger-zone section-block"><h2>削除</h2><p>参照中のProfileは削除できません。メディアファイルは操作しません。</p><form method="post" action="/profiles/{{ profile.id }}/delete" onsubmit="return confirm('Profileを削除しますか？')"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button-danger">削除</button></form></section>{% endif %}
+{% endblock %}
