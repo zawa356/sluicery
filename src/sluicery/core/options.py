@@ -46,6 +46,8 @@ OPTION_ALIASES: dict[str, str] = {
     "--restrict-filenames": "--restrict-filenames",
     "--no-windows-filenames": "--no-windows-filenames",
     "--no-newline": "--no-newline",
+    "--cookies": "--cookies",
+    "--cookies-from-browser": "--cookies-from-browser",
 }
 
 RESERVED_OPTIONS = frozenset(
@@ -61,6 +63,8 @@ RESERVED_OPTIONS = frozenset(
         "--dump-single-json",
         "--exec",
         "--exec-before-download",
+        "--cookies",
+        "--cookies-from-browser",
     }
 )
 
@@ -228,6 +232,15 @@ def guard_freeform(
     warned: set[str] = set()
     for occurrence in parse_managed_options(tokens):
         option = occurrence.canonical
+        if option == "--cookies-from-browser":
+            raise OptionValidationError(
+                "`--cookies-from-browser` はコンテナ内にブラウザが無いため使用できません。"
+                "PlaylistのCookie設定を使用してください"
+            )
+        if option == "--cookies":
+            raise OptionValidationError(
+                "`--cookies` は自由入力では指定できません。PlaylistのCookie設定を使用してください"
+            )
         if option == "--output":
             raise OptionValidationError(
                 "`--output` / `-o` は自由入力では指定できません。"

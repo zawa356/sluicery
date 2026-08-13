@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from sqlalchemy import func, select
 
+from sluicery.core.cookies import save_playlist_cookie
 from sluicery.db.models import (
     Item,
     Playlist,
@@ -23,6 +25,7 @@ class _Runner:
         self.result = result
         self.args: list[str] = []
         self.sensitive_values: tuple[str, ...] = ()
+        self.cookie_path_existed = False
 
     def cancel(self) -> None:
         pass
@@ -30,6 +33,9 @@ class _Runner:
     def run(self, args, *, timeout, sensitive_values=()):
         self.args = args
         self.sensitive_values = sensitive_values
+        if "--cookies" in args:
+            cookie_path = Path(args[args.index("--cookies") + 1])
+            self.cookie_path_existed = cookie_path.exists()
         return self.result
 
 
@@ -197,3 +203,35 @@ def test_discover_error_records_empty_result_without_domain_changes(session_fact
         assert item is not None and item.membership.value == "active"
         assert run is not None and run.status == RunStatus.FAILED
         assert run.stats_json is not None and run.stats_json["empty_result"] is True
+
+
+def test_discover_materializes_cookie_and_removes_it_after_runner(
+    session_factory, tmp_path: Path
+) -> None:
+    playlist_id, run_id, url = _records(session_factory)
+    cookie_bytes = b"""# Netscape HTTP Cookie File
+.example.com\tTRUE\t/\tTRUE\t2147483647\tSID\tdiscover-cookie-secret
+"""
+    with session_factory() as session:
+        playlist = session.get(Playlist, playlist_id)
+        assert playlist is not None
+        save_playlist_cookie(session, playlist, cookie_bytes, enable_confirmed=True)
+    runner = _Runner(RunResult(returncode=0, classification=Classification.OK))
+    handler = DiscoverHandler(
+        session_factory,
+        runner=runner,  # type: ignore[arg-type]
+        cookie_runtime_dir=tmp_path,
+    )
+
+    result = handler.run(
+        {"playlist_id": playlist_id, "_execution": {"run_id": run_id}},
+        lambda _: None,
+    )
+
+    assert result.outcome == TaskOutcome.SUCCEEDED
+    assert runner.cookie_path_existed is True
+    cookie_path = Path(runner.args[runner.args.index("--cookies") + 1])
+    assert not cookie_path.exists()
+    assert str(cookie_path) in runner.sensitive_values
+    assert "discover-cookie-secret" in runner.sensitive_values
+    assert url in runner.sensitive_values

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from sluicery.core.cookies import save_playlist_cookie
 from sluicery.db.models import (
     Item,
     LayoutStrategy,
@@ -27,9 +28,15 @@ class _FakeRunner:
     def __init__(self, result: RunResult) -> None:
         self.result = result
         self.sensitive_values: tuple[str, ...] = ()
+        self.args: list[str] = []
+        self.cookie_path_existed = False
 
     def run(self, args, *, timeout, on_progress=None, cwd=None, sensitive_values=()):
+        self.args = args
         self.sensitive_values = sensitive_values
+        if "--cookies" in args:
+            cookie_path = Path(args[args.index("--cookies") + 1])
+            self.cookie_path_existed = cookie_path.exists()
         return self.result
 
     def cancel(self) -> None:
@@ -135,3 +142,49 @@ def test_download_maps_classification(
         target = session.get(Target, target_id)
         assert target.status == status
         assert target.retry_count == retry_count
+
+
+def test_download_materializes_playlist_cookie_and_cleans_it(
+    session_factory, tmp_path: Path
+) -> None:
+    target_id = _target(session_factory)
+    with session_factory() as session:
+        target = session.get(Target, target_id)
+        assert target is not None
+        item = session.get(Item, target.item_id)
+        assert item is not None
+        playlist = session.get(Playlist, item.playlist_id)
+        assert playlist is not None
+        save_playlist_cookie(
+            session,
+            playlist,
+            b"""# Netscape HTTP Cookie File
+.example.com\tTRUE\t/\tTRUE\t2147483647\tSID\tdownload-cookie-secret
+""",
+            enable_confirmed=True,
+        )
+    work = tmp_path / "work-cookie"
+    work.mkdir()
+    output = work / "item.mkv"
+    output.write_bytes(b"media")
+    runner = _FakeRunner(
+        RunResult(0, Classification.OK, stdout_lines=[str(output)])
+    )
+    handler = DownloadHandler(
+        session_factory,
+        staging_dir=tmp_path,
+        runner=runner,  # type: ignore[arg-type]
+        cookie_runtime_dir=tmp_path / "runtime",
+    )
+
+    result = handler.run(
+        {"target_id": target_id, "work_id": "work-cookie"},
+        lambda _: None,
+    )
+
+    assert result.outcome == TaskOutcome.SUCCEEDED
+    assert runner.cookie_path_existed is True
+    cookie_path = Path(runner.args[runner.args.index("--cookies") + 1])
+    assert not cookie_path.exists()
+    assert str(cookie_path) in runner.sensitive_values
+    assert "download-cookie-secret" in runner.sensitive_values

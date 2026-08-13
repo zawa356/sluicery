@@ -7,7 +7,7 @@ from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 
 from sluicery.config import Settings
-from sluicery.db.models import AuthSession
+from sluicery.db.models import AuthSession, Playlist, PlaylistKindHint
 from sluicery.db.repositories.user import UserRepository
 from sluicery.web.app import create_app
 from sluicery.web.auth import (
@@ -378,3 +378,51 @@ def test_flash_message_is_displayed_once_after_password_change(base_env, session
     second = client.get("/login")
     assert "パスワードを変更しました" in first.text
     assert "パスワードを変更しました" not in second.text
+
+
+def test_playlist_cookie_ui_is_write_only_and_requires_risk_confirmation(
+    base_env, session_factory
+) -> None:
+    settings = _settings(base_env)
+    _create_admin(session_factory, settings)
+    with session_factory() as db:
+        playlist = Playlist(
+            name="Cookie Playlist",
+            folder_name="cookie-playlist",
+            url="https://example.com/list",
+            kind_hint=PlaylistKindHint.VIDEO,
+        )
+        db.add(playlist)
+        db.commit()
+        playlist_id = playlist.id
+    client = TestClient(create_app(settings=settings, session_factory=session_factory))
+    _login(client, settings)
+    page = client.get(f"/playlists/{playlist_id}/cookies")
+    csrf_token = _csrf(page)
+    cookie_content = """# Netscape HTTP Cookie File
+.example.com\tTRUE\t/\tTRUE\t2147483647\tSID\tui-cookie-secret
+"""
+
+    unconfirmed = client.post(
+        f"/playlists/{playlist_id}/cookies",
+        data={"csrf_token": csrf_token, "action": "save_enable"},
+        files={"cookie_file": ("cookies.txt", cookie_content, "text/plain")},
+    )
+    assert unconfirmed.status_code == 400
+    assert "停止リスク" in unconfirmed.text
+
+    saved = client.post(
+        f"/playlists/{playlist_id}/cookies",
+        data={
+            "csrf_token": csrf_token,
+            "action": "save_enable",
+            "risk_confirmed": "yes",
+        },
+        files={"cookie_file": ("cookies.txt", cookie_content, "text/plain")},
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    status_page = client.get(saved.headers["location"])
+    assert "設定済み" in status_page.text
+    assert "有効" in status_page.text
+    assert "ui-cookie-secret" not in status_page.text

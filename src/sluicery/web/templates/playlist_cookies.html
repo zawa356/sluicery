@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Cookie設定 — {{ playlist_name }} — sluicery{% endblock %}
+{% block content %}
+<h1>Cookie設定</h1>
+<p><strong>Playlist:</strong> {{ playlist_name }}</p>
+
+<div class="flash flash-warning" role="alert">
+  <strong>アカウント停止リスク:</strong>
+  アカウントに紐づくCookieで大量アクセスすると、配信元の制限やアカウント停止を受ける可能性があります。
+  必要なPlaylistだけで有効にし、利用規約と権利者の条件を守ってください。
+</div>
+{% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+
+<dl class="status-list">
+  <dt>保存状態</dt><dd>{{ "設定済み" if cookie_configured else "未設定" }}</dd>
+  <dt>利用状態</dt><dd>{{ "有効" if cookie_enabled else "無効" }}</dd>
+</dl>
+
+<form method="post" enctype="multipart/form-data" class="stacked-form panel">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Netscape形式のCookieファイル（内容は保存後に表示されません）
+    <input type="file" name="cookie_file" accept=".txt,text/plain">
+  </label>
+  <label class="checkbox-label">
+    <input type="checkbox" name="risk_confirmed" value="yes">
+    上記の停止リスクを理解し、このPlaylistだけでCookieを有効にします
+  </label>
+  <div class="button-row">
+    <button type="submit" name="action" value="save_enable">保存して有効化</button>
+    {% if cookie_configured and not cookie_enabled %}
+      <button type="submit" name="action" value="enable">保存済みCookieを有効化</button>
+    {% endif %}
+    {% if cookie_enabled %}
+      <button type="submit" name="action" value="disable" class="button-secondary">無効化</button>
+    {% endif %}
+    {% if cookie_configured %}
+      <button type="submit" name="action" value="clear" class="button-danger"
+              onclick="return confirm('保存済みCookieを消去しますか？')">消去</button>
+    {% endif %}
+  </div>
+</form>
+{% endblock %}
