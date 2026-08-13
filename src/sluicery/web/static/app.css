@@ -43,3 +43,15 @@ button, .button { border: 0; border-radius: .35rem; padding: .58rem .9rem; backg
 .checkbox-label input { width: auto; margin-top: .3rem; }
 .button-row { display: flex; gap: .6rem; flex-wrap: wrap; }
 .button-danger { background: var(--danger); color: #260707; }
+.dashboard-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+.metric-card { padding: 1rem; border: 1px solid var(--border); border-radius: .6rem; background: var(--surface); }
+.metric-card h2 { margin-top: 0; color: var(--muted); font-size: 1rem; }
+.metric { margin: .25rem 0; font-size: 1.8rem; font-weight: 750; }
+progress { width: 100%; accent-color: var(--accent); }
+.inline-counts { display: flex; gap: 1.25rem; }
+.inline-counts div { text-align: center; }
+.inline-counts dd { margin: 0; font-size: 1.5rem; font-weight: 700; }
+.section-block { margin-top: 1rem; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: .6rem .7rem; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-size: .86rem; }

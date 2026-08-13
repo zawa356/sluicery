@@ -2,8 +2,56 @@
 {% block title %}ダッシュボード — sluicery{% endblock %}
 {% block content %}
 <h1>ダッシュボード</h1>
-<div class="notice">
-  <h2>Web UI を準備中です</h2>
-  <p>認証と共通レイアウトは有効です。同期状況のカードはPart Bで追加します。</p>
+<div class="dashboard-grid">
+  <section class="metric-card">
+    <h2>yt-dlp</h2>
+    <p class="metric">{{ ytdlp_status }}</p>
+    <p>{{ ytdlp_version or "未導入" }}</p>
+    <small>最終導入: {{ ytdlp_updated_at or "—" }}</small>
+  </section>
+  <section class="metric-card">
+    <h2>Staging</h2>
+    <p class="metric">{{ staging_pct }}%</p>
+    <progress max="100" value="{{ staging_pct }}">{{ staging_pct }}%</progress>
+    <small>{{ staging_used|filesize }} / {{ staging_total|filesize }}</small>
+  </section>
+  <section class="metric-card">
+    <h2>注意が必要</h2>
+    <dl class="inline-counts">
+      <div><dt>failed</dt><dd>{{ failed_count }}</dd></div>
+      <div><dt>missing</dt><dd>{{ missing_count }}</dd></div>
+      <div><dt>delisted</dt><dd>{{ delisted_count }}</dd></div>
+    </dl>
+  </section>
+  <section class="metric-card">
+    <h2>次回実行予定</h2>
+    <p class="muted">スケジューラ未実装（Part D）</p>
+  </section>
 </div>
+
+<section class="panel section-block">
+  <h2>Storage</h2>
+  <table>
+    <thead><tr><th>名前</th><th>種別</th><th>有効</th><th>最終到達性</th><th>確認日時</th></tr></thead>
+    <tbody>
+    {% for storage in storage_rows %}
+      <tr><td>{{ storage.name }}</td><td>{{ storage.kind }}</td><td>{{ "有効" if storage.enabled else "無効" }}</td>
+      <td>{% if storage.reachable is sameas true %}到達可能{% elif storage.reachable is sameas false %}失敗{% else %}未確認{% endif %}</td>
+      <td>{{ storage.last_check_at or "—" }}</td></tr>
+    {% else %}<tr><td colspan="5">Storageは未登録です。</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel section-block">
+  <h2>直近のRun</h2>
+  <table>
+    <thead><tr><th>ID</th><th>Playlist</th><th>種別</th><th>状態</th><th>開始</th></tr></thead>
+    <tbody>
+    {% for run in recent_runs %}
+      <tr><td><a href="/runs/{{ run.id }}">{{ run.id }}</a></td><td>{{ run.playlist }}</td><td>{{ run.kind }}</td><td>{{ run.status }}</td><td>{{ run.started_at }}</td></tr>
+    {% else %}<tr><td colspan="5">Run履歴はありません。</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</section>
 {% endblock %}

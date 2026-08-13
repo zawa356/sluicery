@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.datastructures import UploadFile
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -25,7 +27,17 @@ from sluicery.core.cookies import (
     save_playlist_cookie,
     set_playlist_cookie_enabled,
 )
-from sluicery.db.models import Playlist
+from sluicery.db.models import (
+    Item,
+    ItemMembership,
+    Playlist,
+    Storage,
+    Target,
+    TargetStatus,
+)
+from sluicery.db.repositories.run import RunRepository
+from sluicery.db.repositories.ytdlp_release import YtdlpReleaseRepository
+from sluicery.downloader.version import get_status, ytdlp_root
 from sluicery.web.auth import (
     LOGIN_ERROR_MESSAGE,
     SESSION_COOKIE_NAME,
@@ -146,6 +158,19 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="sluicery", dependencies=[Depends(require_csrf)])
     templates = Jinja2Templates(directory=WEB_DIR / "templates")
+
+    def filesize(value: int | None) -> str:
+        if value is None:
+            return "—"
+        units = ("B", "KiB", "MiB", "GiB", "TiB")
+        size = float(value)
+        for unit in units:
+            if size < 1024 or unit == units[-1]:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} TiB"
+
+    templates.env.filters["filesize"] = filesize
     app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 
     @app.get("/healthz")
@@ -213,10 +238,74 @@ def create_app(
 
     @app.get("/")
     def home(request: Request) -> Response:
+        with session_factory() as db:
+            recent_runs = RunRepository(db).list_recent(10)
+            playlist_names = {
+                row.id: row.name for row in db.scalars(select(Playlist)).all()
+            }
+            target_counts = {
+                status.value: count
+                for status, count in db.execute(
+                    select(Target.status, func.count()).group_by(Target.status)
+                )
+            }
+            delisted_count = db.scalar(
+                select(func.count())
+                .select_from(Item)
+                .where(Item.membership == ItemMembership.DELISTED)
+            ) or 0
+            storages = list(db.scalars(select(Storage).order_by(Storage.id)))
+            active_release = YtdlpReleaseRepository(db).get_active()
+        assert settings.STAGING_DIR is not None
+        usage = shutil.disk_usage(settings.STAGING_DIR)
+        ytdlp_status = get_status(ytdlp_root(settings.DATA_DIR))
+        run_rows = [
+            {
+                "id": run.id,
+                "playlist": (
+                    playlist_names.get(run.playlist_id, "—")
+                    if run.playlist_id is not None
+                    else "—"
+                ),
+                "kind": run.kind,
+                "status": run.status.value,
+                "started_at": run.started_at,
+            }
+            for run in recent_runs
+        ]
+        storage_rows = [
+            {
+                "id": storage.id,
+                "name": storage.name,
+                "kind": storage.kind.value,
+                "enabled": storage.enabled,
+                "reachable": (
+                    storage.last_check_result_json.get("ok")
+                    if isinstance(storage.last_check_result_json, dict)
+                    else None
+                ),
+                "last_check_at": storage.last_check_at,
+            }
+            for storage in storages
+        ]
         return templates.TemplateResponse(
             request,
             "dashboard.html",
-            context(request, active_nav="dashboard"),
+            context(
+                request,
+                active_nav="dashboard",
+                recent_runs=run_rows,
+                ytdlp_status=ytdlp_status.status.value,
+                ytdlp_version=ytdlp_status.current_version,
+                ytdlp_updated_at=(active_release.installed_at if active_release else None),
+                staging_used=usage.used,
+                staging_total=usage.total,
+                staging_pct=round(usage.used / usage.total * 100, 1) if usage.total else 0,
+                storage_rows=storage_rows,
+                failed_count=target_counts.get(TargetStatus.FAILED.value, 0),
+                missing_count=target_counts.get(TargetStatus.MISSING.value, 0),
+                delisted_count=delisted_count,
+            ),
         )
 
     @app.get("/playlists")
