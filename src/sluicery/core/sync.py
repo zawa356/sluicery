@@ -8,18 +8,22 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+from sqlalchemy import exists, or_, select, text
 from sqlalchemy.orm import Session
 
 from sluicery.core.settings import OperationalSettings
 from sluicery.core.target_state import transition_item, transition_target
 from sluicery.db.models import (
+    Item,
     ItemMembership,
     Run,
     RunStatus,
     RunTrigger,
     Storage,
+    Target,
     TargetStatus,
     Task,
+    TaskStatus,
     TaskType,
     WorkerClass,
 )
@@ -36,6 +40,63 @@ from sluicery.tasks.pipeline import enqueue_target_pipeline
 
 class AdapterFactory(Protocol):
     def __call__(self, storage: Storage, settings: OperationalSettings) -> StorageAdapter: ...
+
+
+class SyncAlreadyRunningError(ValueError):
+    """同じPlaylistに未完了の同期が存在する。"""
+
+
+_ACTIVE_TASK_STATUSES = (
+    TaskStatus.PENDING,
+    TaskStatus.QUEUED,
+    TaskStatus.RUNNING,
+    TaskStatus.BLOCKED,
+)
+
+
+def playlist_sync_is_active(session: Session, playlist_id: int) -> bool:
+    """discoverとTargetパイプラインの未完了処理を同じPlaylist単位で調べる。"""
+    direct_task = exists(
+        select(Task.id).where(
+            Task.target_ref_type == "playlist",
+            Task.target_ref_id == playlist_id,
+            Task.status.in_(_ACTIVE_TASK_STATUSES),
+        )
+    )
+    target_task = exists(
+        select(Task.id)
+        .join(
+            Target,
+            (Task.target_ref_type == "target") & (Task.target_ref_id == Target.id),
+        )
+        .join(Item, Target.item_id == Item.id)
+        .where(
+            Item.playlist_id == playlist_id,
+            Task.status.in_(_ACTIVE_TASK_STATUSES),
+        )
+    )
+    running_run = exists(
+        select(Run.id).where(
+            Run.playlist_id == playlist_id,
+            Run.status == RunStatus.RUNNING,
+        )
+    )
+    return bool(session.scalar(select(or_(direct_task, target_task, running_run))))
+
+
+def _lock_and_validate_sync_start(session: Session, playlist_id: int) -> None:
+    """SQLiteの書込み予約を先に取り、確認とRun作成の競合窓を閉じる。"""
+    if session.in_transaction():
+        if session.new or session.dirty or session.deleted:
+            raise RuntimeError("未保存のDB変更があるSessionでは同期を開始できません")
+        # commit後のrefreshや事前の読み取りだけで始まったtransactionは閉じる。
+        session.rollback()
+    session.execute(text("BEGIN IMMEDIATE"))
+    if playlist_sync_is_active(session, playlist_id):
+        session.rollback()
+        raise SyncAlreadyRunningError(
+            f"Playlist {playlist_id} はdiscoverまたはdownloadを実行中です"
+        )
 
 
 @dataclass(frozen=True)
@@ -62,15 +123,19 @@ def enqueue_discover_run(
     max_attempts: int | None = None,
 ) -> tuple[Run, Task]:
     """discover Runとnetwork Taskを同じtransactionで作成する。"""
+    _lock_and_validate_sync_start(session, playlist_id)
     playlist = PlaylistRepository(session).get(playlist_id)
     if playlist is None:
+        session.rollback()
         raise LookupError(f"Playlist {playlist_id} が見つかりません")
     if not playlist.enabled or playlist.paused:
+        session.rollback()
         raise ValueError("無効または一時停止中のPlaylistは同期できません")
     attempts = OperationalSettings(session).worker_max_attempts
     if max_attempts is not None:
         attempts = max_attempts
     if attempts < 1:
+        session.rollback()
         raise ValueError("再試行上限は1以上で指定してください")
     run = RunRepository(session).start(
         trigger=trigger,
@@ -104,6 +169,14 @@ def execute_download_run(
     adapter_factory: AdapterFactory = create_storage_adapter,
 ) -> Run:
     """download Runを作成し、チェーン投入完了時点で統計と成否を確定する。"""
+    _lock_and_validate_sync_start(session, playlist_id)
+    playlist = PlaylistRepository(session).get(playlist_id)
+    if playlist is None:
+        session.rollback()
+        raise LookupError(f"Playlist {playlist_id} が見つかりません")
+    if not playlist.enabled or playlist.paused:
+        session.rollback()
+        raise ValueError("無効または一時停止中のPlaylistは同期できません")
     run = RunRepository(session).start(
         trigger=trigger,
         kind="download",
@@ -358,6 +431,8 @@ def _integer(value: object) -> int | None:
 
 
 __all__ = [
+    "SyncAlreadyRunningError",
+    "playlist_sync_is_active",
     "SyncStats",
     "apply_discovery",
     "enqueue_discover_run",

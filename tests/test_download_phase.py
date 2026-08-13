@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import func, select
 
-from sluicery.core.sync import enqueue_discover_run, execute_download_run, queue_download_phase
+from sluicery.core.sync import (
+    SyncAlreadyRunningError,
+    enqueue_discover_run,
+    execute_download_run,
+    queue_download_phase,
+)
 from sluicery.db.models import (
     Item,
     ItemMembership,
@@ -226,6 +232,14 @@ def test_discover_run_and_task_are_created_without_storing_url_in_payload(db_ses
     assert task.max_attempts == 3
     assert task.payload_json == {"playlist_id": playlist.id, "dry_run": True}
     assert playlist.url not in str(task.payload_json)
+
+
+def test_second_sync_for_same_playlist_is_rejected(db_session):
+    playlist, _, _ = _graph(db_session)
+    enqueue_discover_run(db_session, playlist.id)
+
+    with pytest.raises(SyncAlreadyRunningError):
+        enqueue_discover_run(db_session, playlist.id)
 
 
 def test_download_run_finishes_when_chains_have_been_enqueued(db_session):

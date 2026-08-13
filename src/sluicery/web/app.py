@@ -71,6 +71,7 @@ from sluicery.downloader.version import get_status, ytdlp_root
 from sluicery.downloader.ytdlp import mask_command_line
 from sluicery.layout import LayoutContext, LayoutValidationError, resolve_layout
 from sluicery.runner.base import mask_log_text
+from sluicery.scheduler import SchedulerService, validate_cron_expression
 from sluicery.storage import create_storage_adapter
 from sluicery.storage.base import StoragePathError, validate_relative_path
 from sluicery.web.auth import (
@@ -190,6 +191,7 @@ def create_app(
     *,
     settings: Settings | None = None,
     session_factory: sessionmaker[Session] | None = None,
+    scheduler_service: SchedulerService | None = None,
 ) -> FastAPI:
     app = FastAPI(title="sluicery", dependencies=[Depends(require_csrf)])
     templates = Jinja2Templates(directory=WEB_DIR / "templates")
@@ -220,6 +222,7 @@ def create_app(
     app.state.auth = auth
     app.state.csrf = csrf
     app.state.templates = templates
+    app.state.scheduler_service = scheduler_service
     app.add_middleware(
         AuthenticationMiddleware,
         auth=auth,
@@ -322,6 +325,7 @@ def create_app(
             }
             for storage in storages
         ]
+        next_runs = scheduler_service.next_runs()[:10] if scheduler_service is not None else []
         return templates.TemplateResponse(
             request,
             "dashboard.html",
@@ -339,6 +343,9 @@ def create_app(
                 failed_count=target_counts.get(TargetStatus.FAILED.value, 0),
                 missing_count=target_counts.get(TargetStatus.MISSING.value, 0),
                 delisted_count=delisted_count,
+                next_runs=next_runs,
+                playlist_names=playlist_names,
+                schedule_timezone=settings.TZ,
             ),
         )
 
@@ -370,6 +377,12 @@ def create_app(
             kind_hint = PlaylistKindHint(str(form.get("kind_hint", "video")))
             ytdlp_args = str(form.get("ytdlp_args", "")).strip() or None
             guard_freeform(ytdlp_args, source_label="Playlist")
+            discover_cron = str(form.get("discover_cron", "")).strip() or None
+            download_cron = str(form.get("download_cron", "")).strip() or None
+            if discover_cron is not None:
+                validate_cron_expression(discover_cron, settings.TZ)
+            if download_cron is not None:
+                validate_cron_expression(download_cron, settings.TZ)
         except (NamingValidationError, OptionValidationError, ValueError) as exc:
             raise ValueError(str(exc)) from exc
         return {
@@ -380,6 +393,8 @@ def create_app(
             "ytdlp_args": ytdlp_args,
             "enabled": form.get("enabled") == "yes",
             "paused": form.get("paused") == "yes",
+            "discover_cron": discover_cron,
+            "download_cron": download_cron,
         }
 
     def playlist_editor_response(
@@ -422,6 +437,8 @@ def create_app(
             )
         with session_factory() as db:
             playlist = PlaylistRepository(db).create(**values, dedup_hardlink=False)
+        if scheduler_service is not None:
+            scheduler_service.reconcile()
         auth.add_flash(request.state.auth, "success", "Playlistを作成しました")
         return RedirectResponse(f"/playlists/{playlist.id}", status_code=303)
 
@@ -451,6 +468,8 @@ def create_app(
                     status_code=422,
                 )
             PlaylistRepository(db).update(playlist, **values)
+        if scheduler_service is not None:
+            scheduler_service.reconcile()
         auth.add_flash(request.state.auth, "success", "Playlistを更新しました")
         return RedirectResponse(f"/playlists/{playlist_id}", status_code=303)
 
@@ -503,6 +522,9 @@ def create_app(
             )
             profiles = list(db.scalars(select(Profile).order_by(Profile.name)))
             storages = list(db.scalars(select(Storage).order_by(Storage.name)))
+        next_runs = (
+            scheduler_service.next_runs(playlist_id) if scheduler_service is not None else []
+        )
         return templates.TemplateResponse(
             request,
             "playlists/detail.html",
@@ -520,6 +542,8 @@ def create_app(
                 assignments=assignments,
                 profiles=profiles,
                 storages=storages,
+                next_runs=next_runs,
+                schedule_timezone=settings.TZ,
             ),
         )
 
@@ -661,6 +685,8 @@ def create_app(
                 message = "PlaylistとItem関連DBレコードを削除しました。メディアは削除していません"
             else:
                 raise HTTPException(status_code=422, detail="削除方法を選択してください")
+        if scheduler_service is not None:
+            scheduler_service.reconcile()
         auth.add_flash(request.state.auth, "success", message)
         return RedirectResponse("/playlists", status_code=303)
 
@@ -1507,6 +1533,8 @@ def create_app(
             raise ValueError("割合は0から100の範囲にしてください")
         if key == "worker.progress_write_percent_step" and value > 100:
             raise ValueError("進捗率の刻みは100以下にしてください")
+        if key in {"schedule.discover_cron", "schedule.download_cron"}:
+            validate_cron_expression(str(value), settings.TZ)
         return value
 
     def validate_setting_relationships(db: Session, key: str, value: Any) -> None:
@@ -1547,6 +1575,8 @@ def create_app(
                 error=f"{key or '設定キー'}: {exc}",
                 status_code=422,
             )
+        if scheduler_service is not None and key.startswith("schedule."):
+            scheduler_service.reconcile()
         auth.add_flash(request.state.auth, "success", f"{key}を上書きしました")
         return RedirectResponse(f"/settings#{key.split('.', 1)[0]}", status_code=303)
 
@@ -1558,6 +1588,8 @@ def create_app(
             raise HTTPException(status_code=404)
         with session_factory() as db:
             core_settings.unset_override(db, key)
+        if scheduler_service is not None and key.startswith("schedule."):
+            scheduler_service.reconcile()
         auth.add_flash(request.state.auth, "success", f"{key}をコード既定値へ戻しました")
         return RedirectResponse(f"/settings#{key.split('.', 1)[0]}", status_code=303)
 

@@ -212,6 +212,7 @@ class RunStatus(enum.StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    SKIPPED = "skipped"
 
 
 class YtdlpReleaseSource(enum.StrEnum):

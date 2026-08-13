@@ -9,6 +9,8 @@
 <form method="post" action="/playlists/{{ playlist.id }}/run"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button name="kind" value="download"{% if not playlist.enabled or playlist.paused %} disabled{% endif %}>download</button></form>
 </div></section>
 
+<section class="panel section-block"><h2>次回実行予定</h2>{% if next_runs %}<ul>{% for row in next_runs %}<li>{{ row.kind }}: {{ row.display }}</li>{% endfor %}</ul><p class="muted">表示タイムゾーン: {{ schedule_timezone }}</p>{% else %}<p class="muted">登録された予定はありません。</p>{% endif %}</section>
+
 <section class="panel section-block"><h2>Profile割当</h2>
 <table><thead><tr><th>Profile</th><th>Storage</th><th>subpath</th><th>操作</th></tr></thead><tbody>
 {% for assignment, profile, storage in assignments %}<tr><td>{{ profile.name }}</td><td>{{ storage.name }}</td><td>{{ assignment.subpath }}</td><td><form method="post" action="/playlists/{{ playlist.id }}/assignments/{{ assignment.id }}/delete" onsubmit="return confirm('割当を解除しますか？')"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button-secondary">解除</button></form></td></tr>

@@ -133,6 +133,7 @@ def _run_web() -> int:
     from sluicery.config import load_settings
     from sluicery.db import crypto
     from sluicery.db.session import create_engine_for, create_session_factory
+    from sluicery.scheduler import SchedulerService
     from sluicery.tasks.worker import StaleTaskReaper, WorkerConfig
     from sluicery.web.app import create_app
     from sluicery.web.auth import ensure_initial_user
@@ -146,14 +147,14 @@ def _run_web() -> int:
     session_factory = None
     reaper_stop = None
     reaper_thread = None
+    scheduler_service = None
     if current == head:
         engine = create_engine_for(settings.DB_PATH)
         session_factory = create_session_factory(engine)
         initial_user = ensure_initial_user(session_factory, settings)
         if initial_user.generated_password is not None:
             print(
-                "[sluicery] 初期管理者パスワード: "
-                f"{initial_user.generated_password}",
+                f"[sluicery] 初期管理者パスワード: {initial_user.generated_password}",
                 flush=True,
             )
         with session_factory() as session:
@@ -167,6 +168,8 @@ def _run_web() -> int:
             name="task-stale-reaper",
         )
         reaper_thread.start()
+        scheduler_service = SchedulerService(engine, session_factory, settings.TZ)
+        scheduler_service.start()
 
     threading.Thread(
         target=_maybe_auto_install_ytdlp, args=(settings,), daemon=True, name="ytdlp-auto-install"
@@ -175,12 +178,18 @@ def _run_web() -> int:
     port = int(os.environ.get("HTTP_PORT", str(settings.HTTP_PORT)))
     try:
         uvicorn.run(
-            create_app(settings=settings, session_factory=session_factory),
+            create_app(
+                settings=settings,
+                session_factory=session_factory,
+                scheduler_service=scheduler_service,
+            ),
             host="0.0.0.0",
             port=port,
             log_level="info",
         )
     finally:
+        if scheduler_service is not None:
+            scheduler_service.shutdown()
         if reaper_stop is not None and reaper_thread is not None:
             reaper_stop.set()
             reaper_thread.join(timeout=2)
