@@ -110,6 +110,8 @@ def test_remote_password_is_encrypted_write_only_and_blank_update_preserves_it(
     assert created.status_code == 303
     edit = client.get(created.headers["location"])
     assert secret not in edit.text
+    assert "operator" not in edit.text
+    assert "WORKGROUP" not in edit.text
     assert 'value=""' in edit.text
     assert "設定済み" in edit.text
     with engine.connect() as connection:
@@ -124,6 +126,8 @@ def test_remote_password_is_encrypted_write_only_and_blank_update_preserves_it(
     form.update(
         csrf_token=_csrf(edit),
         name="NAS renamed",
+        user="",
+        domain="",
         password="",
     )
     updated = client.post(f"/storages/{storage_id}/edit", data=form, follow_redirects=False)
@@ -132,6 +136,34 @@ def test_remote_password_is_encrypted_write_only_and_blank_update_preserves_it(
         storage = db.get(Storage, storage_id)
         assert storage is not None
         assert storage.credentials_encrypted["password"] == secret
+
+
+def test_remote_credentials_are_not_echoed_after_validation_error(
+    base_env, session_factory
+) -> None:
+    client = _client(base_env, session_factory)
+    new_page = client.get("/storages/new")
+
+    invalid = client.post(
+        "/storages/new",
+        data={
+            "csrf_token": _csrf(new_page),
+            "name": "Invalid NAS",
+            "kind": "remote",
+            "protocol": "smb",
+            "host": "",
+            "share": "media",
+            "port": "445",
+            "user": "credential-user-secret",
+            "domain": "credential-domain-secret",
+            "password": "credential-password-secret",
+        },
+    )
+
+    assert invalid.status_code == 422
+    assert "credential-user-secret" not in invalid.text
+    assert "credential-domain-secret" not in invalid.text
+    assert "credential-password-secret" not in invalid.text
 
 
 def test_connection_test_persists_and_displays_four_stages(

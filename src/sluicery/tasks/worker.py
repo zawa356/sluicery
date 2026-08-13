@@ -259,7 +259,7 @@ class Worker:
         paths = getattr(handler, "log_paths", ())
         if not isinstance(paths, tuple) or not paths:
             return
-        chunks: list[str] = []
+        source_paths: list[Path] = []
         log_parent: Path | None = None
         for raw_path in paths:
             if not isinstance(raw_path, Path):
@@ -268,20 +268,26 @@ class Worker:
                 path = raw_path.resolve(strict=True)
                 if not path.is_file():
                     continue
-                content = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 logger.warning("Task log could not be read", extra={"task_id": task.id})
                 continue
             log_parent = path.parent if log_parent is None else log_parent
-            chunks.append(mask_log_text(content))
-        if not chunks or log_parent is None:
+            source_paths.append(path)
+        if not source_paths or log_parent is None:
             return
         aggregate = log_parent / f"run-{task.run_id}.log"
-        block = f"\n=== Task {task.id} ({task.type.value}) ===\n" + "\n".join(chunks)
+        header = f"\n=== Task {task.id} ({task.type.value}) ===\n"
+        excerpt = header
         try:
             with aggregate.open("a", encoding="utf-8") as output:
                 fcntl.flock(output.fileno(), fcntl.LOCK_EX)
-                output.write(block)
+                output.write(header)
+                for path in source_paths:
+                    with path.open(encoding="utf-8", errors="replace") as source:
+                        for line in source:
+                            masked = mask_log_text(line)
+                            output.write(masked)
+                            excerpt = (excerpt + masked)[-4000:]
                 output.flush()
                 os.fsync(output.fileno())
                 fcntl.flock(output.fileno(), fcntl.LOCK_UN)
@@ -289,7 +295,7 @@ class Worker:
                 stored_task = session.get(Task, task.id)
                 run = session.get(Run, task.run_id)
                 if stored_task is not None:
-                    stored_task.log_excerpt = mask_log_text(block[-4000:])
+                    stored_task.log_excerpt = excerpt
                 if run is not None:
                     run.log_path = str(aggregate.resolve())
                 session.commit()
