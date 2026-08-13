@@ -47,3 +47,12 @@
 - 用語のドリフト: Task / Target / Item / Artifact / Staging / blocked / unavailableは要件定義と整合。顕著なドリフトなし
 - コミット粒度: 機能別コミットは概ね指示書計画に沿う。レビュー前に見つけたpublish復旧、continue、cancel伝播は独立修正コミットでテスト・変更履歴を同梱している
 - 未記録の設計判断: D-036〜D-040にffmpeg、状態写像、duration、publish復旧、Artifact確定を記録済み。ユーザー指定URLやSMB資格情報は記録していない
+
+## 対応
+
+全指摘へ対応した。
+
+- [重大] `core/target_state.py`を追加し、所有権付きTask更新が成功した後だけTargetを条件付き単一UPDATEで同期するようにした。再試行上限、直接unavailable、stale上限、実行中／待機中cancel、handler例外を回帰試験で固定した。handlerが既にfailedとretry_countを更新した場合は二重加算しない
+- [中] after_moveでfile pathとyt-dlpのformat IDを別の構造化フレームとして取得し、download → verify → indexへ伝播するよう変更した。ffprobe stream indexの代入を削除し、実パイプラインでformat_id=`quicktime`を確認した
+- [軽微] 既存最終名のサイズ不一致時にpublishを呼ばずfailed / Staging保持となる試験と、index後の`unlink()`がOSErrorでもArtifact / Target確定を覆さない試験を追加した
+- [中] 全指摘対応後にruntime全サービスを再ビルドし、`make test` 272件、Ruff、mypyが成功した。秘密情報混入検査と稼働状態を確認してから`checkpoint/step-07`を付ける
