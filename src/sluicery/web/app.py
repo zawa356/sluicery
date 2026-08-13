@@ -51,10 +51,13 @@ from sluicery.db.models import (
     Profile,
     ProfileKind,
     Run,
+    RunStatus,
     Storage,
     StorageKind,
     Target,
     TargetStatus,
+    Task,
+    TaskStatus,
 )
 from sluicery.db.repositories.playlist import PlaylistRepository
 from sluicery.db.repositories.playlist_profile import PlaylistProfileRepository
@@ -1138,11 +1141,106 @@ def create_app(
         return RedirectResponse("/storages", status_code=303)
 
     @app.get("/runs")
-    def runs(request: Request) -> Response:
+    def runs(request: Request, page: int = 1, status_filter: str = "") -> Response:
+        page = max(1, page)
+        per_page = 50
+        statement = (
+            select(Run, Playlist.name)
+            .outerjoin(Playlist, Playlist.id == Run.playlist_id)
+            .order_by(Run.started_at.desc(), Run.id.desc())
+        )
+        if status_filter:
+            try:
+                selected_status = RunStatus(status_filter)
+            except ValueError:
+                raise HTTPException(status_code=422, detail="不正なRun状態です") from None
+            statement = statement.where(Run.status == selected_status)
+        with session_factory() as db:
+            total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
+            run_rows = list(db.execute(statement.offset((page - 1) * per_page).limit(per_page)))
+            run_ids = [run.id for run, _playlist_name in run_rows]
+            task_counts: dict[int, dict[str, int]] = {run_id: {} for run_id in run_ids}
+            if run_ids:
+                for run_id, task_status, count in db.execute(
+                    select(Task.run_id, Task.status, func.count(Task.id))
+                    .where(Task.run_id.in_(run_ids))
+                    .group_by(Task.run_id, Task.status)
+                ):
+                    assert run_id is not None
+                    task_counts[run_id][task_status.value] = count
+            rows = [
+                {
+                    "run": run,
+                    "playlist_name": playlist_name or "—",
+                    "task_counts": task_counts[run.id],
+                }
+                for run, playlist_name in run_rows
+            ]
         return templates.TemplateResponse(
             request,
-            "placeholder.html",
-            context(request, active_nav="runs", title="Run 履歴", phase="Part C"),
+            "runs/list.html",
+            context(
+                request,
+                active_nav="runs",
+                rows=rows,
+                page=page,
+                pages=max(1, (total + per_page - 1) // per_page),
+                total=total,
+                status_filter=status_filter,
+                statuses=[value.value for value in RunStatus],
+                now=datetime.now(UTC),
+            ),
+        )
+
+    @app.get("/runs/{run_id}")
+    def run_detail(
+        request: Request, run_id: int, page: int = 1, status_filter: str = ""
+    ) -> Response:
+        page = max(1, page)
+        per_page = 50
+        with session_factory() as db:
+            row = db.execute(
+                select(Run, Playlist.name)
+                .outerjoin(Playlist, Playlist.id == Run.playlist_id)
+                .where(Run.id == run_id)
+            ).one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404)
+            run, playlist_name = row
+            statement = select(Task).where(Task.run_id == run_id).order_by(Task.id)
+            if status_filter:
+                try:
+                    selected_status = TaskStatus(status_filter)
+                except ValueError:
+                    raise HTTPException(status_code=422, detail="不正なTask状態です") from None
+                statement = statement.where(Task.status == selected_status)
+            total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
+            tasks = list(db.scalars(statement.offset((page - 1) * per_page).limit(per_page)))
+            status_counts = {
+                status.value: count
+                for status, count in db.execute(
+                    select(Task.status, func.count(Task.id))
+                    .where(Task.run_id == run_id)
+                    .group_by(Task.status)
+                )
+            }
+        return templates.TemplateResponse(
+            request,
+            "runs/detail.html",
+            context(
+                request,
+                active_nav="runs",
+                run=run,
+                playlist_name=playlist_name or "—",
+                tasks=tasks,
+                status_counts=status_counts,
+                page=page,
+                pages=max(1, (total + per_page - 1) // per_page),
+                total=total,
+                status_filter=status_filter,
+                task_statuses=[value.value for value in TaskStatus],
+                now=datetime.now(UTC),
+            ),
         )
 
     @app.get("/reports")
