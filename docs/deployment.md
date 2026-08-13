@@ -55,8 +55,9 @@ docker compose exec app python3 -m sluicery.cli ytdlp status
 | 変数 | 既定値 | 内容 |
 |---|---|---|
 | `SECRET_KEY` | （必須、既定値なし） | Fernet 暗号化鍵。未設定時は起動を拒否する。ローテーション非対応 |
-| `ADMIN_USERNAME` | `admin` | Phase 9 で実装予定の初期管理者アカウント名。現時点では作成処理に未接続 |
-| `ADMIN_PASSWORD` | （空） | Phase 9 で実装予定。現時点では自動生成・ログ出力を行わない |
+| `ADMIN_USERNAME` | `admin` | DBにユーザーが無い初回起動時だけ作成する管理者アカウント名 |
+| `ADMIN_PASSWORD` | （空） | 初回管理者のパスワード。空ならランダム生成し起動ログへ一度だけ表示する |
+| `AUTH_COOKIE_SECURE` | `false` | `true` でセッションCookieへ `Secure` 属性を付ける。HTTPS利用時は有効化する |
 | `TZ` | `Asia/Tokyo` | タイムゾーン。cron 式はこの TZ で解釈する |
 | `PUID` / `PGID` | `1000` / `1000` | 生成ファイルの所有者。ホスト側で `id` コマンドの値と合わせる |
 | `UMASK` | `022` | 生成ファイルの権限 |
@@ -91,7 +92,9 @@ Staging元はindex後に削除された一方、HTTP 403多発で安全停止し
 
 sluicery アプリ自体は HTTPS 終端を行いません（要件定義 §12）。外部からアクセスする場合は
 nginx / Caddy 等のリバースプロキシを別途 `HTTP_PORT`（既定 8080）の手前に置き、TLS 終端はそちら側の
-責務としてください。
+責務としてください。HTTPS経由で運用するときは `.env` の `AUTH_COOKIE_SECURE=true` を設定し、
+ブラウザが平文HTTPへセッションCookieを送らないようにしてください。`HttpOnly` と `SameSite=Lax` は
+常に付与されます。
 
 ## 5. バックアップとリストア
 

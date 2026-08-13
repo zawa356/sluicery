@@ -135,6 +135,7 @@ def _run_web() -> int:
     from sluicery.db.session import create_engine_for, create_session_factory
     from sluicery.tasks.worker import StaleTaskReaper, WorkerConfig
     from sluicery.web.app import create_app
+    from sluicery.web.auth import ensure_initial_user
 
     settings = load_settings()
     _ensure_migrations_for_web(settings)
@@ -142,11 +143,19 @@ def _run_web() -> int:
     assert settings.DB_PATH is not None
     current, head = _current_and_head_revision(settings.DB_PATH)
     engine = None
+    session_factory = None
     reaper_stop = None
     reaper_thread = None
     if current == head:
         engine = create_engine_for(settings.DB_PATH)
         session_factory = create_session_factory(engine)
+        initial_user = ensure_initial_user(session_factory, settings)
+        if initial_user.generated_password is not None:
+            print(
+                "[sluicery] 初期管理者パスワード: "
+                f"{initial_user.generated_password}",
+                flush=True,
+            )
         with session_factory() as session:
             worker_config = WorkerConfig.from_session(session)
         reaper_stop = threading.Event()
@@ -165,7 +174,12 @@ def _run_web() -> int:
 
     port = int(os.environ.get("HTTP_PORT", str(settings.HTTP_PORT)))
     try:
-        uvicorn.run(create_app(), host="0.0.0.0", port=port, log_level="info")
+        uvicorn.run(
+            create_app(settings=settings, session_factory=session_factory),
+            host="0.0.0.0",
+            port=port,
+            log_level="info",
+        )
     finally:
         if reaper_stop is not None and reaper_thread is not None:
             reaper_stop.set()

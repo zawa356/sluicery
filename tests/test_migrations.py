@@ -30,7 +30,7 @@ def test_upgrade_downgrade_upgrade(tmp_path: Path) -> None:
     tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     con.close()
 
-    assert {"user", "storage", "item", "target", "task", "setting"} <= tables
+    assert {"user", "auth_session", "storage", "item", "target", "task", "setting"} <= tables
 
 
 def test_profile_tristate_migration_preserves_values_and_round_trips(tmp_path: Path) -> None:

@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     ADMIN_USERNAME: str = "admin"
     ADMIN_PASSWORD: str | None = None
+    AUTH_COOKIE_SECURE: bool = False
     TZ: str = "Asia/Tokyo"
     PUID: int = 1000
     PGID: int = 1000
