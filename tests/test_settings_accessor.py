@@ -78,3 +78,20 @@ def test_phase6_worker_defaults(db_session) -> None:
     assert accessor.worker_progress_write_percent_step == 5
     assert accessor.worker_shutdown_grace_sec == 20
     assert accessor.worker_enable_test_tasks is False
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("schedule.discover_cron", "not-a-cron"),
+        ("schedule.download_cron", "0 0 * *"),
+        ("schedule.download_window", "25:00-06:00"),
+        ("schedule.jitter_minutes", -1),
+    ],
+)
+def test_invalid_schedule_override_is_rejected_at_core_boundary(
+    db_session, key: str, value: object
+) -> None:
+    with pytest.raises(ValueError):
+        core_settings.set_override(db_session, key, value)
+    assert core_settings.is_overridden(db_session, key) is False

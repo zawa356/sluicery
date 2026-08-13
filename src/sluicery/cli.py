@@ -170,6 +170,10 @@ def _run_web() -> int:
         reaper_thread.start()
         scheduler_service = SchedulerService(engine, session_factory, settings.TZ)
         scheduler_service.start()
+        print(
+            f"[sluicery] Playlist scheduler started (timezone={settings.TZ}, app only)",
+            flush=True,
+        )
 
     threading.Thread(
         target=_maybe_auto_install_ytdlp, args=(settings,), daemon=True, name="ytdlp-auto-install"

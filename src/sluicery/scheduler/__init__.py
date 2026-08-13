@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 _JOB_PREFIX = "sluicery:playlist:"
 _RECONCILE_JOB_ID = "sluicery:maintenance:reconcile"
 _MISFIRE_GRACE_SEC = 24 * 60 * 60
+_TASKLESS_DOWNLOAD_RECOVERY_SEC = 24 * 60 * 60
 _active_service: SchedulerService | None = None
 _active_service_lock = threading.Lock()
 _WINDOW_RE = re.compile(r"^(\d{2}):(\d{2})-(\d{2}):(\d{2})$")
@@ -75,9 +76,9 @@ def parse_download_window(value: str | None) -> DownloadWindow | None:
 
 
 class SymmetricCronTrigger(CronTrigger):
-    """APSchedulerの正方向だけのjitterを、±同幅へ置き換える。"""
+    """jobごとのランダムな位相でcron全体を±同幅へずらす。"""
 
-    __slots__ = ("expression",)
+    __slots__ = ("algorithm_version", "expression", "jitter_seconds", "offset_seconds")
 
     @classmethod
     def from_expression(
@@ -88,28 +89,55 @@ class SymmetricCronTrigger(CronTrigger):
         jitter_minutes: int,
     ) -> SymmetricCronTrigger:
         trigger = cls.from_crontab(expression, timezone=timezone)
+        trigger.algorithm_version = 2
         trigger.expression = expression
-        trigger.jitter = jitter_minutes * 60
+        trigger.jitter_seconds = jitter_minutes * 60
+        trigger.offset_seconds = (
+            random.uniform(-trigger.jitter_seconds, trigger.jitter_seconds)
+            if trigger.jitter_seconds
+            else 0.0
+        )
         return trigger
 
-    def _apply_jitter(
+    def get_next_fire_time(
         self,
-        next_fire_time: datetime | None,
-        jitter: int | None,
+        previous_fire_time: datetime | None,
         now: datetime,
     ) -> datetime | None:
-        if next_fire_time is None or not jitter:
-            return next_fire_time
-        return next_fire_time + timedelta(seconds=random.uniform(-jitter, jitter))
+        """前回の実時刻をcron基準時刻へ戻し、同じ基準時刻の再発火を防ぐ。"""
+        offset = timedelta(seconds=self.offset_seconds)
+        base_previous = (
+            (previous_fire_time.astimezone(UTC) - offset).astimezone(self.timezone)
+            if previous_fire_time is not None
+            else None
+        )
+        base_now = (now.astimezone(UTC) - offset).astimezone(self.timezone)
+        base_fire_time = super().get_next_fire_time(base_previous, base_now)
+        if base_fire_time is None:
+            return None
+        fire_time = (base_fire_time.astimezone(UTC) + offset).astimezone(self.timezone)
+        if self.end_date is not None and fire_time > self.end_date:
+            return None
+        return fire_time
 
     def __getstate__(self) -> dict[str, Any]:
         state = super().__getstate__()
         state["sluicery_expression"] = self.expression
+        state["sluicery_jitter_seconds"] = self.jitter_seconds
+        state["sluicery_offset_seconds"] = self.offset_seconds
+        state["sluicery_algorithm_version"] = self.algorithm_version
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         copied = dict(state)
         self.expression = str(copied.pop("sluicery_expression"))
+        legacy_jitter = int(copied.get("jitter") or 0)
+        self.jitter_seconds = int(copied.pop("sluicery_jitter_seconds", legacy_jitter))
+        self.offset_seconds = float(copied.pop("sluicery_offset_seconds", 0.0))
+        self.algorithm_version = int(copied.pop("sluicery_algorithm_version", 1))
+        # v1はCronTrigger._apply_jitterを上書きしていた。v2は基準時刻と実時刻を
+        # 相互変換するため、親クラスの正方向jitterは常に無効化する。
+        copied["jitter"] = None
         super().__setstate__(copied)
 
 
@@ -196,6 +224,10 @@ class SchedulerService:
                 max_instances=1,
                 misfire_grace_time=60,
             )
+            # appがまだリクエストもscheduled jobも受けないpaused状態でだけ回収する。
+            # 定期整合から実行すると、Task作成前の長いStorage事前確認中Runを
+            # orphanと誤認してPlaylist排他を外し得る。
+            self.recover_orphan_runs()
             self.reconcile()
             if not paused:
                 self._scheduler.resume()
@@ -223,7 +255,6 @@ class SchedulerService:
         """DB設定をジョブへ反映し、対象外Playlistのジョブを除去する。"""
         if not self._started:
             return
-        self.recover_orphan_runs()
         with self._session_factory() as session:
             settings = OperationalSettings(session)
             jitter = settings.schedule_jitter_minutes
@@ -283,8 +314,12 @@ class SchedulerService:
         recovered: list[int] = []
         with self._session_factory() as session:
             settings = OperationalSettings(session)
-            stale_before = self._clock().astimezone(UTC) - timedelta(
+            now = self._clock().astimezone(UTC)
+            stale_before = now - timedelta(
                 seconds=settings.worker_stale_threshold_sec
+            )
+            taskless_download_before = now - timedelta(
+                seconds=_TASKLESS_DOWNLOAD_RECOVERY_SEC
             )
             running_runs = list(
                 session.scalars(
@@ -297,6 +332,14 @@ class SchedulerService:
             for run in running_runs:
                 tasks = list(session.scalars(select(Task).where(Task.run_id == run.id)))
                 if any(task.status in active_statuses for task in tasks):
+                    continue
+                # downloadはStorage事前確認中に正当にTask 0件となる。appと別のCLIが
+                # 生存している可能性を優先し、短いworker stale閾値では回収しない。
+                if (
+                    not tasks
+                    and run.kind == "download"
+                    and run.started_at >= taskless_download_before
+                ):
                     continue
                 stats = dict(run.stats_json or {})
                 stats["recovered_orphan"] = True
@@ -320,11 +363,17 @@ class SchedulerService:
     def execute_job(self, playlist_id: int, kind: str) -> None:
         """永続ジョブの実行入口。秘密値をjob argsへ保存しない。"""
         try:
-            if kind == "download":
-                with self._session_factory() as session:
+            with self._session_factory() as session:
+                playlist = session.get(Playlist, playlist_id)
+                if playlist is None or not playlist.enabled or playlist.paused:
+                    return
+                if kind == "download":
                     window = parse_download_window(
                         OperationalSettings(session).schedule_download_window
                     )
+                else:
+                    window = None
+            if kind == "download":
                 local_now = self._clock().astimezone(self.timezone)
                 if window is not None and not window.contains(local_now):
                     self._record_skipped(playlist_id, kind, "outside_download_window")
@@ -395,9 +444,10 @@ class SchedulerService:
             return False
         existing_trigger = job.trigger
         return (
-            existing_trigger.expression == trigger.expression
+            existing_trigger.algorithm_version == trigger.algorithm_version
+            and existing_trigger.expression == trigger.expression
             and str(existing_trigger.timezone) == str(trigger.timezone)
-            and existing_trigger.jitter == trigger.jitter
+            and existing_trigger.jitter_seconds == trigger.jitter_seconds
             and tuple(job.args) == (playlist_id, kind)
             and job.coalesce is True
             and job.max_instances == 1
@@ -407,7 +457,7 @@ class SchedulerService:
     def _record_skipped(self, playlist_id: int, kind: str, reason: str) -> None:
         with self._session_factory() as session:
             playlist = session.get(Playlist, playlist_id)
-            if playlist is None:
+            if playlist is None or not playlist.enabled or playlist.paused:
                 return
             run = RunRepository(session).start(
                 trigger=RunTrigger.SCHEDULE,
