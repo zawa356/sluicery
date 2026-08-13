@@ -124,7 +124,7 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 | `make down` | 停止（データは保持） | 実装済み | `docker compose down` |
 | `make logs` | ログ追跡 | 実装済み | `docker compose logs -f` |
 | `make shell` | `app` コンテナにシェル接続 | 実装済み | `docker compose exec app /bin/bash` |
-| `make sync` | 全プレイリストの同期を即時実行 | **未実装（Phase 8）** | — |
+| `make sync` | 全プレイリストをdiscover後、取得対象を最大50件ずつ投入 | 実装済み | `docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli sync run --all` |
 | `make test` | dev 依存込みの test ステージをビルドし、コンテナ内で pytest を実行 | 実装済み | `docker build --target test -t sluicery:local-test . && docker run --rm --entrypoint pytest sluicery:local-test` |
 | `make lint` | ruff / mypy をコンテナ内で実行 | 実装済み | 上記 test イメージに対し `docker run --rm --entrypoint ruff sluicery:local-test check src tests` 等 |
 | `make lock` | `requirements.in` / `requirements-dev.in` から lock ファイルを再生成（依存を更新したときのみ） | 実装済み | — |
@@ -133,6 +133,21 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 | `make backup` | DB + 設定 + シークレットを単一アーカイブに書き出し | **未実装（Phase 20）** | — |
 | `make restore FILE=...` | バックアップから復元 | **未実装（Phase 20）** | — |
 | `make purge` | 削除対象を表示して確認した上でコンテナ・イメージ・volume を削除（bind mount 先の実体は削除しない） | 実装済み | `docker compose down --rmi local --volumes --remove-orphans` |
+
+Playlist単位の二相同期は次のCLIでも実行できます。`discover`は1つのnetwork Taskの完了を待ち、
+`download`は5段チェーンの投入完了時点で戻ります。`--dry-run`は一覧取得と差分表示を行いますが、
+Item / Target / Playlistの同期状態を変更せず、downloadも開始しません（実行履歴用のRun / Taskは記録します）。
+
+```bash
+docker compose exec --user "$(id -u):$(id -g)" app \
+  python3 -m sluicery.cli sync discover --playlist <名前またはID>
+docker compose exec --user "$(id -u):$(id -g)" app \
+  python3 -m sluicery.cli sync download --playlist <名前またはID>
+docker compose exec --user "$(id -u):$(id -g)" app \
+  python3 -m sluicery.cli sync run --all
+docker compose exec --user "$(id -u):$(id -g)" app \
+  python3 -m sluicery.cli sync discover --all --dry-run
+```
 
 Staging上で対応するTaskを持たないファイルは、削除せず一覧だけ確認できます。
 
