@@ -589,7 +589,7 @@ def build_download_args(
 ) -> BuiltCommand:
     """単一 source_url を Staging に取得する download コマンドを組み立てる。"""
     from sluicery.core import settings as core_settings
-    from sluicery.downloader.protocol import PRINT_PREFIX, PROGRESS_PREFIX
+    from sluicery.downloader.protocol import PRINT_PREFIX, PROGRESS_PREFIX, RESULT_PREFIX
     from sluicery.layout import LayoutContext, resolve_layout
 
     overrides = overrides or OptionOverrides()
@@ -685,6 +685,15 @@ def build_download_args(
     if "--print" not in reserved:
         accumulator.add(
             ["--print", f"after_move:{PRINT_PREFIX}%(filepath)s"],
+            layer="L1",
+            source="アプリ予約引数",
+        )
+        accumulator.add(
+            [
+                "--print",
+                f'after_move:{RESULT_PREFIX}{{"file_path": %(filepath)j, '
+                '"format_id": %(format_id)j}',
+            ],
             layer="L1",
             source="アプリ予約引数",
         )

@@ -21,6 +21,7 @@ def main() -> int:
             print(f'SLUICERY_PROGRESS {{"status": "downloading", "downloaded_bytes": {i}}}')
             sys.stdout.flush()
         print("SLUICERY_PRINT done")
+        print('SLUICERY_RESULT {"file_path": "done", "format_id": "137+140"}')
         return 0
 
     if mode == "fail_429":

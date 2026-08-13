@@ -71,6 +71,7 @@ class VerifyHandler:
             payload_update={
                 **previous,
                 **media,
+                "format_id": _text(previous.get("format_id")),
                 "filesize": size,
                 "verified_at": datetime.now(UTC).isoformat(),
             },
@@ -101,7 +102,6 @@ def _extract_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     duration = _duration_seconds(format_data.get("duration"))
     video_codec = None
     audio_codec = None
-    format_id = None
     for stream in streams:
         if not isinstance(stream, dict):
             continue
@@ -111,12 +111,9 @@ def _extract_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
             video_codec = codec_name
         if codec_type == "audio" and audio_codec is None and isinstance(codec_name, str):
             audio_codec = codec_name
-        if format_id is None and isinstance(stream.get("index"), int):
-            format_id = str(stream["index"])
     container = format_data.get("format_name")
     return {
         "container": container if isinstance(container, str) else None,
-        "format_id": format_id,
         "video_codec": video_codec,
         "audio_codec": audio_codec,
         "duration": duration,
@@ -130,6 +127,10 @@ def _duration_seconds(value: object) -> int | None:
     if duration < 0:
         raise ValueError("durationが負です")
     return round(duration)
+
+
+def _text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 __all__ = ["VerifyHandler"]

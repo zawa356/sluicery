@@ -142,6 +142,17 @@ def test_download_always_enables_partial_file_resume(db_session) -> None:
     assert origin.layer == "L1"
 
 
+def test_download_emits_structured_after_move_result(db_session) -> None:
+    command = _download(db_session)
+
+    templates = [
+        command.args[index + 1]
+        for index, value in enumerate(command.args[:-1])
+        if value == "--print"
+    ]
+    assert any("SLUICERY_RESULT" in value and "%(format_id)j" in value for value in templates)
+
+
 def test_download_contains_staging_layout_protocol_and_progress_fix(db_session) -> None:
     command = _download(db_session)
     assert _option_value(command.args, "--paths") == "temp:/data/staging/work-1/.tmp"
