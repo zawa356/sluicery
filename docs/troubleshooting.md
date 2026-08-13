@@ -94,3 +94,15 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 **対処**：開発中は `docker compose down`（`-v` なし）を使う。データを保持したまま停止したい場合、
 `-v` を付けないこと。volume ごと削除したい場合の後始末は `make purge` を使う
 （[docs/footprint.md](footprint.md) 参照）。
+
+## 大規模同期で HTTP 403 が多発する
+
+**症状**：複数Playlistの`sync run --all`中、download Taskが短時間に連続してHTTP 403になる。
+
+**原因**：Phase 8実機検証で、配信元が取得要求を拒否するケースを確認した。配信元の一時的な
+制限、抽出仕様、または利用可能なformatの変化をログだけでは一意に区別できない。
+
+**対処**：ワーカーの並列度やレート上限を引き上げず、対象Runを停止する。Taskの`last_error`と
+Targetの`last_error`から、抽出失敗と`Requested format is not available`を分ける。yt-dlpの状態と
+Profileのformatを確認し、十分時間を置いてから少数で再開する。中断時のStagingファイルは
+`--continue`に使うため自動削除されない。
