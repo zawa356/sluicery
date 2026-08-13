@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 import shlex
 import shutil
 from collections.abc import Awaitable, Callable
@@ -20,6 +22,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from sluicery.config import Settings
+from sluicery.core import settings as core_settings
 from sluicery.core.cookies import (
     MAX_COOKIE_BYTES,
     CookieConfigurationError,
@@ -1152,11 +1155,114 @@ def create_app(
 
     @app.get("/settings")
     def settings_page(request: Request) -> Response:
+        return settings_page_response(request)
+
+    def display_setting_value(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (bool, list)):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
+
+    def settings_page_response(
+        request: Request, *, error: str | None = None, status_code: int = 200
+    ) -> Response:
+        with session_factory() as db:
+            groups: dict[str, list[dict[str, Any]]] = {}
+            for entry in core_settings.list_all(db):
+                spec = core_settings.CODE_DEFAULTS[entry.key]
+                prefix = entry.key.split(".", 1)[0]
+                groups.setdefault(prefix, []).append(
+                    {
+                        "key": entry.key,
+                        "value": display_setting_value(entry.value),
+                        "default": display_setting_value(spec.default),
+                        "type": "list[str]" if spec.type_ is list else spec.type_.__name__,
+                        "is_override": entry.is_override,
+                    }
+                )
         return templates.TemplateResponse(
             request,
-            "placeholder.html",
-            context(request, active_nav="settings", title="設定", phase="Part B"),
+            "settings.html",
+            context(request, active_nav="settings", groups=groups, error=error),
+            status_code=status_code,
         )
+
+    def parse_setting_form_value(key: str, raw: str) -> Any:
+        spec = core_settings.CODE_DEFAULTS.get(key)
+        if spec is None or key.startswith("_internal."):
+            raise core_settings.UnknownSettingKeyError(key)
+        if spec.type_ is bool:
+            if raw not in {"true", "false"}:
+                raise ValueError("真偽値はtrueまたはfalseを選択してください")
+            return raw == "true"
+        if spec.type_ is str and spec.default is None and not raw.strip():
+            return None
+        try:
+            value = core_settings._cast(spec.type_, raw)  # noqa: SLF001 - 同じ検証規約をUIで先行適用
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{spec.type_.__name__}として解釈できません") from exc
+        if isinstance(value, (int, float)) and value < 0:
+            raise ValueError("数値は0以上にしてください")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("有限の数値を指定してください")
+        if key in {"staging.warn_pct", "staging.stop_pct"} and value > 100:
+            raise ValueError("割合は0から100の範囲にしてください")
+        if key == "worker.progress_write_percent_step" and value > 100:
+            raise ValueError("進捗率の刻みは100以下にしてください")
+        return value
+
+    def validate_setting_relationships(db: Session, key: str, value: Any) -> None:
+        if key in {"staging.warn_pct", "staging.stop_pct"}:
+            warn = value if key == "staging.warn_pct" else core_settings.get(db, "staging.warn_pct")
+            stop = value if key == "staging.stop_pct" else core_settings.get(db, "staging.stop_pct")
+            if not 0 <= warn < stop <= 100:
+                raise ValueError("Staging閾値は0 <= warn < stop <= 100にしてください")
+        if key in {"storage.free_space_warn_bytes", "storage.free_space_stop_bytes"}:
+            warn = (
+                value
+                if key == "storage.free_space_warn_bytes"
+                else core_settings.get(db, "storage.free_space_warn_bytes")
+            )
+            stop = (
+                value
+                if key == "storage.free_space_stop_bytes"
+                else core_settings.get(db, "storage.free_space_stop_bytes")
+            )
+            if stop > warn:
+                raise ValueError("Storage容量閾値はstop <= warnにしてください")
+
+    @app.post("/settings/update")
+    async def settings_update(request: Request) -> Response:
+        form = await request.form()
+        key = str(form.get("key", ""))
+        raw = str(form.get("value", ""))
+        try:
+            value = parse_setting_form_value(key, raw)
+            with session_factory() as db:
+                validate_setting_relationships(db, key, value)
+                core_settings.set_override(db, key, value)
+        except core_settings.UnknownSettingKeyError:
+            raise HTTPException(status_code=404) from None
+        except (TypeError, ValueError) as exc:
+            return settings_page_response(
+                request,
+                error=f"{key or '設定キー'}: {exc}",
+                status_code=422,
+            )
+        auth.add_flash(request.state.auth, "success", f"{key}を上書きしました")
+        return RedirectResponse(f"/settings#{key.split('.', 1)[0]}", status_code=303)
+
+    @app.post("/settings/reset")
+    async def settings_reset(request: Request) -> Response:
+        form = await request.form()
+        key = str(form.get("key", ""))
+        if key not in core_settings.CODE_DEFAULTS or key.startswith("_internal."):
+            raise HTTPException(status_code=404)
+        with session_factory() as db:
+            core_settings.unset_override(db, key)
+        auth.add_flash(request.state.auth, "success", f"{key}をコード既定値へ戻しました")
+        return RedirectResponse(f"/settings#{key.split('.', 1)[0]}", status_code=303)
 
     def cookie_page_response(
         request: Request,

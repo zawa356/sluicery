@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}設定 — sluicery{% endblock %}
+{% set group_labels = {'auth':'認証', 'staging':'Stagingしきい値', 'log':'ログ保持', 'schedule':'スケジュール', 'ytdlp':'yt-dlp', 'download':'ダウンロード', 'defaults':'種別既定', 'retry':'再試行', 'storage':'Storageしきい値・実行', 'pipeline':'パイプライン', 'sync':'同期', 'worker':'worker'} %}
+{% block content %}
+<div class="page-heading"><h1>設定</h1><a class="button button-secondary" href="/settings/password">パスワード変更</a></div>
+<p>DBには上書き値だけを保存します。「既定値へ戻す」と、将来のコード既定値変更も反映されます。</p>
+{% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+{% for group, entries in groups.items() %}<section class="panel section-block" id="{{ group }}"><h2>{{ group_labels.get(group, group) }}</h2>
+{% if group == 'schedule' %}<p class="muted">スケジュール値の実行反映はPart Dで有効になります。cronはTZで解釈します。</p>{% endif %}
+<table><thead><tr><th>キー</th><th>型</th><th>現在値</th><th>コード既定値</th><th>由来</th><th>操作</th></tr></thead><tbody>{% for entry in entries %}<tr>
+<td><code>{{ entry.key }}</code></td><td>{{ entry.type }}</td><td><code>{{ entry.value if entry.value != '' else 'None / 空' }}</code></td><td><code>{{ entry.default if entry.default != '' else 'None / 空' }}</code></td><td>{{ 'DB上書き' if entry.is_override else 'コード既定' }}</td>
+<td><form method="post" action="/settings/update" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="key" value="{{ entry.key }}">{% if entry.type == 'bool' %}<select name="value"><option value="true"{% if entry.value == 'true' %} selected{% endif %}>true</option><option value="false"{% if entry.value == 'false' %} selected{% endif %}>false</option></select>{% else %}<input name="value" value="{{ entry.value }}" aria-label="{{ entry.key }}の値">{% endif %}<button>保存</button></form>{% if entry.is_override %}<form method="post" action="/settings/reset" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="key" value="{{ entry.key }}"><button class="button-secondary">既定値へ戻す</button></form>{% endif %}</td>
+</tr>{% endfor %}</tbody></table></section>{% endfor %}
+<section class="panel section-block"><h2>エクスポート / インポート</h2><button disabled>Phase 17で実装予定</button></section>
+{% endblock %}

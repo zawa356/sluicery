@@ -28,6 +28,11 @@ def test_unknown_key_raises(db_session) -> None:
         core_settings.get(db_session, "nonexistent.key")
 
 
+def test_boolean_override_rejects_ambiguous_text(db_session) -> None:
+    with pytest.raises(ValueError, match="true または false"):
+        core_settings.set_override(db_session, "ytdlp.auto_install", "perhaps")
+
+
 def test_typed_accessor_reflects_overrides(db_session) -> None:
     accessor = core_settings.OperationalSettings(db_session)
     assert accessor.download_retries == 5
@@ -55,9 +60,7 @@ def test_phase4_kind_defaults_and_list_override(db_session) -> None:
         "defaults.music.parse_metadata",
         '["uploader:%(artist)s"]',
     )
-    assert core_settings.get(db_session, "defaults.music.parse_metadata") == [
-        "uploader:%(artist)s"
-    ]
+    assert core_settings.get(db_session, "defaults.music.parse_metadata") == ["uploader:%(artist)s"]
 
 
 def test_phase6_worker_defaults(db_session) -> None:
