@@ -4,7 +4,7 @@
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
 最終更新: 2026-08-13
-対応コミット: Phase 7実装完了前（レビュー・checkpointタグ前）
+対応コミット: Phase 7レビュー対応完了（checkpointタグ前）
 
 ## プロジェクト概要
 
@@ -19,8 +19,8 @@ sluicery はyt-dlpを用いた自己ホスト型のプレイリスト同期サ�
 - [ ] 8. 二相同期（discover / download）、状態遷移（次の作業）
 - [ ] 9–20. Web UI以降
 
-Phase 7は実装と実機検証17項目まで完了した。`docs/reviews/phase7.md`の作成、レビュー指摘対応、
-`checkpoint/step-07`タグはまだであり、完了後にPhase 8へ進む。
+Phase 7は実装、実機検証17項目、独立レビューと全指摘対応まで完了した。
+`checkpoint/step-07`タグを付けてからPhase 8へ進む。
 
 ## Phase 7で実装したもの
 
@@ -44,17 +44,16 @@ Phase 7は実装と実機検証17項目まで完了した。`docs/reviews/phase7
 - 破損ファイルのverify失敗時にStagingを保持
 - Blender公式PeerTube素材からOpus、タグ、`metadata_block_picture`を生成
 - 孤立ファイルは4件を検出し、自動削除なし。Phase 3のMOV以外にPhase 4由来3件が残っていた
-- `make test` 264件、Ruff、mypy成功
+- レビュー対応後の`make test` 272件、Ruff、mypy成功
 
 詳細な17項目は`docs/基本設計.md`の「Phase 7 開発機・SMB実機検証」を参照。
 
 ## 次にやること
 
-1. `.claude/agents/reviewer.md`の形式でPhase 7差分をレビューし、`docs/reviews/phase7.md`へ記録
-2. 指摘を修正して再度test / lint、`checkpoint/step-07`を付与
-3. Phase 8のdiscover Task、Item upsert・空振り判定・delisted / 再登場を実装
-4. download選択・投入上限・Storage事前確認・Run統計・`sync` CLI / dry-runを実装
-5. `.local/test_playlists.txt`の全URLを実測し、可能な範囲でPart B 19項目を検証
+1. `checkpoint/step-07`を付与
+2. Phase 8のdiscover Task、Item upsert・空振り判定・delisted / 再登場を実装
+3. download選択・投入上限・Storage事前確認・Run統計・`sync` CLI / dry-runを実装
+4. `.local/test_playlists.txt`の全URLを実測し、可能な範囲でPart B 19項目を検証
 
 ## 未解決・保留
 
