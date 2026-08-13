@@ -68,6 +68,23 @@ class SessionSigner:
         return value
 
 
+class CsrfProtector:
+    """セッションIDに結び付いたCSRFトークンを発行・検証する。"""
+
+    def __init__(self, secret_key: str) -> None:
+        self._key = _derive_key(secret_key, purpose=b"csrf-token-signing")
+
+    def token_for(self, session_token: str) -> str:
+        digest = hmac.digest(self._key, session_token.encode("ascii"), "sha256")
+        return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+    def verify(self, session_token: str, candidate: str | None) -> bool:
+        if not candidate:
+            return False
+        expected = self.token_for(session_token)
+        return hmac.compare_digest(expected, candidate)
+
+
 @dataclass(frozen=True)
 class SessionIdentity:
     token: str
@@ -247,6 +264,7 @@ def ensure_initial_user(
 
 __all__ = [
     "AuthService",
+    "CsrfProtector",
     "InitialUserResult",
     "LOGIN_ERROR_MESSAGE",
     "LoginResult",
