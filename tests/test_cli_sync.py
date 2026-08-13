@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from sluicery import cli_sync
 from sluicery.db.models import Playlist, PlaylistKindHint, Run, RunStatus, RunTrigger
 
@@ -179,3 +181,24 @@ def test_sync_run_all_discovers_every_playlist_before_any_download(session_facto
         ("download", first),
         ("download", second),
     ]
+
+
+def test_interrupted_discover_cancels_task_and_run(session_factory, monkeypatch):
+    playlist_id = _playlist(session_factory, name="active")
+    monkeypatch.setattr(
+        cli_sync,
+        "_wait_for_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        cli_sync._execute_discover(
+            session_factory,
+            playlist_id,
+            dry_run=False,
+            poll_interval_sec=0,
+        )
+
+    with session_factory() as session:
+        run = session.query(Run).one()
+        assert run.status == RunStatus.CANCELLED

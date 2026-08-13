@@ -148,6 +148,7 @@ def _execute_discover(
     except KeyboardInterrupt:
         with open_session() as session:
             TaskRepository(session).request_cancel(task_id)
+            RunRepository(session).finish(run_id, RunStatus.CANCELLED, {})
         raise
     with open_session() as session:
         loaded_run = session.get(Run, run_id)
