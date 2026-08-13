@@ -118,17 +118,10 @@ def execute_download_run(
             max_attempts=max_attempts,
             adapter_factory=adapter_factory,
         )
-        counts = TargetRepository(session).count_by_status(playlist_id)
-        terminal_failures = sum(
-            counts.get(status, 0)
-            for status in {
-                TargetStatus.FAILED,
-                TargetStatus.UNAVAILABLE,
-                TargetStatus.BLOCKED,
-            }
-        )
         status = RunStatus.SUCCEEDED
-        if stats.targets_queued == 0 and stats.downloaded == 0 and terminal_failures > 0:
+        # Runは過去の累積成否ではなく今回の投入を表す。既存downloadedがあっても、
+        # 今回の候補がStorage事前確認で全てblockedなら全件失敗である。
+        if stats.targets_queued == 0 and stats.blocked > 0:
             status = RunStatus.FAILED
         RunRepository(session).finish(run.id, status, stats.to_dict())
     except Exception:

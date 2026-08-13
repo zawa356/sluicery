@@ -265,6 +265,26 @@ def test_download_run_is_failed_when_storage_blocks_every_target(db_session):
     assert run.stats_json["blocked"] == 1
 
 
+def test_download_run_is_failed_for_new_blocked_target_despite_existing_downloaded(
+    db_session,
+):
+    playlist, _, assignment = _graph(db_session)
+    _target(db_session, playlist, assignment, "done", 1, TargetStatus.DOWNLOADED)
+    _target(db_session, playlist, assignment, "blocked", 2, TargetStatus.PENDING)
+    adapter = _Adapter(ok=False)
+
+    run = execute_download_run(
+        db_session,
+        playlist.id,
+        adapter_factory=lambda _storage, _settings: adapter,  # type: ignore[arg-type]
+    )
+
+    assert run.status == RunStatus.FAILED
+    assert run.stats_json is not None
+    assert run.stats_json["downloaded"] == 1
+    assert run.stats_json["blocked"] == 1
+
+
 def test_download_run_with_nothing_to_do_succeeds(db_session):
     playlist, _, _ = _graph(db_session)
 
