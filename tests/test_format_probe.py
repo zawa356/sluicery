@@ -55,6 +55,21 @@ def test_parse_format_probe_output_rejects_invalid_json() -> None:
         parse_format_probe_output("not-json")
 
 
+def test_partial_selected_format_sizes_are_not_reported_as_total() -> None:
+    result = parse_format_probe_output(
+        json.dumps(
+            {
+                "requested_formats": [
+                    {"format_id": "video", "filesize": 1000},
+                    {"format_id": "audio"},
+                ]
+            }
+        )
+    )
+
+    assert result.estimated_size is None
+
+
 def test_format_probe_limiter_applies_global_minimum_interval() -> None:
     limiter = FormatProbeLimiter()
     limiter.acquire(10, now=100)

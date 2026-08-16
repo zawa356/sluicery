@@ -109,7 +109,7 @@ def parse_format_probe_output(line: str) -> FormatProbeResult:
         requested_downloads = raw.get("requested_downloads")
         selected_values = requested_downloads if isinstance(requested_downloads, list) else []
     selected_ids: list[str] = []
-    selected_sizes: list[int] = []
+    selected_sizes: list[int | None] = []
     for value in selected_values:
         if not isinstance(value, dict):
             continue
@@ -117,14 +117,17 @@ def parse_format_probe_output(line: str) -> FormatProbeResult:
         if format_id is not None:
             selected_ids.append(format_id)
         size = _estimated_size(value)
-        if size is not None:
-            selected_sizes.append(size)
+        selected_sizes.append(size)
 
     if not selected_ids:
         combined = _text(raw.get("format_id"))
         if combined is not None:
             selected_ids.extend(part for part in combined.split("+") if part)
-    total_size = sum(selected_sizes) if selected_sizes else _estimated_size(raw)
+    total_size = (
+        sum(size for size in selected_sizes if size is not None)
+        if selected_sizes and all(size is not None for size in selected_sizes)
+        else _estimated_size(raw)
+    )
     return FormatProbeResult(
         formats=tuple(rows),
         selected_format_ids=tuple(dict.fromkeys(selected_ids)),

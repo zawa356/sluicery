@@ -74,6 +74,19 @@ def test_run_classifies_unknown_error_as_failed(tmp_path: Path) -> None:
     assert result.classification == Classification.FAILED
 
 
+def test_run_can_redact_all_urls_before_stdout_and_log_persistence(tmp_path: Path) -> None:
+    result = _runner(tmp_path).run(
+        ["emit_urls"],
+        timeout=TimeoutPolicy(idle_sec=5, absolute_sec=10, term_grace_sec=2),
+        mask_all_urls=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout_lines == ['{"id":"url-test","url":"********"}']
+    assert result.log_path is not None
+    assert "http" not in result.log_path.read_text(encoding="utf-8").lower()
+
+
 def test_idle_timeout_terminates_process(tmp_path: Path) -> None:
     runner = _runner(tmp_path)
     result = runner.run(

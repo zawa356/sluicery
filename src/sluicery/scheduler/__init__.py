@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 _JOB_PREFIX = "sluicery:playlist:"
 _RECONCILE_JOB_ID = "sluicery:maintenance:reconcile"
 _INTEGRITY_JOB_ID = "sluicery:maintenance:integrity"
+_YTDLP_UPDATE_JOB_ID = "sluicery:maintenance:ytdlp-update"
 _MISFIRE_GRACE_SEC = 24 * 60 * 60
 _TASKLESS_DOWNLOAD_RECOVERY_SEC = 24 * 60 * 60
 _active_service: SchedulerService | None = None
@@ -195,6 +196,14 @@ def _dispatch_integrity_job() -> None:
     service.execute_integrity_job()
 
 
+def _dispatch_ytdlp_update_job() -> None:
+    service = _active_service
+    if service is None:
+        logger.error("yt-dlp update job fired without an active app scheduler")
+        return
+    service.execute_ytdlp_update_job()
+
+
 class SchedulerService:
     """SQLAlchemyJobStoreを使い、appプロセス内だけで動くscheduler境界。"""
 
@@ -205,10 +214,12 @@ class SchedulerService:
         timezone_name: str,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        ytdlp_update_callback: Callable[[], object] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self.timezone = ZoneInfo(timezone_name)
         self._clock = clock
+        self._ytdlp_update_callback = ytdlp_update_callback
         self._scheduler = BackgroundScheduler(
             timezone=self.timezone,
             jobstores={"default": SQLAlchemyJobStore(engine=engine)},
@@ -276,6 +287,7 @@ class SchedulerService:
                 "download": settings.schedule_download_cron,
             }
             integrity_expression = settings.schedule_integrity_cron
+            ytdlp_update_expression = settings.ytdlp_update_cron
             playlists = PlaylistRepository(session).list_runnable()
 
         desired: set[str] = set()
@@ -337,6 +349,33 @@ class SchedulerService:
                     max_instances=1,
                     misfire_grace_time=_MISFIRE_GRACE_SEC,
                 )
+
+        if not ytdlp_update_expression.strip():
+            if self._scheduler.get_job(_YTDLP_UPDATE_JOB_ID) is not None:
+                self._scheduler.remove_job(_YTDLP_UPDATE_JOB_ID)
+        else:
+            try:
+                update_trigger = SymmetricCronTrigger.from_expression(
+                    ytdlp_update_expression,
+                    timezone=self.timezone,
+                    jitter_minutes=jitter,
+                )
+            except ValueError:
+                if self._scheduler.get_job(_YTDLP_UPDATE_JOB_ID) is not None:
+                    self._scheduler.remove_job(_YTDLP_UPDATE_JOB_ID)
+                logger.error("Invalid yt-dlp update cron; job was not registered")
+            else:
+                existing = self._scheduler.get_job(_YTDLP_UPDATE_JOB_ID)
+                if not self._maintenance_job_matches(existing, update_trigger):
+                    self._scheduler.add_job(
+                        _dispatch_ytdlp_update_job,
+                        trigger=update_trigger,
+                        id=_YTDLP_UPDATE_JOB_ID,
+                        replace_existing=True,
+                        coalesce=True,
+                        max_instances=1,
+                        misfire_grace_time=_MISFIRE_GRACE_SEC,
+                    )
 
     def recover_orphan_runs(self) -> list[int]:
         """未完了Taskのないrunning Runを終端し、異常終了の残骸を残さない。"""
@@ -478,6 +517,20 @@ class SchedulerService:
         except Exception:  # noqa: BLE001 - 保守job失敗でapp schedulerを停めない
             logger.warning("Scheduled integrity check failed", exc_info=True)
 
+    def execute_ytdlp_update_job(self) -> None:
+        """週次更新をapp内だけで実行する。永続jobには引数を持たせない。"""
+        if self._ytdlp_update_callback is None:
+            logger.warning("Scheduled yt-dlp update is not configured")
+            return
+        try:
+            result = self._ytdlp_update_callback()
+            logger.info(
+                "Scheduled yt-dlp update completed",
+                extra={"status": getattr(result, "status", "unknown")},
+            )
+        except Exception:  # noqa: BLE001 - 更新失敗でschedulerを停めない
+            logger.warning("Scheduled yt-dlp update failed", exc_info=True)
+
     def next_runs(self, playlist_id: int | None = None) -> list[NextRun]:
         rows: list[NextRun] = []
         for job in self._managed_jobs():
@@ -523,6 +576,25 @@ class SchedulerService:
         )
 
     def _integrity_job_matches(
+        self,
+        job: Job | None,
+        trigger: SymmetricCronTrigger,
+    ) -> bool:
+        if job is None or not isinstance(job.trigger, SymmetricCronTrigger):
+            return False
+        existing_trigger = job.trigger
+        return (
+            existing_trigger.algorithm_version == trigger.algorithm_version
+            and existing_trigger.expression == trigger.expression
+            and str(existing_trigger.timezone) == str(trigger.timezone)
+            and existing_trigger.jitter_seconds == trigger.jitter_seconds
+            and tuple(job.args) == ()
+            and job.coalesce is True
+            and job.max_instances == 1
+            and job.misfire_grace_time == _MISFIRE_GRACE_SEC
+        )
+
+    def _maintenance_job_matches(
         self,
         job: Job | None,
         trigger: SymmetricCronTrigger,

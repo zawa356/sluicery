@@ -175,7 +175,7 @@ def test_profile_format_probe_shows_formats_and_rate_limits(
     monkeypatch.setattr(
         "sluicery.web.app.current_ytdlp_bin", lambda _root: Path("/fake/yt-dlp")
     )
-    calls: list[tuple[list[str], tuple[str, ...], TimeoutPolicy]] = []
+    calls: list[tuple[list[str], tuple[str, ...], TimeoutPolicy, bool]] = []
 
     def fake_run(
         self: YtdlpRunner,
@@ -185,8 +185,9 @@ def test_profile_format_probe_shows_formats_and_rate_limits(
         on_progress=None,
         cwd=None,
         sensitive_values: tuple[str, ...] = (),
+        mask_all_urls: bool = False,
     ) -> RunResult:
-        calls.append((args, sensitive_values, timeout))
+        calls.append((args, sensitive_values, timeout, mask_all_urls))
         return RunResult(
             returncode=0,
             classification=Classification.OK,
@@ -232,6 +233,8 @@ def test_profile_format_probe_shows_formats_and_rate_limits(
     assert source_url not in response.text
     assert calls[0][1] == (source_url,)
     assert calls[0][2].absolute_sec == 300
+    assert calls[0][3] is True
+    assert "--ignore-config" in calls[0][0]
     assert calls[0][0][-2:] == ["--", source_url]
 
     limited = client.post(

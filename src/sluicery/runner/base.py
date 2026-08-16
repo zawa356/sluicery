@@ -137,11 +137,14 @@ def mask_output_text(
     *,
     sensitive_values: Sequence[str] = (),
     mask_rclone_env_names: bool = False,
+    mask_all_urls: bool = False,
 ) -> str:
     """子プロセス出力に含まれた秘密を、保持・ファイル出力より前に伏せる。"""
     masked = text
     for value in sorted({value for value in sensitive_values if value}, key=len, reverse=True):
         masked = masked.replace(value, "********")
+    if mask_all_urls:
+        masked = _URL_IN_TEXT.sub("********", masked)
     if mask_rclone_env_names:
         masked = _RCLONE_ENV_NAME.sub("********", masked)
     return masked
@@ -272,6 +275,7 @@ class BaseRunner:
         inherit_stdin: bool = False,
         sensitive_values: Sequence[str] = (),
         mask_rclone_env_names: bool = False,
+        mask_all_urls: bool = False,
     ) -> ProcessRunResult:
         with self._lock:
             if self._proc is not None:
@@ -322,6 +326,7 @@ class BaseRunner:
                 line,
                 sensitive_values=sensitive_values,
                 mask_rclone_env_names=mask_rclone_env_names,
+                mask_all_urls=mask_all_urls,
             )
 
         def read_stdout() -> None:

@@ -32,6 +32,16 @@ def main() -> int:
         sys.stderr.write("something completely unexpected happened\n")
         return 1
 
+    if mode == "emit_urls":
+        sys.stderr.write(
+            "redirected to https://cdn.example.test/normalized/path?opaque=value\n"
+        )
+        print(
+            'SLUICERY_PRINT {"id":"url-test",'
+            '"url":"https://cdn.example.test/final?opaque=value"}'
+        )
+        return 0
+
     if mode == "sleep_forever":
         time.sleep(3600)
         return 0

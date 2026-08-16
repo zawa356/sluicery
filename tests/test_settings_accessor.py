@@ -95,3 +95,13 @@ def test_invalid_schedule_override_is_rejected_at_core_boundary(
     with pytest.raises(ValueError):
         core_settings.set_override(db_session, key, value)
     assert core_settings.is_overridden(db_session, key) is False
+
+
+def test_ytdlp_update_can_be_disabled_with_empty_cron(db_session) -> None:
+    core_settings.set_override(db_session, "ytdlp.update_cron", "")
+    assert core_settings.get(db_session, "ytdlp.update_cron") == ""
+
+
+def test_ytdlp_smoketest_url_requires_http_url(db_session) -> None:
+    with pytest.raises(ValueError, match="URL"):
+        core_settings.set_override(db_session, "ytdlp.smoketest_url", "file:///tmp/media")

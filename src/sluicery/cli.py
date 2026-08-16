@@ -168,7 +168,14 @@ def _run_web() -> int:
             name="task-stale-reaper",
         )
         reaper_thread.start()
-        scheduler_service = SchedulerService(engine, session_factory, settings.TZ)
+        from sluicery.core.ytdlp_update import update_ytdlp
+
+        scheduler_service = SchedulerService(
+            engine,
+            session_factory,
+            settings.TZ,
+            ytdlp_update_callback=lambda: update_ytdlp(settings, session_factory),
+        )
         scheduler_service.start()
         print(
             f"[sluicery] Playlist scheduler started (timezone={settings.TZ}, app only)",
@@ -455,6 +462,58 @@ def _cmd_ytdlp_remove(version: str) -> int:
         return 0
     finally:
         session.close()
+
+
+def _cmd_ytdlp_update() -> int:
+    from sluicery.config import load_settings
+    from sluicery.core.ytdlp_update import YtdlpUpdateBusyError, update_ytdlp
+    from sluicery.db.models import YtdlpReleaseSource
+    from sluicery.db.session import create_engine_for, create_session_factory
+
+    settings = load_settings()
+    assert settings.DB_PATH is not None
+    engine = create_engine_for(settings.DB_PATH)
+    try:
+        try:
+            result = update_ytdlp(
+                settings,
+                create_session_factory(engine),
+                source=YtdlpReleaseSource.MANUAL,
+            )
+        except YtdlpUpdateBusyError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        print(
+            f"status={result.status} candidate={result.candidate_version or '(なし)'} "
+            f"active={result.active_version or '(なし)'}"
+        )
+        return 0 if result.status in {"updated", "no_change"} else 1
+    finally:
+        engine.dispose()
+
+
+def _cmd_ytdlp_rollback() -> int:
+    from sluicery.config import load_settings
+    from sluicery.core.ytdlp_update import (
+        YtdlpRollbackError,
+        YtdlpUpdateBusyError,
+        rollback_ytdlp,
+    )
+    from sluicery.db.session import create_engine_for, create_session_factory
+
+    settings = load_settings()
+    assert settings.DB_PATH is not None
+    engine = create_engine_for(settings.DB_PATH)
+    try:
+        try:
+            result = rollback_ytdlp(settings, create_session_factory(engine))
+        except (YtdlpRollbackError, YtdlpUpdateBusyError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        print(f"ロールバックしました: {result.active_version}")
+        return 0
+    finally:
+        engine.dispose()
 
 
 def _ytdlp_timeout_and_bin():
@@ -775,6 +834,12 @@ def main(argv: list[str] | None = None) -> int:
     ytdlp_use_parser.add_argument("version")
     ytdlp_remove_parser = ytdlp_sub.add_parser("remove", help="導入済みバージョンを削除する")
     ytdlp_remove_parser.add_argument("version")
+    ytdlp_sub.add_parser(
+        "update", help="最新版へ更新し、実ダウンロード付きスモークテストを行う"
+    )
+    ytdlp_sub.add_parser(
+        "rollback", help="直前版をスモークテストしてから切り替える"
+    )
     ytdlp_exec_parser = ytdlp_sub.add_parser(
         "exec", help="予約引数を注入せず生実行する（デバッグ用）"
     )
@@ -852,6 +917,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_ytdlp_use(args.version)
         if args.ytdlp_command == "remove":
             return _cmd_ytdlp_remove(args.version)
+        if args.ytdlp_command == "update":
+            return _cmd_ytdlp_update()
+        if args.ytdlp_command == "rollback":
+            return _cmd_ytdlp_rollback()
         if args.ytdlp_command == "exec":
             passthrough = args.ytdlp_args
             if passthrough and passthrough[0] == "--":

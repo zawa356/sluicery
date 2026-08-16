@@ -622,7 +622,9 @@ def build_format_probe_args(
         )
     _add_guarded_layers(guarded_layers, accumulator)
     accumulator.add(
-        ["--simulate", "--no-playlist"], layer="L1", source="フォーマット検査"
+        ["--ignore-config", "--simulate", "--no-playlist"],
+        layer="L1",
+        source="フォーマット検査",
     )
     accumulator.add(
         ["--print", f"{PRINT_PREFIX}%()j"],

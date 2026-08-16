@@ -59,6 +59,13 @@ from sluicery.core.options import (
 from sluicery.core.settings import OperationalSettings
 from sluicery.core.sync import enqueue_discover_run, execute_download_run
 from sluicery.core.target_state import sync_target_after_task, transition_target
+from sluicery.core.ytdlp_update import (
+    UpdateResult,
+    YtdlpRollbackError,
+    YtdlpUpdateBusyError,
+    rollback_ytdlp,
+    update_ytdlp,
+)
 from sluicery.db.models import (
     Artifact,
     Item,
@@ -78,6 +85,7 @@ from sluicery.db.models import (
     TargetStatus,
     Task,
     TaskStatus,
+    YtdlpReleaseSource,
 )
 from sluicery.db.repositories.playlist import PlaylistRepository
 from sluicery.db.repositories.playlist_profile import PlaylistProfileRepository
@@ -371,6 +379,9 @@ def create_app(
                 ytdlp_status=ytdlp_status.status.value,
                 ytdlp_version=ytdlp_status.current_version,
                 ytdlp_updated_at=(active_release.installed_at if active_release else None),
+                ytdlp_smoketest=(
+                    active_release.smoketest_result_json if active_release else None
+                ),
                 staging_used=usage.used,
                 staging_total=usage.total,
                 staging_pct=round(usage.used / usage.total * 100, 1) if usage.total else 0,
@@ -383,6 +394,84 @@ def create_app(
                 schedule_timezone=settings.TZ,
             ),
         )
+
+    @app.get("/ytdlp")
+    def ytdlp_page(request: Request) -> Response:
+        root = ytdlp_root(settings.DATA_DIR)
+        status_result = get_status(root)
+        with session_factory() as db:
+            releases = YtdlpReleaseRepository(db).list_installed()
+            active = YtdlpReleaseRepository(db).get_active()
+            rollback_available = any(
+                release.version != status_result.current_version
+                and release.deactivated_at is not None
+                for release in releases
+            )
+            operational = OperationalSettings(db)
+            update_cron = operational.ytdlp_update_cron
+        return templates.TemplateResponse(
+            request,
+            "ytdlp.html",
+            context(
+                request,
+                active_nav="ytdlp",
+                install_status=status_result.status.value,
+                current_version=status_result.current_version,
+                active_release=active,
+                releases=releases,
+                rollback_available=rollback_available,
+                update_cron=update_cron,
+                update_enabled=bool(update_cron.strip()),
+            ),
+        )
+
+    def run_manual_ytdlp_update() -> UpdateResult:
+        return update_ytdlp(
+            settings,
+            session_factory,
+            source=YtdlpReleaseSource.MANUAL,
+        )
+
+    @app.post("/ytdlp/update")
+    async def ytdlp_update(request: Request) -> Response:
+        try:
+            result = await run_in_threadpool(run_manual_ytdlp_update)
+        except YtdlpUpdateBusyError as exc:
+            auth.add_flash(request.state.auth, "error", str(exc))
+        else:
+            messages = {
+                "updated": "yt-dlpを更新し、スモークテストに成功しました",
+                "no_change": "現在版を再検証し、スモークテストに成功しました",
+                "rolled_back": "新しい版の検証に失敗し、健全な直前版へ戻しました",
+                "install_failed": "yt-dlpの導入に失敗しました",
+            }
+            if result.status == "failed":
+                messages["failed"] = (
+                    "候補版と直前版の検証に失敗したため、候補版を維持しました"
+                    if result.rollback_smoke is not None
+                    else "候補版の検証に失敗し、検査可能な直前版がないため候補版を維持しました"
+                )
+            level = "success" if result.status in {"updated", "no_change"} else "error"
+            auth.add_flash(
+                request.state.auth,
+                level,
+                messages.get(result.status, "yt-dlp更新処理が終了しました"),
+            )
+        return RedirectResponse("/ytdlp", status_code=303)
+
+    @app.post("/ytdlp/rollback")
+    async def ytdlp_rollback(request: Request) -> Response:
+        try:
+            await run_in_threadpool(rollback_ytdlp, settings, session_factory)
+        except (YtdlpRollbackError, YtdlpUpdateBusyError) as exc:
+            auth.add_flash(request.state.auth, "error", str(exc))
+        else:
+            auth.add_flash(
+                request.state.auth,
+                "success",
+                "直前版のスモークテスト後にyt-dlpをロールバックしました",
+            )
+        return RedirectResponse("/ytdlp", status_code=303)
 
     @app.get("/playlists")
     def playlists(request: Request) -> Response:
@@ -976,6 +1065,7 @@ def create_app(
                         term_grace_sec=built.timeout.term_grace_sec,
                     ),
                     sensitive_values=(source_url,),
+                    mask_all_urls=True,
                 )
                 if result.returncode != 0 or not result.stdout_lines:
                     raise FormatProbeResultError(
@@ -1879,7 +1969,9 @@ def create_app(
                 error=f"{key or '設定キー'}: {exc}",
                 status_code=422,
             )
-        if scheduler_service is not None and key.startswith("schedule."):
+        if scheduler_service is not None and (
+            key.startswith("schedule.") or key == "ytdlp.update_cron"
+        ):
             scheduler_service.reconcile()
         auth.add_flash(request.state.auth, "success", f"{key}を上書きしました")
         return RedirectResponse(f"/settings#{key.split('.', 1)[0]}", status_code=303)
@@ -1892,7 +1984,9 @@ def create_app(
             raise HTTPException(status_code=404)
         with session_factory() as db:
             core_settings.unset_override(db, key)
-        if scheduler_service is not None and key.startswith("schedule."):
+        if scheduler_service is not None and (
+            key.startswith("schedule.") or key == "ytdlp.update_cron"
+        ):
             scheduler_service.reconcile()
         auth.add_flash(request.state.auth, "success", f"{key}をコード既定値へ戻しました")
         return RedirectResponse(f"/settings#{key.split('.', 1)[0]}", status_code=303)

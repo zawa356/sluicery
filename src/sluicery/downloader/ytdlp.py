@@ -53,6 +53,7 @@ class YtdlpRunner(BaseRunner):
         on_progress: Callable[[ProgressEvent], None] | None = None,
         cwd: Path | None = None,
         sensitive_values: tuple[str, ...] = (),
+        mask_all_urls: bool = False,
     ) -> RunResult:
         stdout_lines: list[str] = []
         progress_events: list[ProgressEvent] = []
@@ -83,6 +84,7 @@ class YtdlpRunner(BaseRunner):
             env_overrides={"LC_ALL": "C"},
             inherit_stdin=True,
             sensitive_values=sensitive_values,
+            mask_all_urls=mask_all_urls,
         )
         classification_result = classify(process_result.returncode, process_result.stderr_text)
         return RunResult(
