@@ -428,6 +428,8 @@ class Artifact(Base, TimestampMixin):
     produced_by_task_id: Mapped[int | None] = mapped_column(ForeignKey("task.id"))
     verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     missing_since: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    manual_link_previous_path: Mapped[str | None] = mapped_column(String(2000))
+    manual_linked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class Task(Base):

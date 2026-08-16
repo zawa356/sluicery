@@ -32,6 +32,13 @@ from sluicery.core.cookies import (
     save_playlist_cookie,
     set_playlist_cookie_enabled,
 )
+from sluicery.core.integrity import (
+    check_integrity,
+    list_orphan_files,
+    manual_link,
+    set_missing_action,
+    undo_manual_link,
+)
 from sluicery.core.naming import NamingValidationError, sanitize_component
 from sluicery.core.options import (
     OptionValidationError,
@@ -43,6 +50,7 @@ from sluicery.core.settings import OperationalSettings
 from sluicery.core.sync import enqueue_discover_run, execute_download_run
 from sluicery.core.target_state import sync_target_after_task, transition_target
 from sluicery.db.models import (
+    Artifact,
     Item,
     ItemMembership,
     LayoutStrategy,
@@ -78,7 +86,12 @@ from sluicery.scheduler import (
     validate_cron_expression,
 )
 from sluicery.storage import create_storage_adapter
-from sluicery.storage.base import StoragePathError, validate_relative_path
+from sluicery.storage.base import (
+    RemoteFile,
+    StorageOperationError,
+    StoragePathError,
+    validate_relative_path,
+)
 from sluicery.web.auth import (
     LOGIN_ERROR_MESSAGE,
     SESSION_COOKIE_NAME,
@@ -1476,11 +1489,151 @@ def create_app(
         return RedirectResponse(f"/runs/{run_id}", status_code=303)
 
     @app.get("/reports")
-    def reports(request: Request) -> Response:
+    def reports() -> Response:
+        return RedirectResponse("/reports/integrity", status_code=303)
+
+    @app.get("/reports/integrity")
+    def integrity_report(request: Request, storage_id: int | None = None) -> Response:
+        with session_factory() as db:
+            storages = list(db.scalars(select(Storage).order_by(Storage.id)))
+            selected = db.get(Storage, storage_id) if storage_id is not None else None
+            if selected is None:
+                selected = next((row for row in storages if row.enabled), None)
+            missing_stmt = (
+                select(Artifact, Target, Item, Playlist)
+                .join(Target, Target.id == Artifact.target_id)
+                .join(Item, Item.id == Target.item_id)
+                .join(Playlist, Playlist.id == Item.playlist_id)
+                .where(Artifact.missing_since.is_not(None))
+                .order_by(Artifact.id)
+            )
+            linked_stmt = (
+                select(Artifact, Target, Item, Playlist)
+                .join(Target, Target.id == Artifact.target_id)
+                .join(Item, Item.id == Target.item_id)
+                .join(Playlist, Playlist.id == Item.playlist_id)
+                .where(Artifact.manual_link_previous_path.is_not(None))
+                .order_by(Artifact.id)
+            )
+            if selected is not None:
+                missing_stmt = missing_stmt.where(Artifact.storage_id == selected.id)
+                linked_stmt = linked_stmt.where(Artifact.storage_id == selected.id)
+            missing_rows = list(db.execute(missing_stmt).tuples())
+            linked_rows = list(db.execute(linked_stmt).tuples())
+            orphan_files: list[RemoteFile] = []
+            orphan_error = None
+            if selected is not None:
+                try:
+                    adapter = create_storage_adapter(selected, OperationalSettings(db))
+                    orphan_files, orphan_error = list_orphan_files(
+                        db,
+                        selected,
+                        adapter,
+                        timeout_sec=OperationalSettings(db).integrity_rescan_timeout_sec,
+                    )
+                except Exception:  # noqa: BLE001 - Storage障害は画面へ安全に分類表示
+                    orphan_error = "storage_error"
         return templates.TemplateResponse(
             request,
-            "placeholder.html",
-            context(request, active_nav="reports", title="レポート", phase="Phase 13"),
+            "reports/integrity.html",
+            context(
+                request,
+                active_nav="reports",
+                storages=storages,
+                selected_storage=selected,
+                missing_rows=missing_rows,
+                linked_rows=linked_rows,
+                orphan_files=orphan_files,
+                orphan_error=orphan_error,
+                missing_policies=[policy.value for policy in MissingPolicy],
+            ),
+        )
+
+    @app.post("/reports/integrity/check")
+    async def integrity_check_now(request: Request) -> Response:
+        form = await request.form()
+        selected_id: int | None = None
+        try:
+            raw_storage_id = str(form.get("storage_id", "")).strip()
+            selected_id = int(raw_storage_id) if raw_storage_id else None
+            with session_factory() as db:
+                operational = OperationalSettings(db)
+
+                def adapter_factory(storage: Storage):
+                    return create_storage_adapter(storage, operational)
+
+                report = check_integrity(
+                    db,
+                    adapter_factory,
+                    storage_id=selected_id,
+                    rescan_timeout_sec=operational.integrity_rescan_timeout_sec,
+                    max_candidates_per_source_id=(
+                        operational.integrity_max_candidates_per_source_id
+                    ),
+                )
+            message = (
+                f"整合性チェック完了: 確認{report.checked} / "
+                f"relink{report.relinked} / missing{report.missing}"
+            )
+            auth.add_flash(request.state.auth, "success", message)
+        except (LookupError, ValueError):
+            auth.add_flash(request.state.auth, "error", "整合性チェックを開始できませんでした")
+        suffix = f"?storage_id={selected_id}" if selected_id is not None else ""
+        return RedirectResponse(f"/reports/integrity{suffix}", status_code=303)
+
+    @app.post("/reports/integrity/missing-action")
+    async def integrity_missing_action(request: Request) -> Response:
+        form = await request.form()
+        storage_id = 0
+        try:
+            target_id = int(str(form.get("target_id", "0")))
+            storage_id = int(str(form.get("storage_id", "0")))
+            action = MissingPolicy(str(form.get("action", "leave")))
+            with session_factory() as db:
+                set_missing_action(db, target_id, action)
+            auth.add_flash(request.state.auth, "success", "missingの動作を更新しました")
+        except (LookupError, ValueError):
+            auth.add_flash(request.state.auth, "error", "missingの動作を更新できませんでした")
+        return RedirectResponse(
+            f"/reports/integrity?storage_id={storage_id}", status_code=303
+        )
+
+    @app.post("/reports/integrity/link")
+    async def integrity_manual_link(request: Request) -> Response:
+        form = await request.form()
+        storage_id = 0
+        try:
+            artifact_id = int(str(form.get("artifact_id", "0")))
+            storage_id = int(str(form.get("storage_id", "0")))
+            candidate_path = str(form.get("candidate_path", ""))
+            with session_factory() as db:
+                artifact = db.get(Artifact, artifact_id)
+                storage = db.get(Storage, storage_id)
+                if artifact is None or storage is None or artifact.storage_id != storage.id:
+                    raise LookupError
+                adapter = create_storage_adapter(storage, OperationalSettings(db))
+                manual_link(db, artifact.id, candidate_path, adapter)
+            auth.add_flash(request.state.auth, "success", "DBパスを手動リンクしました")
+        except (LookupError, ValueError, StorageOperationError, StoragePathError):
+            auth.add_flash(request.state.auth, "error", "手動リンクできませんでした")
+        return RedirectResponse(
+            f"/reports/integrity?storage_id={storage_id}", status_code=303
+        )
+
+    @app.post("/reports/integrity/unlink")
+    async def integrity_manual_unlink(request: Request) -> Response:
+        form = await request.form()
+        storage_id = 0
+        try:
+            artifact_id = int(str(form.get("artifact_id", "0")))
+            storage_id = int(str(form.get("storage_id", "0")))
+            with session_factory() as db:
+                undo_manual_link(db, artifact_id)
+            auth.add_flash(request.state.auth, "success", "手動リンクを取り消しました")
+        except (LookupError, ValueError):
+            auth.add_flash(request.state.auth, "error", "手動リンクを取り消せませんでした")
+        return RedirectResponse(
+            f"/reports/integrity?storage_id={storage_id}", status_code=303
         )
 
     @app.get("/settings")

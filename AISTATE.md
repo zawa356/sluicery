@@ -4,7 +4,7 @@
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
 最終更新: 2026-08-16
-対応コミット: Phase 13準備（Cookieなし切り分け）
+対応コミット: Phase 13実装中
 
 ## プロジェクト概要
 
@@ -25,6 +25,7 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 
 - Phase 13の整合性コアを実装した。全Artifactのexists確認、不在時だけStorage単位1回の再走査、一意な末尾ID候補のDBパスrelink、missing/復帰を扱う。複数候補・Storageエラー・走査エラー/タイムアウトでは自動選択やmissing判定を行わず、ファイル操作APIを呼ばない（D-054）
 - Playlist単位のmissing方針を`leave`（既定）/`redownload`/`ignore`として永続化し、Web UI・CLI・明示Target操作から選べるようにした。自動再取得は既定無効
+- missing Targetと孤立ファイルを並べる整合性レポート、DBパスだけを変更する手動リンクと取消を実装した。実ファイル不変をコア/Webテストで固定した（D-055）
 - Phase 13準備として、過去にCookieで成功した既存TargetをCookieなしで1件だけ取得試験した。Denoは検出されたがHTTP 403、生成物0件であり、Cookieが必要な取得対象があると判定した（D-053）。試験用Stagingは削除済みでDBと既存メディアは変更していない
 - 現在の実DBはTarget 659件中downloaded 599、blocked 1、failed 2、unavailable 57で、Artifact 599件・約2.54GiB。Phase 8受け入れ条件#16の「downloadedが大半」は満たすが、全件完走ではない
 - `app`だけでAPSchedulerを起動し、既存SQLiteのSQLAlchemyJobStoreへPlaylist IDと種別だけを永続化した。workerとホストcron / systemdにはschedulerを置かない
@@ -38,7 +39,7 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 
 ## 次にやること
 
-1. 孤立ファイル / missing Targetの手動リンク画面と取消、差分レポートを実装する
+1. delisted ItemとArtifactパスを表示する差分レポートを実装する
 2. integrity checkのCLI・UI・日次cronを既存app schedulerへ追加し、job引数へ秘密値やパスを保存しない
 3. Phase 8残存3件（blocked 1、failed 2）は原因別に少量再試行し、同種エラー多発時は停止する
 
