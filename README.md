@@ -123,6 +123,9 @@ argon2でハッシュ化され、平文はDBへ保存しません。
 認証が必要な取得元では、Playlist単位でNetscape形式のCookieファイルを暗号化保存できます。
 既定は無効で、有効化時にはアカウント停止リスクへの明示確認が必要です。平文は実行中だけ
 tmpfsの`/run/sluicery`へ展開され、実行後に削除されます。
+検証環境では、Denoが正常に検出される状態でもCookieなしではHTTP 403となる取得対象がありました。
+Cookieを常時有効にするのではなく、Cookieなしの少量試験で失敗したPlaylistだけに限定して
+有効化してください。
 
 Playlistを有効にすると、`app`サービス内のスケジューラがdiscoverとdownloadを独立したcronで
 実行します。cronは`.env`の`TZ`で解釈され、Playlist個別設定が無い場合は設定画面のグローバル
