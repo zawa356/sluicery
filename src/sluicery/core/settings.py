@@ -55,6 +55,10 @@ CODE_DEFAULTS: dict[str, SettingSpec] = {
     "schedule.discover_cron": SettingSpec("schedule.discover_cron", str, "0 */6 * * *"),
     "schedule.download_cron": SettingSpec("schedule.download_cron", str, "0 */6 * * *"),
     "schedule.integrity_cron": SettingSpec("schedule.integrity_cron", str, "0 3 * * *"),
+    "integrity.rescan_timeout_sec": SettingSpec("integrity.rescan_timeout_sec", int, 600),
+    "integrity.max_candidates_per_source_id": SettingSpec(
+        "integrity.max_candidates_per_source_id", int, 5
+    ),
     "schedule.jitter_minutes": SettingSpec("schedule.jitter_minutes", int, 5),
     "schedule.download_window": SettingSpec("schedule.download_window", str, None),
     "ytdlp.update_cron": SettingSpec("ytdlp.update_cron", str, "0 4 * * 0"),
@@ -188,7 +192,12 @@ def set_override(session: Session, key: str, value: Any) -> None:
         raise UnknownSettingKeyError(key)
 
     casted = _cast(spec.type_, value)
-    if key in {"schedule.discover_cron", "schedule.download_cron"}:
+    if key in {
+        "schedule.discover_cron",
+        "schedule.download_cron",
+        "schedule.integrity_cron",
+        "ytdlp.update_cron",
+    }:
         from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
 
         try:
@@ -203,6 +212,11 @@ def set_override(session: Session, key: str, value: Any) -> None:
         parse_download_window(casted)
     elif key == "schedule.jitter_minutes" and casted < 0:
         raise ValueError("schedule.jitter_minutesは0以上にしてください")
+    elif key in {
+        "integrity.rescan_timeout_sec",
+        "integrity.max_candidates_per_source_id",
+    } and casted <= 0:
+        raise ValueError("integrity設定は1以上にしてください")
     encoded = json.dumps(casted, ensure_ascii=False)
     SettingRepository(session).set_override(key, encoded)
 
@@ -268,6 +282,14 @@ class OperationalSettings:
     @property
     def schedule_integrity_cron(self) -> str:
         return get(self._session, "schedule.integrity_cron")
+
+    @property
+    def integrity_rescan_timeout_sec(self) -> int:
+        return get(self._session, "integrity.rescan_timeout_sec")
+
+    @property
+    def integrity_max_candidates_per_source_id(self) -> int:
+        return get(self._session, "integrity.max_candidates_per_source_id")
 
     @property
     def schedule_jitter_minutes(self) -> int:
