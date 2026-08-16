@@ -10,7 +10,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -26,6 +26,19 @@ from starlette.types import ASGIApp
 
 from sluicery.config import Settings
 from sluicery.core import settings as core_settings
+from sluicery.core.config_transfer import (
+    MAX_CONFIG_BYTES,
+    CollisionMode,
+    ConfigImportConfirmationError,
+    ConfigImportPlan,
+    ConfigImportSigner,
+    ConfigTransferError,
+    apply_config_import,
+    dump_config_yaml,
+    export_config,
+    load_config_yaml,
+    preview_config_import,
+)
 from sluicery.core.cookies import (
     MAX_COOKIE_BYTES,
     CookieConfigurationError,
@@ -280,6 +293,8 @@ def create_app(
     app.state.format_probe_limiter = format_probe_limiter
     retention_signer = RetentionConfirmationSigner(settings.SECRET_KEY)
     app.state.retention_signer = retention_signer
+    config_import_signer = ConfigImportSigner(settings.SECRET_KEY)
+    app.state.config_import_signer = config_import_signer
     app.add_middleware(
         AuthenticationMiddleware,
         auth=auth,
@@ -2212,6 +2227,101 @@ def create_app(
             scheduler_service.reconcile()
         auth.add_flash(request.state.auth, "success", f"{key}をコード既定値へ戻しました")
         return RedirectResponse(f"/settings#{key.split('.', 1)[0]}", status_code=303)
+
+    def config_transfer_page_response(
+        request: Request,
+        *,
+        plan: ConfigImportPlan | None = None,
+        confirmation_token: str | None = None,
+        error: str | None = None,
+        status_code: int = 200,
+    ) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "config_transfer.html",
+            context(
+                request,
+                active_nav="settings",
+                plan=plan,
+                confirmation_token=confirmation_token,
+                error=error,
+                max_config_bytes=MAX_CONFIG_BYTES,
+            ),
+            status_code=status_code,
+        )
+
+    @app.get("/config-transfer")
+    def config_transfer_page(request: Request) -> Response:
+        return config_transfer_page_response(request)
+
+    @app.get("/config-transfer/export")
+    def config_transfer_export(_request: Request) -> Response:
+        with session_factory() as db:
+            body = dump_config_yaml(export_config(db))
+        return Response(
+            body,
+            media_type="application/yaml; charset=utf-8",
+            headers={
+                "Content-Disposition": 'attachment; filename="sluicery-config.yaml"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.post("/config-transfer/preview")
+    async def config_transfer_preview(request: Request) -> Response:
+        form = await request.form()
+        upload = form.get("config_file")
+        mode = str(form.get("collision_mode", "skip"))
+        try:
+            if not isinstance(upload, UploadFile):
+                raise ConfigTransferError("YAMLファイルを選択してください")
+            if mode not in {"skip", "overwrite", "create"}:
+                raise ConfigTransferError("衝突時の動作が不正です")
+            raw = await upload.read(MAX_CONFIG_BYTES + 1)
+            document = load_config_yaml(raw)
+            with session_factory() as db:
+                plan = preview_config_import(
+                    db, document, cast(CollisionMode, mode)
+                )
+            token = config_import_signer.issue(document, plan)
+        except ConfigTransferError as exc:
+            return config_transfer_page_response(
+                request, error=str(exc), status_code=422
+            )
+        return config_transfer_page_response(
+            request, plan=plan, confirmation_token=token
+        )
+
+    @app.post("/config-transfer/apply")
+    async def config_transfer_apply(request: Request) -> Response:
+        form = await request.form()
+        if form.get("confirmed") != "yes":
+            return config_transfer_page_response(
+                request,
+                error="差分を確認するチェックが必要です",
+                status_code=422,
+            )
+        try:
+            document, token_plan = config_import_signer.load(
+                str(form.get("confirmation_token", ""))
+            )
+            with session_factory() as db:
+                result = apply_config_import(db, document, token_plan)
+        except (ConfigImportConfirmationError, ConfigTransferError) as exc:
+            return config_transfer_page_response(
+                request, error=str(exc), status_code=422
+            )
+        if scheduler_service is not None:
+            scheduler_service.reconcile()
+        auth.add_flash(
+            request.state.auth,
+            "success",
+            (
+                f"設定をimportしました（新規{result.created}、"
+                f"上書き{result.overwritten}、スキップ{result.skipped}）"
+            ),
+        )
+        return RedirectResponse("/config-transfer", status_code=303)
 
     def cookie_page_response(
         request: Request,

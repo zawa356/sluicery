@@ -195,7 +195,8 @@ def is_overridden(session: Session, key: str) -> bool:
     return SettingRepository(session).get(key) is not None
 
 
-def set_override(session: Session, key: str, value: Any) -> None:
+def validate_override(key: str, value: Any) -> Any:
+    """運用設定値を保存と分離して検証・型変換する。"""
     spec = CODE_DEFAULTS.get(key)
     if spec is None:
         raise UnknownSettingKeyError(key)
@@ -212,9 +213,7 @@ def set_override(session: Session, key: str, value: Any) -> None:
         "ytdlp.update_cron",
     }:
         if key == "ytdlp.update_cron" and not casted.strip():
-            encoded = json.dumps(casted, ensure_ascii=False)
-            SettingRepository(session).set_override(key, encoded)
-            return
+            return casted
         from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
 
         try:
@@ -237,6 +236,11 @@ def set_override(session: Session, key: str, value: Any) -> None:
         "retention.dryrun_ttl_sec",
     } and casted <= 0:
         raise ValueError("秒数・件数の設定は1以上にしてください")
+    return casted
+
+
+def set_override(session: Session, key: str, value: Any) -> None:
+    casted = validate_override(key, value)
     encoded = json.dumps(casted, ensure_ascii=False)
     SettingRepository(session).set_override(key, encoded)
 

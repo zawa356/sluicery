@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}設定移行 — sluicery{% endblock %}
+{% block content %}
+<div class="page-heading"><h1>設定エクスポート / インポート</h1><a class="button button-secondary" href="/settings">設定へ戻る</a></div>
+{% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+
+<section class="panel section-block">
+  <h2>エクスポート</h2>
+  <p>Playlist、Profile、playlist_profile、StorageとDB上書き設定をYAMLで保存します。Storageクレデンシャル、Cookie、内部キー、Item / Target / Artifact / Run / Taskは含みません。</p>
+  <a class="button" href="/config-transfer/export">秘密なしYAMLをダウンロード</a>
+</section>
+
+<section class="panel section-block">
+  <h2>インポートの差分確認</h2>
+  <p class="muted">上限 {{ max_config_bytes }} bytes。この操作はDB設定だけを対象とし、メディアファイルを削除・移動しません。</p>
+  <form method="post" action="/config-transfer/preview" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>YAML <input type="file" name="config_file" accept=".yaml,.yml,application/yaml,text/yaml" required></label>
+    <label>同名レコードの衝突 <select name="collision_mode"><option value="skip">スキップ（既定）</option><option value="overwrite">上書き</option><option value="create">新規作成</option></select></label>
+    <button>差分プレビュー</button>
+  </form>
+</section>
+
+{% if plan %}
+<section class="panel section-block">
+  <h2>差分プレビュー</h2>
+  <p>新規 {{ plan.creates }} / 上書き {{ plan.overwrites }} / スキップ {{ plan.skips }}</p>
+  <table><thead><tr><th>種類</th><th>対象</th><th>操作</th><th>注記</th></tr></thead><tbody>{% for row in plan.operations %}<tr><td>{{ row.entity }}</td><td>{{ row.identity }}</td><td>{{ row.action }}</td><td>{{ row.note or '—' }}</td></tr>{% else %}<tr><td colspan="4">差分はありません</td></tr>{% endfor %}</tbody></table>
+  <p class="muted">「要再入力」の新規Storageは無効、Playlistは一時停止で作成します。上書きでは既存の暗号化値を保持します。</p>
+  <form method="post" action="/config-transfer/apply" onsubmit="return confirm('表示されたDB設定差分を適用しますか？')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="confirmation_token" value="{{ confirmation_token }}">
+    <label><input type="checkbox" name="confirmed" value="yes" required> 差分と要再入力項目を確認しました</label><br>
+    <button>確認済み差分を適用</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}
