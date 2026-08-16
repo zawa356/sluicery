@@ -122,3 +122,24 @@ HTTP 403とボット確認は自動的に`blocked`となり、既定で1時間�
 保持し、設定が変わった場合だけ再登録する。停止中の複数回分は`coalesce=true`で復帰直後の1回へ
 畳み込まれる。予定が見えない場合は、Playlistがenabledかつpausedでないこと、cron式、
 `app`の稼働、ダッシュボードの次回予定を順に確認する。worker側にschedulerログが無いのは正常である。
+
+## yt-dlp更新後のスモークテストでDeno検出に失敗する
+
+**症状**：yt-dlp更新履歴のスモーク結果が`deno_not_detected`または`challenge_warning`となる。
+自動更新は、健全な直前版があればそこへ戻る。
+
+**原因**：新しいyt-dlpが要求するDenoのversionや実行契約が、イメージへ固定したDenoと合わなくなった
+可能性がある。Denoはvenvではなくruntimeイメージへ焼き込まれているため、yt-dlp自動更新の対象外である。
+
+**対処**：Deno公式releaseの同じversionに属するURLとSHA-256を確認し、Dockerfileの
+`DENO_VERSION`、`DENO_URL`、`DENO_SHA256`を同じ組で更新して再buildする。checksumを無効化したり、
+URLだけを`latest`へ向けたりしない。
+
+```bash
+docker compose build --no-cache app worker-network worker-compute
+docker compose up -d
+docker compose exec app python3 -m sluicery.cli ytdlp update
+```
+
+更新後はWebのyt-dlp更新履歴で、Deno検出、challenge警告なし、実ダウンロード、Staging削除が
+すべて成功したことを確認する。

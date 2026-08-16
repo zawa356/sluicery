@@ -4,7 +4,7 @@
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
 最終更新: 2026-08-16
-対応コミット: Phase 13完了（チェックポイント作成前）
+対応コミット: Phase 15実装 `e593421`（実機検証・レビュー②対応済み）
 
 ## プロジェクト概要
 
@@ -21,13 +21,19 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - [x] 12. app専用スケジューラ、分離cron、時間帯、ジッター、整合、misfire
 - [x] 13. 整合性、relink、missing方針、手動リンク、差分レポート
 - [x] 14. Profile編集からのフォーマット検査、レート制限、URL非保持
-- [ ] 15–20. yt-dlp更新、retention、設定移行、フック、mount、仕上げ
+- [x] 15. yt-dlp自動更新、強化スモークテスト、安全なロールバック
+- [ ] 16–20. retention、設定移行、フック、mount、仕上げ
 
 ## 直近の作業
 
+- Phase 15の週次yt-dlp更新を実装した。実ダウンロード、Deno検出、challenge警告、default extras、固定markerのメタデータと実thumbnail埋込みを検査し、専用Stagingを必ず削除する
+- 新版失敗時は直前版を未切替のまま同じスモークで検査し、成功時だけ戻す。新旧両失敗は新版を維持し、`run_failed` Hookへ安全なreasonだけを記録する（D-056）
+- WebとCLIへ手動更新・ロールバックと履歴表示を追加した。app専用週次jobは引数なしで、`ytdlp.update_cron`を空にすると無効化できる
+- 実環境の最新版は現行と同じ`2026.07.04`だった。強化スモークは固定metadata markerと合成M4Aへのthumbnail coverを含む全必須項目に成功し、専用Staging残骸0、最新保存ログのHTTP(S) URL 0、Storage / Artifact変更0だった
 - Phase 14のフォーマット検査を実装した。Phase 4のL2〜L4合成とdiscover timeoutを再利用し、利用可能format、selector選択、推定サイズだけを表示する。全Profile共通の既定10秒間隔で制限し、入力URLは画面へ再表示せずログでも一次マスクする
 - D-015の公開CC素材で実機検査し、終了コード0、format一覧・選択結果、出力先引数なし、ログへの入力URLなしを確認した。サイズ情報が無い配信元は「—」表示とする
 - Phase 14対応後の全425テストが成功した
+- Phase 15レビュー②の中4件・軽微2件へ対応し、全437テスト、Ruff、mypy 85 source filesが成功した。重大・中・軽微の残存指摘はない
 - Phase 13の整合性コアを実装した。全Artifactのexists確認、不在時だけStorage単位1回の再走査、一意な末尾ID候補のDBパスrelink、missing/復帰を扱う。複数候補・Storageエラー・走査エラー/タイムアウトでは自動選択やmissing判定を行わず、ファイル操作APIを呼ばない（D-054）
 - Playlist単位のmissing方針を`leave`（既定）/`redownload`/`ignore`として永続化し、Web UI・CLI・明示Target操作から選べるようにした。自動再取得は既定無効
 - missing Targetと孤立ファイルを並べる整合性レポート、DBパスだけを変更する手動リンクと取消を実装した。実ファイル不変をコア/Webテストで固定した（D-055）
@@ -49,8 +55,8 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 
 ## 次にやること
 
-1. Phase 14の全テストとコミットを確定する
-2. Phase 15のyt-dlp自動更新・強化スモークテストへ進む
+1. Phase 16のretentionは実ファイルを削除せず、実装・dry-run・拒否系検証まで進める
+2. Phase 17の設定エクスポート / インポートへ進む
 
 ## 未解決・保留
 

@@ -142,6 +142,10 @@ Profile編集画面のフォーマット検査では、任意のURLに対する�
 選ばれるformat、推定サイズを確認できます。検査は外部アクセスを伴い、既定では全Profile共通で
 10秒の実行間隔があります。ファイルのダウンロードやStorageへの保存は行いません。
 
+yt-dlpは既定で週次に更新確認されます。更新後はDeno検出、メタデータ取得、公開CC素材の実ダウンロード、
+固定markerのメタデータとサムネイル埋込み、challenge警告を検査し、専用Stagingを削除します。失敗時は健全性を確認できた直前版だけへ
+自動で戻ります。Webの「yt-dlp」画面で現在版、結果、履歴、手動更新・ロールバックを確認できます。
+
 ## 運用コマンド
 
 | コマンド | 内容 | 実装状況 | `make` 無し環境での等価コマンド |
@@ -159,6 +163,13 @@ Profile編集画面のフォーマット検査では、任意のURLに対する�
 | `make backup` | DB + 設定 + シークレットを単一アーカイブに書き出し | **未実装（Phase 20）** | — |
 | `make restore FILE=...` | バックアップから復元 | **未実装（Phase 20）** | — |
 | `make purge` | 削除対象を表示して確認した上でコンテナ・イメージ・volume を削除（bind mount 先の実体は削除しない） | 実装済み | `docker compose down --rmi local --volumes --remove-orphans` |
+
+yt-dlpの更新・直前版への安全な切替はCLIからも実行できます。どちらも実ダウンロード付きスモークテストを行います。
+
+```bash
+docker compose exec app python3 -m sluicery.cli ytdlp update
+docker compose exec app python3 -m sluicery.cli ytdlp rollback
+```
 
 Playlist単位の二相同期は次のCLIでも実行できます。`discover`は1つのnetwork Taskの完了を待ち、
 `download`は5段チェーンの投入完了時点で戻ります。`--dry-run`は一覧取得と差分表示を行いますが、
