@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}yt-dlp更新 — sluicery{% endblock %}
+{% block content %}
+<h1>yt-dlp更新</h1>
+<section class="panel section-block">
+  <h2>現在の状態</h2>
+  <dl class="status-list">
+    <dt>導入状態</dt><dd>{{ install_status }}</dd>
+    <dt>現在版</dt><dd>{{ current_version or '未導入' }}</dd>
+    <dt>自動更新</dt><dd>{{ '有効: ' ~ update_cron if update_enabled else '無効' }}</dd>
+    <dt>最終スモーク</dt><dd>{% if active_release and active_release.smoketest_result_json %}{% set smoke = active_release.smoketest_result_json %}{{ '成功' if smoke.get('success') else '失敗' }} / {{ smoke.get('reason_code', 'unknown') }} / {{ smoke.get('checked_at', '—') }}{% else %}未実施{% endif %}</dd>
+  </dl>
+  <p class="muted">更新時は公開CC素材をStagingへ実ダウンロードし、Deno検出、challenge警告、メタデータ・サムネイル対応を検査してから専用ファイルを削除します。Storageには保存しません。</p>
+  <div class="button-row">
+    <form method="post" action="/ytdlp/update" onsubmit="return confirm('最新版を導入し、実ダウンロードを含むスモークテストを実行しますか？')"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>手動更新・再検証</button></form>
+    <form method="post" action="/ytdlp/rollback" onsubmit="return confirm('直前版を検査してから切り替えますか？')"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button-secondary"{% if not rollback_available %} disabled{% endif %}>手動ロールバック</button></form>
+  </div>
+</section>
+<section class="panel section-block">
+  <h2>更新履歴</h2>
+  <table><thead><tr><th>version</th><th>状態</th><th>由来</th><th>導入日時</th><th>スモーク</th></tr></thead><tbody>
+  {% for release in releases %}{% set smoke = release.smoketest_result_json %}<tr><td>{{ release.version }}</td><td>{{ release.status.value }}</td><td>{{ release.source.value }}</td><td>{{ release.installed_at }}</td><td>{% if smoke %}{{ '成功' if smoke.get('success') else '失敗' }} / {{ smoke.get('reason_code', 'unknown') }}{% else %}未実施{% endif %}</td></tr>{% else %}<tr><td colspan="5">履歴はありません</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+{% endblock %}

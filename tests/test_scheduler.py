@@ -144,6 +144,39 @@ def test_scheduler_registers_daily_integrity_job_without_arguments(
         service.shutdown()
 
 
+def test_scheduler_registers_optional_weekly_ytdlp_update_without_arguments(
+    engine, session_factory
+) -> None:
+    with session_factory() as session:
+        core_settings.set_override(session, "schedule.jitter_minutes", 0)
+        core_settings.set_override(session, "ytdlp.update_cron", "30 4 * * 0")
+    calls: list[bool] = []
+    service = SchedulerService(
+        engine,
+        session_factory,
+        "Asia/Tokyo",
+        ytdlp_update_callback=lambda: calls.append(True),
+    )
+    service.start(paused=True)
+    try:
+        job = service._scheduler.get_job(  # noqa: SLF001 - 永続job境界の検査
+            "sluicery:maintenance:ytdlp-update"
+        )
+        assert job is not None
+        assert tuple(job.args) == ()
+        assert isinstance(job.trigger, SymmetricCronTrigger)
+        assert job.trigger.expression == "30 4 * * 0"
+        job.func()
+        assert calls == [True]
+
+        with session_factory() as session:
+            core_settings.set_override(session, "ytdlp.update_cron", "")
+        service.reconcile()
+        assert service._scheduler.get_job("sluicery:maintenance:ytdlp-update") is None  # noqa: SLF001
+    finally:
+        service.shutdown()
+
+
 def test_paused_playlist_is_removed_from_schedule(engine, session_factory) -> None:
     playlist_id = _playlist(session_factory)
     with session_factory() as session:

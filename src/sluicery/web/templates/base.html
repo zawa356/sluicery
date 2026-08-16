@@ -19,6 +19,7 @@
       <a href="/runs"{% if active_nav == 'runs' %} aria-current="page"{% endif %}>Run</a>
       <a href="/reports"{% if active_nav == 'reports' %} aria-current="page"{% endif %}>レポート</a>
       <a href="/settings"{% if active_nav == 'settings' %} aria-current="page"{% endif %}>設定</a>
+      <a href="/ytdlp"{% if active_nav == 'ytdlp' %} aria-current="page"{% endif %}>yt-dlp</a>
     </nav>
     <form method="post" action="/logout" class="logout-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

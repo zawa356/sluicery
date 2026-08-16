@@ -63,7 +63,11 @@ CODE_DEFAULTS: dict[str, SettingSpec] = {
     "schedule.jitter_minutes": SettingSpec("schedule.jitter_minutes", int, 5),
     "schedule.download_window": SettingSpec("schedule.download_window", str, None),
     "ytdlp.update_cron": SettingSpec("ytdlp.update_cron", str, "0 4 * * 0"),
-    "ytdlp.smoketest_url": SettingSpec("ytdlp.smoketest_url", str, ""),
+    "ytdlp.smoketest_url": SettingSpec(
+        "ytdlp.smoketest_url",
+        str,
+        "https://download.blender.org/peach/trailer/trailer_1080p.mov",
+    ),
     "download.item_concurrency": SettingSpec("download.item_concurrency", int, 1),
     "download.concurrent_fragments": SettingSpec("download.concurrent_fragments", int, 3),
     "download.sleep_requests": SettingSpec("download.sleep_requests", float, 1.5),
@@ -193,12 +197,20 @@ def set_override(session: Session, key: str, value: Any) -> None:
         raise UnknownSettingKeyError(key)
 
     casted = _cast(spec.type_, value)
-    if key in {
+    if key == "ytdlp.smoketest_url":
+        from sluicery.core.options import validate_source_url
+
+        validate_source_url(casted)
+    elif key in {
         "schedule.discover_cron",
         "schedule.download_cron",
         "schedule.integrity_cron",
         "ytdlp.update_cron",
     }:
+        if key == "ytdlp.update_cron" and not casted.strip():
+            encoded = json.dumps(casted, ensure_ascii=False)
+            SettingRepository(session).set_override(key, encoded)
+            return
         from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
 
         try:

@@ -8,6 +8,8 @@
     <p class="metric">{{ ytdlp_status }}</p>
     <p>{{ ytdlp_version or "未導入" }}</p>
     <small>最終導入: {{ ytdlp_updated_at or "—" }}</small>
+    {% if ytdlp_smoketest %}<small>最終スモーク: {{ '成功' if ytdlp_smoketest.get('success') else '失敗 (' ~ ytdlp_smoketest.get('reason_code', 'unknown') ~ ')' }}</small>{% endif %}
+    <p><a href="/ytdlp">更新管理</a></p>
   </section>
   <section class="metric-card">
     <h2>Staging</h2>

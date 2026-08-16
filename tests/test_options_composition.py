@@ -220,6 +220,7 @@ def test_format_probe_reuses_profile_selector_without_output_arguments(db_sessio
     assert _option_value(command.args, "--format") == "137+140"
     assert _option_value(command.args, "--limit-rate") == "1M"
     assert "--simulate" in command.args
+    assert "--ignore-config" in command.args
     assert "--no-playlist" in command.args
     assert "--print" in command.args
     assert "--output" not in command.args
