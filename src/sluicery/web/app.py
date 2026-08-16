@@ -46,6 +46,7 @@ from sluicery.db.models import (
     Item,
     ItemMembership,
     LayoutStrategy,
+    MissingPolicy,
     Playlist,
     PlaylistKindHint,
     PlaylistProfile,
@@ -397,6 +398,7 @@ def create_app(
             "ytdlp_args": ytdlp_args,
             "enabled": form.get("enabled") == "yes",
             "paused": form.get("paused") == "yes",
+            "missing_policy": MissingPolicy(str(form.get("missing_policy") or "leave")),
             "discover_cron": discover_cron,
             "download_cron": download_cron,
         }
@@ -419,6 +421,7 @@ def create_app(
                 values=values or {},
                 error=error,
                 kinds=[kind.value for kind in PlaylistKindHint],
+                missing_policies=[policy.value for policy in MissingPolicy],
             ),
             status_code=status_code,
         )

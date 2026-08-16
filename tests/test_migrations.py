@@ -34,7 +34,7 @@ def test_upgrade_downgrade_upgrade(tmp_path: Path) -> None:
     engine = create_engine(f"sqlite:///{db_path}")
     playlist_columns = {column["name"] for column in inspect(engine).get_columns("playlist")}
     engine.dispose()
-    assert {"cookie_enabled", "cookies_encrypted"} <= playlist_columns
+    assert {"cookie_enabled", "cookies_encrypted", "missing_policy"} <= playlist_columns
 
 
 def test_run_skipped_status_round_trips(tmp_path: Path) -> None:

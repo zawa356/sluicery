@@ -28,7 +28,7 @@ _TARGET_NORMAL_TRANSITIONS: dict[TargetStatus, set[TargetStatus]] = {
     TargetStatus.BLOCKED: {TargetStatus.PENDING},
     TargetStatus.DOWNLOADED: {TargetStatus.MISSING},
     TargetStatus.UNAVAILABLE: set(),
-    TargetStatus.MISSING: set(),
+    TargetStatus.MISSING: {TargetStatus.PENDING},
     TargetStatus.IGNORED: set(),
 }
 

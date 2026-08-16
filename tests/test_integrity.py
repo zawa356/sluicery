@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sluicery.core.integrity import check_integrity
+import pytest
+
+from sluicery.core.integrity import check_integrity, set_missing_action
 from sluicery.db.models import (
     Artifact,
     ArtifactRole,
     Item,
     LayoutStrategy,
+    MissingPolicy,
     Playlist,
     PlaylistKindHint,
     PlaylistProfile,
@@ -123,6 +126,28 @@ def test_marks_missing_only_after_successful_rescan(db_session) -> None:
     assert report.missing == 1
 
 
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    [
+        (MissingPolicy.REDOWNLOAD, TargetStatus.PENDING),
+        (MissingPolicy.IGNORE, TargetStatus.IGNORED),
+    ],
+)
+def test_playlist_missing_policy_is_applied(db_session, policy, expected) -> None:
+    _storage, targets, _artifacts = _graph(db_session)
+    item = db_session.get(Item, targets[0].item_id)
+    assert item is not None
+    playlist = db_session.get(Playlist, item.playlist_id)
+    assert playlist is not None
+    playlist.missing_policy = policy
+    db_session.commit()
+
+    check_integrity(db_session, lambda _: FakeStorage([]))
+
+    db_session.refresh(targets[0])
+    assert targets[0].status == expected
+
+
 def test_multiple_candidates_are_not_selected(db_session) -> None:
     _storage, targets, artifacts = _graph(db_session)
     adapter = FakeStorage(
@@ -195,6 +220,28 @@ def test_restores_missing_target_when_file_returns(db_session) -> None:
     assert artifacts[0].missing_since is None
     assert targets[0].status == TargetStatus.DOWNLOADED
     assert report.restored == 1
+
+
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [
+        (MissingPolicy.LEAVE, TargetStatus.MISSING),
+        (MissingPolicy.REDOWNLOAD, TargetStatus.PENDING),
+        (MissingPolicy.IGNORE, TargetStatus.IGNORED),
+    ],
+)
+def test_explicit_missing_action_does_not_touch_file(
+    db_session, action, expected
+) -> None:
+    _storage, targets, artifacts = _graph(db_session)
+    artifacts[0].missing_since = datetime(2026, 8, 16, tzinfo=UTC)
+    targets[0].status = TargetStatus.MISSING
+    db_session.commit()
+
+    result = set_missing_action(db_session, targets[0].id, action)
+
+    assert result == expected
+    assert db_session.get(Target, targets[0].id).status == expected
 
 
 def test_tracked_same_id_file_is_not_used_for_relink(db_session) -> None:
