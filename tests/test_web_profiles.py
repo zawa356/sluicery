@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -14,6 +16,9 @@ from sluicery.db.models import (
     Storage,
     StorageKind,
 )
+from sluicery.downloader.errors import Classification
+from sluicery.downloader.version import InstallStatus, StatusResult
+from sluicery.downloader.ytdlp import RunResult, TimeoutPolicy, YtdlpRunner
 from sluicery.web.app import create_app
 from sluicery.web.auth import ensure_initial_user
 
@@ -144,7 +149,98 @@ def test_profile_preview_shows_origins_and_masks_secret_url(base_env, session_fa
     assert "L1" in page.text and "L2" in page.text
     assert "secret-preview-token" not in page.text
     assert "token=********" in page.text
-    assert "フォーマット検査（Phase 14で実装予定）" in page.text
+    assert "フォーマット検査" in page.text
+    assert "検査する" in page.text
+
+
+def test_profile_format_probe_shows_formats_and_rate_limits(
+    base_env, session_factory, monkeypatch
+) -> None:
+    client, _settings = _client(base_env, session_factory)
+    with session_factory() as db:
+        profile = Profile(
+            name="Probe",
+            kind="video",
+            layout_strategy="flat",
+            format_selector="137+140",
+        )
+        db.add(profile)
+        db.commit()
+        profile_id = profile.id
+
+    monkeypatch.setattr(
+        "sluicery.web.app.get_status",
+        lambda _root: StatusResult(InstallStatus.READY, "test", "test"),
+    )
+    monkeypatch.setattr(
+        "sluicery.web.app.current_ytdlp_bin", lambda _root: Path("/fake/yt-dlp")
+    )
+    calls: list[tuple[list[str], tuple[str, ...], TimeoutPolicy]] = []
+
+    def fake_run(
+        self: YtdlpRunner,
+        args: list[str],
+        *,
+        timeout: TimeoutPolicy,
+        on_progress=None,
+        cwd=None,
+        sensitive_values: tuple[str, ...] = (),
+    ) -> RunResult:
+        calls.append((args, sensitive_values, timeout))
+        return RunResult(
+            returncode=0,
+            classification=Classification.OK,
+            reason_code="ok",
+            stdout_lines=[
+                json.dumps(
+                    {
+                        "format_id": "137+140",
+                        "formats": [
+                            {
+                                "format_id": "137",
+                                "ext": "mp4",
+                                "resolution": "1920x1080",
+                                "filesize": 1000,
+                            },
+                            {
+                                "format_id": "140",
+                                "ext": "m4a",
+                                "filesize_approx": 250,
+                            },
+                        ],
+                        "requested_formats": [
+                            {"format_id": "137", "filesize": 1000},
+                            {"format_id": "140", "filesize_approx": 250},
+                        ],
+                    }
+                )
+            ],
+        )
+
+    monkeypatch.setattr(YtdlpRunner, "run", fake_run)
+    edit = client.get(f"/profiles/{profile_id}/edit")
+    source_url = "https://example.com/item?token=probe-secret"
+    response = client.post(
+        f"/profiles/{profile_id}/formats",
+        data={"csrf_token": _csrf(edit), "source_url": source_url},
+    )
+
+    assert response.status_code == 200
+    assert "137 + 140" in response.text
+    assert "1.2 KiB" in response.text
+    assert "1920x1080" in response.text
+    assert source_url not in response.text
+    assert calls[0][1] == (source_url,)
+    assert calls[0][2].absolute_sec == 300
+    assert calls[0][0][-2:] == ["--", source_url]
+
+    limited = client.post(
+        f"/profiles/{profile_id}/formats",
+        data={"csrf_token": _csrf(response), "source_url": "https://example.com/other"},
+    )
+    assert limited.status_code == 429
+    assert "連続実行はできません" in limited.text
+    assert len(calls) == 1
 
 
 def test_referenced_profile_cannot_be_deleted(base_env, session_factory) -> None:

@@ -20,10 +20,14 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - [x] 11. Run履歴、HTMX進捗、マスク済みログ、Task / Runキャンセル
 - [x] 12. app専用スケジューラ、分離cron、時間帯、ジッター、整合、misfire
 - [x] 13. 整合性、relink、missing方針、手動リンク、差分レポート
-- [ ] 14–20. フォーマット検査、yt-dlp更新、retention、設定移行、フック、mount、仕上げ
+- [x] 14. Profile編集からのフォーマット検査、レート制限、URL非保持
+- [ ] 15–20. yt-dlp更新、retention、設定移行、フック、mount、仕上げ
 
 ## 直近の作業
 
+- Phase 14のフォーマット検査を実装した。Phase 4のL2〜L4合成とdiscover timeoutを再利用し、利用可能format、selector選択、推定サイズだけを表示する。全Profile共通の既定10秒間隔で制限し、入力URLは画面へ再表示せずログでも一次マスクする
+- D-015の公開CC素材で実機検査し、終了コード0、format一覧・選択結果、出力先引数なし、ログへの入力URLなしを確認した。サイズ情報が無い配信元は「—」表示とする
+- Phase 14対応後の全425テストが成功した
 - Phase 13の整合性コアを実装した。全Artifactのexists確認、不在時だけStorage単位1回の再走査、一意な末尾ID候補のDBパスrelink、missing/復帰を扱う。複数候補・Storageエラー・走査エラー/タイムアウトでは自動選択やmissing判定を行わず、ファイル操作APIを呼ばない（D-054）
 - Playlist単位のmissing方針を`leave`（既定）/`redownload`/`ignore`として永続化し、Web UI・CLI・明示Target操作から選べるようにした。自動再取得は既定無効
 - missing Targetと孤立ファイルを並べる整合性レポート、DBパスだけを変更する手動リンクと取消を実装した。実ファイル不変をコア/Webテストで固定した（D-055）
@@ -45,8 +49,8 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 
 ## 次にやること
 
-1. Phase 13の全テストを再確認して`checkpoint/step-13`を作成する
-2. Phase 14–15のフォーマット検査とyt-dlp自動更新へ進む
+1. Phase 14の全テストとコミットを確定する
+2. Phase 15のyt-dlp自動更新・強化スモークテストへ進む
 
 ## 未解決・保留
 
