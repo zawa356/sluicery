@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}差分レポート — sluicery{% endblock %}
+{% block content %}
+<h1>差分レポート</h1>
+<nav class="subnav"><a href="/reports/integrity">整合性</a> <a href="/reports/delisted" aria-current="page">差分</a></nav>
+<div class="notice"><p>配信元から見えなくなったItemと、対応するArtifactの記録パスを表示します。このレポートはファイルやDBレコードを削除しません。</p></div>
+<form method="get" class="panel">
+  <label>Playlist
+    <select name="playlist_id">
+      <option value="">すべて</option>
+      {% for playlist in playlists %}<option value="{{ playlist.id }}"{% if selected_playlist_id == playlist.id %} selected{% endif %}>{{ playlist.name }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>開始日<input type="date" name="date_from" value="{{ selected_date_from or '' }}"></label>
+  <label>終了日<input type="date" name="date_to" value="{{ selected_date_to or '' }}"></label>
+  <button type="submit">絞り込む</button>
+  <a href="/reports/delisted" class="button-secondary">クリア</a>
+</form>
+<p>期間は {{ schedule_timezone }} のカレンダー日で、開始日・終了日を含みます。</p>
+{% if item_rows %}
+<table>
+  <thead><tr><th>Playlist</th><th>Item</th><th>delisted日時</th><th>Artifactパス</th></tr></thead>
+  <tbody>
+  {% for item, playlist in item_rows %}
+    <tr>
+      <td>{{ playlist.name }}</td>
+      <td>{{ item.title or item.source_id }}<br><code>{{ item.source_id }}</code></td>
+      <td>{{ item.delisted_at }}</td>
+      <td>
+        {% if paths_by_item[item.id] %}<ul>{% for artifact, storage in paths_by_item[item.id] %}<li>{{ storage.name }}: <code>{{ artifact.relative_path }}</code></li>{% endfor %}</ul>
+        {% else %}記録なし{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p>条件に一致するdelisted Itemはありません。</p>{% endif %}
+{% endblock %}

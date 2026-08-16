@@ -8,9 +8,10 @@ import shlex
 import shutil
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
@@ -1634,6 +1635,62 @@ def create_app(
             auth.add_flash(request.state.auth, "error", "手動リンクを取り消せませんでした")
         return RedirectResponse(
             f"/reports/integrity?storage_id={storage_id}", status_code=303
+        )
+
+    @app.get("/reports/delisted")
+    def delisted_report(
+        request: Request,
+        playlist_id: int | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> Response:
+        timezone = ZoneInfo(settings.TZ)
+        with session_factory() as db:
+            playlists = list(db.scalars(select(Playlist).order_by(Playlist.name)))
+            stmt = (
+                select(Item, Playlist)
+                .join(Playlist, Playlist.id == Item.playlist_id)
+                .where(Item.membership == ItemMembership.DELISTED)
+                .order_by(Item.delisted_at.desc(), Item.id.desc())
+            )
+            if playlist_id is not None:
+                stmt = stmt.where(Item.playlist_id == playlist_id)
+            if date_from is not None:
+                lower = datetime.combine(date_from, time.min, timezone).astimezone(UTC)
+                stmt = stmt.where(Item.delisted_at >= lower)
+            if date_to is not None:
+                upper = datetime.combine(
+                    date_to + timedelta(days=1), time.min, timezone
+                ).astimezone(UTC)
+                stmt = stmt.where(Item.delisted_at < upper)
+            item_rows = list(db.execute(stmt).tuples())
+            paths_by_item: dict[int, list[tuple[Artifact, Storage]]] = {
+                item.id: [] for item, _playlist in item_rows
+            }
+            if paths_by_item:
+                artifact_stmt = (
+                    select(Target.item_id, Artifact, Storage)
+                    .join(Artifact, Artifact.target_id == Target.id)
+                    .join(Storage, Storage.id == Artifact.storage_id)
+                    .where(Target.item_id.in_(paths_by_item))
+                    .order_by(Artifact.id)
+                )
+                for item_id, artifact, storage in db.execute(artifact_stmt).tuples():
+                    paths_by_item[item_id].append((artifact, storage))
+        return templates.TemplateResponse(
+            request,
+            "reports/delisted.html",
+            context(
+                request,
+                active_nav="reports",
+                playlists=playlists,
+                item_rows=item_rows,
+                paths_by_item=paths_by_item,
+                selected_playlist_id=playlist_id,
+                selected_date_from=date_from,
+                selected_date_to=date_to,
+                schedule_timezone=settings.TZ,
+            ),
         )
 
     @app.get("/settings")

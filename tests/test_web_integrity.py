@@ -10,6 +10,7 @@ from sluicery.db.models import (
     Artifact,
     ArtifactRole,
     Item,
+    ItemMembership,
     LayoutStrategy,
     Playlist,
     PlaylistKindHint,
@@ -167,3 +168,85 @@ def test_integrity_report_links_and_undoes_without_file_operation(
         assert artifact is not None
         assert artifact.relative_path == "old/title [source-id].mkv"
         assert artifact.missing_since is not None
+
+
+def test_delisted_report_filters_and_only_exposes_read_operations(
+    base_env, session_factory
+) -> None:
+    with session_factory() as db:
+        storage = Storage(
+            name="archive",
+            kind=StorageKind.LOCAL,
+            config_json={"path": "/archive"},
+        )
+        profile = Profile(
+            name="source",
+            kind=ProfileKind.VIDEO,
+            layout_strategy=LayoutStrategy.FLAT,
+        )
+        db.add_all([storage, profile])
+        db.flush()
+        playlist_ids: list[int] = []
+        for index, delisted_at in enumerate(
+            (
+                datetime(2026, 8, 14, 18, tzinfo=UTC),
+                datetime(2026, 8, 16, 3, tzinfo=UTC),
+            )
+        ):
+            playlist = Playlist(
+                name=f"Delisted {index}",
+                folder_name=f"delisted-{index}",
+                url=f"https://example.com/delisted-{index}",
+                kind_hint=PlaylistKindHint.VIDEO,
+            )
+            db.add(playlist)
+            db.flush()
+            playlist_ids.append(playlist.id)
+            assignment = PlaylistProfile(
+                playlist_id=playlist.id,
+                profile_id=profile.id,
+                storage_id=storage.id,
+            )
+            db.add(assignment)
+            db.flush()
+            item = Item(
+                playlist_id=playlist.id,
+                source_id=f"gone-{index}",
+                source_url=f"https://example.com/gone-{index}",
+                title=f"Gone title {index}",
+                membership=ItemMembership.DELISTED,
+                delisted_at=delisted_at,
+            )
+            db.add(item)
+            db.flush()
+            target = Target(
+                item_id=item.id,
+                playlist_profile_id=assignment.id,
+                status=TargetStatus.DOWNLOADED,
+            )
+            db.add(target)
+            db.flush()
+            db.add(
+                Artifact(
+                    target_id=target.id,
+                    role=ArtifactRole.SOURCE,
+                    storage_id=storage.id,
+                    relative_path=f"library/gone-{index}.mkv",
+                )
+            )
+        db.commit()
+
+    client = _client(session_factory)
+    period = client.get("/reports/delisted?date_from=2026-08-15&date_to=2026-08-15")
+
+    assert period.status_code == 200
+    assert "Gone title 0" in period.text
+    assert "library/gone-0.mkv" in period.text
+    assert "Gone title 1" not in period.text
+    post_actions = re.findall(
+        r'<form[^>]+method="post"[^>]+action="([^"]+)"', period.text
+    )
+    assert post_actions == ["/logout"]
+    playlist = client.get(f"/reports/delisted?playlist_id={playlist_ids[1]}")
+    assert "Gone title 1" in playlist.text
+    assert "Gone title 0" not in playlist.text
