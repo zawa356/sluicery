@@ -3,8 +3,8 @@
 > このファイルはセッション間の引き継ぎ用です。
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
-最終更新: 2026-08-14
-対応コミット: Phase 12（スケジューラ）完了
+最終更新: 2026-08-16
+対応コミット: Phase 13準備（Cookieなし切り分け）
 
 ## プロジェクト概要
 
@@ -23,6 +23,8 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 
 ## 直近の作業
 
+- Phase 13準備として、過去にCookieで成功した既存TargetをCookieなしで1件だけ取得試験した。Denoは検出されたがHTTP 403、生成物0件であり、Cookieが必要な取得対象があると判定した（D-053）。試験用Stagingは削除済みでDBと既存メディアは変更していない
+- 現在の実DBはTarget 659件中downloaded 599、blocked 1、failed 2、unavailable 57で、Artifact 599件・約2.54GiB。Phase 8受け入れ条件#16の「downloadedが大半」は満たすが、全件完走ではない
 - `app`だけでAPSchedulerを起動し、既存SQLiteのSQLAlchemyJobStoreへPlaylist IDと種別だけを永続化した。workerとホストcron / systemdにはschedulerを置かない
 - Playlistごとのdiscover / download独立cron、グローバルfallback、`TZ`解釈、永続する±jitter位相、paused除外、ダッシュボードと詳細の次回予定を実装した
 - `schedule.download_window`を開始含む・終了含まない時間帯として実装し、日跨ぎと開始終了同時刻（終日）を扱う。時間外の自動downloadはTaskを作らず`skipped` Runへ記録する
@@ -34,8 +36,8 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 
 ## 次にやること
 
-1. Phase 13の指示書がある場合は最初に読み、要件定義 §11.3との差分と停止条件を確認する
-2. `artifact.relative_path`の実在確認と、同一Storage内の末尾`[source_id]`再走査をStorage種別共通の読み取り専用境界として設計する
+1. `artifact.relative_path`の実在確認と、同一Storage内の末尾`[source_id]`再走査をStorage種別共通の読み取り専用境界として設計する
+2. Phase 8残存3件（blocked 1、failed 2）は原因別に少量再試行し、同種エラー多発時は停止する
 3. relink成功時はDBパスだけを更新し、再走査でも不在の場合だけ`artifact.missing_since`と`target.missing`を確定する。ファイルは削除・移動しない
 4. missingの既定放置、明示再取得、明示ignoreと、孤立ファイル / missing Targetの手動リンク画面・差分レポートを実装する
 5. integrity checkのcron登録はPhase 13実装後に既存app schedulerへ追加し、job引数へ秘密値やパスを保存しない
