@@ -138,6 +138,12 @@ class PlaylistKindHint(enum.StrEnum):
     MIXED = "mixed"
 
 
+class MissingPolicy(enum.StrEnum):
+    LEAVE = "leave"
+    REDOWNLOAD = "redownload"
+    IGNORE = "ignore"
+
+
 class ItemMembership(enum.StrEnum):
     ACTIVE = "active"
     DELISTED = "delisted"
@@ -319,6 +325,9 @@ class Playlist(Base, TimestampMixin):
     download_cron: Mapped[str | None] = mapped_column(String(100))
     paused: Mapped[bool] = mapped_column(default=False)
     retention_policy_json: Mapped[dict | None] = mapped_column(JSON)
+    missing_policy: Mapped[MissingPolicy] = _enum_column(
+        MissingPolicy, name="playlist_missing_policy", default=MissingPolicy.LEAVE
+    )
     dedup_hardlink: Mapped[bool] = mapped_column(default=False)
     cookie_enabled: Mapped[bool] = mapped_column(default=False)
     cookies_encrypted: Mapped[dict | None] = mapped_column(EncryptedJSON())
@@ -545,6 +554,7 @@ __all__ = [
     "Base",
     "ItemMembership",
     "LayoutStrategy",
+    "MissingPolicy",
     "NAMING_CONVENTION",
     "PlaylistKindHint",
     "ProfileKind",

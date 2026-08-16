@@ -14,7 +14,15 @@ from pathlib import PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from sluicery.db.models import Artifact, Item, Playlist, Storage, Target, TargetStatus
+from sluicery.db.models import (
+    Artifact,
+    Item,
+    MissingPolicy,
+    Playlist,
+    Storage,
+    Target,
+    TargetStatus,
+)
 from sluicery.storage.base import RemoteFile, StorageAdapter
 
 AdapterFactory = Callable[[Storage], StorageAdapter]
@@ -178,7 +186,18 @@ def check_integrity(
             )
             has_missing = any(artifact.missing_since is not None for artifact in artifacts)
             if has_missing and loaded_target.status == TargetStatus.DOWNLOADED:
-                loaded_target.status = TargetStatus.MISSING
+                loaded_playlist = session.scalar(
+                    select(Playlist)
+                    .join(Item, Item.playlist_id == Playlist.id)
+                    .where(Item.id == loaded_target.item_id)
+                )
+                assert loaded_playlist is not None
+                if loaded_playlist.missing_policy == MissingPolicy.REDOWNLOAD:
+                    loaded_target.status = TargetStatus.PENDING
+                elif loaded_playlist.missing_policy == MissingPolicy.IGNORE:
+                    loaded_target.status = TargetStatus.IGNORED
+                else:
+                    loaded_target.status = TargetStatus.MISSING
             elif not has_missing and loaded_target.status == TargetStatus.MISSING:
                 loaded_target.status = TargetStatus.DOWNLOADED
                 report.restored += 1
@@ -205,10 +224,36 @@ def list_orphan_files(
     return [entry for entry in files if entry.relative_path not in tracked], None
 
 
+def set_missing_action(session: Session, target_id: int, action: MissingPolicy) -> TargetStatus:
+    """missing実体に対する明示操作。ファイルには触れない。"""
+    target = session.get(Target, target_id)
+    if target is None:
+        raise LookupError(f"Target {target_id} が見つかりません")
+    has_missing = session.scalar(
+        select(Artifact.id).where(
+            Artifact.target_id == target_id,
+            Artifact.missing_since.is_not(None),
+        )
+    )
+    if has_missing is None:
+        raise ValueError("実体不在のArtifactがありません")
+    destination = {
+        MissingPolicy.LEAVE: TargetStatus.MISSING,
+        MissingPolicy.REDOWNLOAD: TargetStatus.PENDING,
+        MissingPolicy.IGNORE: TargetStatus.IGNORED,
+    }[action]
+    target.status = destination
+    target.last_error = None
+    target.blocked_reason = None
+    session.commit()
+    return destination
+
+
 __all__ = [
     "AdapterFactory",
     "IntegrityIssue",
     "IntegrityReport",
     "check_integrity",
     "list_orphan_files",
+    "set_missing_action",
 ]

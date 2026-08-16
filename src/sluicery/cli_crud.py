@@ -33,6 +33,7 @@ from sluicery.db.models import (
     Artifact,
     Item,
     LayoutStrategy,
+    MissingPolicy,
     Playlist,
     PlaylistKindHint,
     PlaylistProfile,
@@ -349,6 +350,11 @@ def configure_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
     playlist_add.add_argument("--ytdlp-args")
     playlist_add.add_argument("--disable", action="store_true")
     playlist_add.add_argument("--paused", action="store_true")
+    playlist_add.add_argument(
+        "--missing-policy",
+        choices=[item.value for item in MissingPolicy],
+        default=MissingPolicy.LEAVE.value,
+    )
     playlist_sub.add_parser("list")
     playlist_show = playlist_sub.add_parser("show")
     playlist_show.add_argument("playlist")
@@ -358,6 +364,9 @@ def configure_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
     playlist_edit.add_argument("--folder-name")
     playlist_edit.add_argument("--url")
     playlist_edit.add_argument("--kind-hint", choices=[item.value for item in PlaylistKindHint])
+    playlist_edit.add_argument(
+        "--missing-policy", choices=[item.value for item in MissingPolicy]
+    )
     _add_clearable_value(
         playlist_edit, "ytdlp_args", "--ytdlp-args", "--clear-ytdlp-args"
     )
@@ -911,6 +920,7 @@ def _playlist_command(args: argparse.Namespace, session: Session) -> int:
             kind_hint=PlaylistKindHint(args.kind_hint),
             ytdlp_args=args.ytdlp_args,
             paused=args.paused,
+            missing_policy=MissingPolicy(args.missing_policy),
             dedup_hardlink=False,
         )
         print(f"Playlist を作成しました: id={playlist.id}")
@@ -940,6 +950,7 @@ def _playlist_command(args: argparse.Namespace, session: Session) -> int:
                 ("kind_hint", playlist.kind_hint.value),
                 ("enabled", playlist.enabled),
                 ("paused", playlist.paused),
+                ("missing_policy", playlist.missing_policy.value),
                 ("ytdlp_args", _masked_args(playlist.ytdlp_args)),
                 (
                     "profiles",
@@ -969,6 +980,8 @@ def _playlist_command(args: argparse.Namespace, session: Session) -> int:
             updates["url"] = _validate_url(args.url)
         if args.kind_hint is not None:
             updates["kind_hint"] = PlaylistKindHint(args.kind_hint)
+        if args.missing_policy is not None:
+            updates["missing_policy"] = MissingPolicy(args.missing_policy)
         if "ytdlp_args" in updates:
             _validate_playlist_args(updates["ytdlp_args"])
         if not updates:

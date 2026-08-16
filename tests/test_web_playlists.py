@@ -10,6 +10,7 @@ from sluicery.config import Settings
 from sluicery.db.models import (
     Item,
     LayoutStrategy,
+    MissingPolicy,
     Playlist,
     PlaylistKindHint,
     PlaylistProfile,
@@ -85,6 +86,7 @@ def test_playlist_create_edit_and_list(base_env, session_factory) -> None:
             paused="yes",
             discover_cron="5 */2 * * *",
             download_cron="15 */4 * * *",
+            missing_policy="ignore",
         ),
         follow_redirects=False,
     )
@@ -98,6 +100,7 @@ def test_playlist_create_edit_and_list(base_env, session_factory) -> None:
         assert playlist.url == "https://example.com/playlist"
         assert playlist.discover_cron == "5 */2 * * *"
         assert playlist.download_cron == "15 */4 * * *"
+        assert playlist.missing_policy == MissingPolicy.IGNORE
 
 
 def test_playlist_form_rejects_cookie_argument(base_env, session_factory) -> None:
