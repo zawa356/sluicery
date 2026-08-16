@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
@@ -33,6 +34,13 @@ from sluicery.core.cookies import (
     save_playlist_cookie,
     set_playlist_cookie_enabled,
 )
+from sluicery.core.format_probe import (
+    FormatProbeLimiter,
+    FormatProbeRateLimited,
+    FormatProbeResult,
+    FormatProbeResultError,
+    parse_format_probe_output,
+)
 from sluicery.core.integrity import (
     check_integrity,
     list_orphan_files,
@@ -44,6 +52,7 @@ from sluicery.core.naming import NamingValidationError, sanitize_component
 from sluicery.core.options import (
     OptionValidationError,
     build_download_args,
+    build_format_probe_args,
     guard_freeform,
     validate_source_url,
 )
@@ -77,8 +86,13 @@ from sluicery.db.repositories.run import RunRepository
 from sluicery.db.repositories.storage import StorageRepository
 from sluicery.db.repositories.task import TaskRepository
 from sluicery.db.repositories.ytdlp_release import YtdlpReleaseRepository
-from sluicery.downloader.version import get_status, ytdlp_root
-from sluicery.downloader.ytdlp import mask_command_line
+from sluicery.downloader.version import (
+    InstallStatus,
+    current_ytdlp_bin,
+    get_status,
+    ytdlp_root,
+)
+from sluicery.downloader.ytdlp import TimeoutPolicy, YtdlpRunner, mask_command_line
 from sluicery.layout import LayoutContext, LayoutValidationError, resolve_layout
 from sluicery.runner.base import mask_log_text
 from sluicery.scheduler import (
@@ -242,6 +256,8 @@ def create_app(
     app.state.csrf = csrf
     app.state.templates = templates
     app.state.scheduler_service = scheduler_service
+    format_probe_limiter = FormatProbeLimiter()
+    app.state.format_probe_limiter = format_probe_limiter
     app.add_middleware(
         AuthenticationMiddleware,
         auth=auth,
@@ -812,6 +828,8 @@ def create_app(
         profile: Profile | None = None,
         values: dict[str, Any] | None = None,
         error: str | None = None,
+        format_probe: FormatProbeResult | None = None,
+        format_probe_error: str | None = None,
         status_code: int = 200,
     ) -> Response:
         refs: list[tuple[Playlist, PlaylistProfile]] = []
@@ -871,6 +889,8 @@ def create_app(
                 tristate_fields=tristate_fields,
                 refs=refs,
                 preview=preview,
+                format_probe=format_probe,
+                format_probe_error=format_probe_error,
                 env_allow_exec=settings.ALLOW_EXEC,
             ),
             status_code=status_code,
@@ -922,6 +942,71 @@ def create_app(
             ProfileRepository(db).update(profile, **values)
         auth.add_flash(request.state.auth, "success", "Profileを更新しました")
         return RedirectResponse(f"/profiles/{profile_id}/edit", status_code=303)
+
+    def run_profile_format_probe(
+        request: Request, profile_id: int, source_url: str
+    ) -> Response:
+        with session_factory() as db:
+            profile = db.get(Profile, profile_id)
+            if profile is None:
+                raise HTTPException(status_code=404)
+            try:
+                source_url = validate_source_url(source_url)
+                minimum = OperationalSettings(db).format_probe_min_interval_sec
+                format_probe_limiter.acquire(minimum)
+                root = ytdlp_root(settings.DATA_DIR)
+                if get_status(root).status != InstallStatus.READY:
+                    raise FormatProbeResultError("yt-dlpが利用できません")
+                built = build_format_probe_args(
+                    profile,
+                    source_url=source_url,
+                    session=db,
+                    env_allow_exec=settings.ALLOW_EXEC,
+                )
+                runner = YtdlpRunner(
+                    current_ytdlp_bin(root),
+                    stderr_tail_kb=OperationalSettings(db).ytdlp_stderr_tail_kb,
+                    log_dir=settings.DATA_DIR / "logs",
+                )
+                result = runner.run(
+                    list(built.args),
+                    timeout=TimeoutPolicy(
+                        idle_sec=built.timeout.idle_sec,
+                        absolute_sec=built.timeout.absolute_sec,
+                        term_grace_sec=built.timeout.term_grace_sec,
+                    ),
+                    sensitive_values=(source_url,),
+                )
+                if result.returncode != 0 or not result.stdout_lines:
+                    raise FormatProbeResultError(
+                        f"検査に失敗しました（理由: {result.reason_code}）"
+                    )
+                parsed = parse_format_probe_output(result.stdout_lines[0])
+            except FormatProbeRateLimited as exc:
+                return profile_editor_response(
+                    request,
+                    profile=profile,
+                    format_probe_error=(
+                        f"連続実行はできません。約{math.ceil(exc.retry_after_sec)}秒後に再実行してください"
+                    ),
+                    status_code=429,
+                )
+            except (OptionValidationError, FormatProbeResultError) as exc:
+                return profile_editor_response(
+                    request,
+                    profile=profile,
+                    format_probe_error=str(exc),
+                    status_code=422,
+                )
+        return profile_editor_response(request, profile=profile, format_probe=parsed)
+
+    @app.post("/profiles/{profile_id}/formats")
+    async def profile_formats(request: Request, profile_id: int) -> Response:
+        form = await request.form()
+        source_url = str(form.get("source_url", "")).strip()
+        return await run_in_threadpool(
+            run_profile_format_probe, request, profile_id, source_url
+        )
 
     @app.post("/profiles/{profile_id}/delete")
     def profile_delete(request: Request, profile_id: int) -> Response:

@@ -586,6 +586,61 @@ def build_discover_args(
     )
 
 
+def build_format_probe_args(
+    profile: Profile,
+    *,
+    source_url: str,
+    session: Session,
+    env_allow_exec: bool = False,
+) -> BuiltCommand:
+    """ProfileのL2〜L4合成を使い、保存を伴わない単一URL検査を組み立てる。"""
+    from sluicery.downloader.protocol import PRINT_PREFIX
+
+    source_url = validate_source_url(source_url)
+    accumulator = _CommandAccumulator()
+    _common_rate_args(session, accumulator)
+    structured = _resolve_structured_fields(
+        session,
+        kind=profile.kind.value,
+        profile=profile,
+        overrides=OptionOverrides(),
+    )
+    _render_structured(structured, accumulator)
+
+    guarded_layers, warnings, reserved = _guard_layers(
+        [("L4", f"Profile {profile.name}", profile.ytdlp_args)],
+        profile=profile,
+        env_allow_exec=env_allow_exec,
+        command_kind="download",
+    )
+    # 検査ではL1のJSON出力契約と「外部アクセス以外の副作用なし」を優先する。
+    # expert modeの予約引数やexecを黙って省略するとプレビューとの不一致になるため拒否する。
+    if reserved:
+        joined = ", ".join(sorted(reserved))
+        raise OptionValidationError(
+            f"フォーマット検査では予約引数を使用できません: {joined}"
+        )
+    _add_guarded_layers(guarded_layers, accumulator)
+    accumulator.add(
+        ["--simulate", "--no-playlist"], layer="L1", source="フォーマット検査"
+    )
+    accumulator.add(
+        ["--print", f"{PRINT_PREFIX}%()j"],
+        layer="L1",
+        source="フォーマット検査",
+    )
+    accumulator.add(
+        ["--", source_url], layer="L1", source="検査URL", field_name="source_url"
+    )
+    return BuiltCommand(
+        args=tuple(accumulator.args),
+        origins=tuple(accumulator.origins),
+        warnings=tuple(dict.fromkeys(warnings)),
+        resolved_output_path=None,
+        timeout=_timeout(session, "discover"),
+    )
+
+
 def build_download_args(
     target: Target | None,
     *,
@@ -741,6 +796,7 @@ __all__ = [
     "WARNING_REASONS",
     "build_discover_args",
     "build_download_args",
+    "build_format_probe_args",
     "guard_freeform",
     "guard_raw_exec_args",
     "parse_managed_options",

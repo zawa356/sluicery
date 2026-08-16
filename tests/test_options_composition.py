@@ -9,6 +9,7 @@ from sluicery.core.options import (
     OptionValidationError,
     build_discover_args,
     build_download_args,
+    build_format_probe_args,
     guard_raw_exec_args,
 )
 from sluicery.db.models import (
@@ -204,6 +205,41 @@ def test_discover_has_identity_protocol_without_layout_arguments(db_session) -> 
     assert command.resolved_output_path is None
     assert command.timeout.idle_sec == 300
     assert command.args[-2:] == ("--", "https://example.com/playlist")
+
+
+def test_format_probe_reuses_profile_selector_without_output_arguments(db_session) -> None:
+    _playlist, profile, _association = _records(profile_args="--limit-rate 1M")
+    profile.format_selector = "137+140"
+
+    command = build_format_probe_args(
+        profile,
+        source_url="https://example.com/item",
+        session=db_session,
+    )
+
+    assert _option_value(command.args, "--format") == "137+140"
+    assert _option_value(command.args, "--limit-rate") == "1M"
+    assert "--simulate" in command.args
+    assert "--no-playlist" in command.args
+    assert "--print" in command.args
+    assert "--output" not in command.args
+    assert "--paths" not in command.args
+    assert command.timeout.idle_sec == 300
+    assert command.timeout.absolute_sec == 300
+    assert command.args[-2:] == ("--", "https://example.com/item")
+
+
+def test_format_probe_rejects_expert_protocol_override(db_session) -> None:
+    _playlist, profile, _association = _records(
+        profile_args="--print title", expert_mode=True
+    )
+
+    with pytest.raises(OptionValidationError, match="予約引数"):
+        build_format_probe_args(
+            profile,
+            source_url="https://example.com/item",
+            session=db_session,
+        )
 
 
 @pytest.mark.parametrize("source_url", ["--exec", "ftp://example.com/file", "not-a-url"])

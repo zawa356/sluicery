@@ -59,6 +59,7 @@ CODE_DEFAULTS: dict[str, SettingSpec] = {
     "integrity.max_candidates_per_source_id": SettingSpec(
         "integrity.max_candidates_per_source_id", int, 5
     ),
+    "format.probe_min_interval_sec": SettingSpec("format.probe_min_interval_sec", int, 10),
     "schedule.jitter_minutes": SettingSpec("schedule.jitter_minutes", int, 5),
     "schedule.download_window": SettingSpec("schedule.download_window", str, None),
     "ytdlp.update_cron": SettingSpec("ytdlp.update_cron", str, "0 4 * * 0"),
@@ -215,8 +216,9 @@ def set_override(session: Session, key: str, value: Any) -> None:
     elif key in {
         "integrity.rescan_timeout_sec",
         "integrity.max_candidates_per_source_id",
+        "format.probe_min_interval_sec",
     } and casted <= 0:
-        raise ValueError("integrity設定は1以上にしてください")
+        raise ValueError("秒数・件数の設定は1以上にしてください")
     encoded = json.dumps(casted, ensure_ascii=False)
     SettingRepository(session).set_override(key, encoded)
 
@@ -290,6 +292,10 @@ class OperationalSettings:
     @property
     def integrity_max_candidates_per_source_id(self) -> int:
         return get(self._session, "integrity.max_candidates_per_source_id")
+
+    @property
+    def format_probe_min_interval_sec(self) -> int:
+        return get(self._session, "format.probe_min_interval_sec")
 
     @property
     def schedule_jitter_minutes(self) -> int:
