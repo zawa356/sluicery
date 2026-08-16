@@ -4,7 +4,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from sluicery.core.integrity import check_integrity, set_missing_action
+from sluicery.core.integrity import (
+    check_integrity,
+    list_orphan_files,
+    manual_link,
+    set_missing_action,
+    undo_manual_link,
+)
 from sluicery.db.models import (
     Artifact,
     ArtifactRole,
@@ -242,6 +248,47 @@ def test_explicit_missing_action_does_not_touch_file(
 
     assert result == expected
     assert db_session.get(Target, targets[0].id).status == expected
+
+
+def test_manual_link_and_undo_only_change_database(db_session) -> None:
+    storage, targets, artifacts = _graph(db_session)
+    artifacts[0].missing_since = datetime(2026, 8, 16, tzinfo=UTC)
+    targets[0].status = TargetStatus.MISSING
+    db_session.commit()
+    adapter = FakeStorage(["orphan/renamed.mkv"])
+
+    manual_link(db_session, artifacts[0].id, "orphan/renamed.mkv", adapter)
+
+    db_session.refresh(artifacts[0])
+    db_session.refresh(targets[0])
+    assert artifacts[0].relative_path == "orphan/renamed.mkv"
+    assert artifacts[0].manual_link_previous_path == "old/title [source-0].mkv"
+    assert artifacts[0].missing_since is None
+    assert targets[0].status == TargetStatus.DOWNLOADED
+    assert adapter.files == ["orphan/renamed.mkv"]
+
+    undo_manual_link(db_session, artifacts[0].id)
+
+    db_session.refresh(artifacts[0])
+    db_session.refresh(targets[0])
+    assert artifacts[0].relative_path == "old/title [source-0].mkv"
+    assert artifacts[0].manual_link_previous_path is None
+    assert artifacts[0].missing_since is not None
+    assert targets[0].status == TargetStatus.MISSING
+    orphans, error = list_orphan_files(db_session, storage, adapter)
+    assert error is None
+    assert [entry.relative_path for entry in orphans] == ["orphan/renamed.mkv"]
+
+
+def test_manual_link_rejects_tracked_candidate(db_session) -> None:
+    _storage, targets, artifacts = _graph(db_session, count=2)
+    artifacts[0].missing_since = datetime(2026, 8, 16, tzinfo=UTC)
+    targets[0].status = TargetStatus.MISSING
+    db_session.commit()
+    adapter = FakeStorage([artifacts[1].relative_path])
+
+    with pytest.raises(ValueError, match="追跡中"):
+        manual_link(db_session, artifacts[0].id, artifacts[1].relative_path, adapter)
 
 
 def test_tracked_same_id_file_is_not_used_for_relink(db_session) -> None:

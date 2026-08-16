@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}整合性レポート — sluicery{% endblock %}
+{% block content %}
+<h1>整合性レポート</h1>
+<nav class="subnav"><a href="/reports/integrity" aria-current="page">整合性</a> <a href="/reports/delisted">差分</a></nav>
+<div class="notice"><p>この画面の操作はDBのパスと状態だけを更新します。ファイルを削除・移動しません。</p></div>
+<form method="get" class="panel">
+<label>Storage<select name="storage_id">{% for storage in storages %}<option value="{{ storage.id }}"{% if selected_storage and selected_storage.id == storage.id %} selected{% endif %}>{{ storage.name }} ({{ storage.kind.value }})</option>{% endfor %}</select></label>
+<button type="submit">表示</button>
+</form>
+{% if selected_storage %}
+<form method="post" action="/reports/integrity/check" class="inline-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="storage_id" value="{{ selected_storage.id }}">
+<button type="submit">このStorageを今すぐ確認</button>
+</form>
+<div class="grid-two">
+<section><h2>missing Target</h2>
+{% if missing_rows %}<table><thead><tr><th>Playlist</th><th>Target</th><th>記録パス</th><th>動作</th><th>手動リンク</th></tr></thead><tbody>
+{% for artifact, target, item, playlist in missing_rows %}<tr><td>{{ playlist.name }}</td><td>#{{ target.id }} {{ item.title or item.source_id }}</td><td><code>{{ artifact.relative_path }}</code></td><td><form method="post" action="/reports/integrity/missing-action"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="storage_id" value="{{ selected_storage.id }}"><input type="hidden" name="target_id" value="{{ target.id }}"><select name="action">{% for policy in missing_policies %}<option value="{{ policy }}">{{ policy }}</option>{% endfor %}</select><button type="submit">適用</button></form></td><td>{% if orphan_files %}<form method="post" action="/reports/integrity/link"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="storage_id" value="{{ selected_storage.id }}"><input type="hidden" name="artifact_id" value="{{ artifact.id }}"><select name="candidate_path">{% for file in orphan_files %}<option value="{{ file.relative_path }}">{{ file.relative_path }}</option>{% endfor %}</select><button type="submit">リンク</button></form>{% else %}候補なし{% endif %}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p>missingはありません。</p>{% endif %}</section>
+<section><h2>孤立ファイル</h2>{% if orphan_error %}<p class="flash flash-error">Storage走査に失敗またはタイムアウトしました。missing判定は行いません。</p>{% elif orphan_files %}<table><thead><tr><th>パス</th><th>サイズ</th></tr></thead><tbody>{% for file in orphan_files %}<tr><td><code>{{ file.relative_path }}</code></td><td>{{ file.size if file.size is not none else '不明' }}</td></tr>{% endfor %}</tbody></table>{% else %}<p>孤立ファイルはありません。</p>{% endif %}</section>
+</div>
+{% if linked_rows %}<section><h2>手動リンク履歴</h2><table><thead><tr><th>Playlist</th><th>現在パス</th><th>以前のパス</th><th></th></tr></thead><tbody>{% for artifact, target, item, playlist in linked_rows %}<tr><td>{{ playlist.name }}</td><td><code>{{ artifact.relative_path }}</code></td><td><code>{{ artifact.manual_link_previous_path }}</code></td><td><form method="post" action="/reports/integrity/unlink"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="storage_id" value="{{ selected_storage.id }}"><input type="hidden" name="artifact_id" value="{{ artifact.id }}"><button type="submit" class="button-secondary">取消</button></form></td></tr>{% endfor %}</tbody></table></section>{% endif %}
+{% else %}<p>Storageを登録してください。</p>{% endif %}
+{% endblock %}

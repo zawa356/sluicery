@@ -23,7 +23,7 @@ from sluicery.db.models import (
     Target,
     TargetStatus,
 )
-from sluicery.storage.base import RemoteFile, StorageAdapter
+from sluicery.storage.base import RemoteFile, StorageAdapter, validate_relative_path
 
 AdapterFactory = Callable[[Storage], StorageAdapter]
 
@@ -249,11 +249,78 @@ def set_missing_action(session: Session, target_id: int, action: MissingPolicy) 
     return destination
 
 
+def manual_link(
+    session: Session,
+    artifact_id: int,
+    candidate_path: str,
+    adapter: StorageAdapter,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """孤立ファイルへDBパスだけを付け替え、Targetをdownloadedへ戻す。"""
+    artifact = session.get(Artifact, artifact_id)
+    if artifact is None:
+        raise LookupError(f"Artifact {artifact_id} が見つかりません")
+    if artifact.missing_since is None:
+        raise ValueError("missingではないArtifactは手動リンクできません")
+    normalized = validate_relative_path(candidate_path)
+    tracked = session.scalar(
+        select(Artifact.id).where(
+            Artifact.storage_id == artifact.storage_id,
+            Artifact.relative_path == normalized,
+            Artifact.id != artifact.id,
+        )
+    )
+    if tracked is not None:
+        raise ValueError("選択したファイルは別のArtifactが追跡中です")
+    if not adapter.exists(normalized):
+        raise ValueError("選択したファイルがStorageに存在しません")
+    artifact.manual_link_previous_path = artifact.relative_path
+    artifact.manual_linked_at = now or datetime.now(UTC)
+    artifact.relative_path = normalized
+    artifact.absolute_path_cache = None
+    artifact.missing_since = None
+    target = session.get(Target, artifact.target_id)
+    assert target is not None
+    remaining = session.scalar(
+        select(Artifact.id).where(
+            Artifact.target_id == target.id,
+            Artifact.id != artifact.id,
+            Artifact.missing_since.is_not(None),
+        )
+    )
+    if remaining is None:
+        target.status = TargetStatus.DOWNLOADED
+    session.commit()
+
+
+def undo_manual_link(
+    session: Session, artifact_id: int, *, now: datetime | None = None
+) -> None:
+    """直前のDBパスへ戻し、Targetをmissingへ戻す。ファイルは動かさない。"""
+    artifact = session.get(Artifact, artifact_id)
+    if artifact is None:
+        raise LookupError(f"Artifact {artifact_id} が見つかりません")
+    if artifact.manual_link_previous_path is None:
+        raise ValueError("取り消せる手動リンクがありません")
+    artifact.relative_path = artifact.manual_link_previous_path
+    artifact.absolute_path_cache = None
+    artifact.manual_link_previous_path = None
+    artifact.manual_linked_at = None
+    artifact.missing_since = now or datetime.now(UTC)
+    target = session.get(Target, artifact.target_id)
+    assert target is not None
+    target.status = TargetStatus.MISSING
+    session.commit()
+
+
 __all__ = [
     "AdapterFactory",
     "IntegrityIssue",
     "IntegrityReport",
     "check_integrity",
     "list_orphan_files",
+    "manual_link",
     "set_missing_action",
+    "undo_manual_link",
 ]
