@@ -171,6 +171,31 @@ def test_local_publish_uses_temporary_name_then_final(tmp_path: Path) -> None:
     assert not list(adapter.root.rglob("*.sluicery-tmp-*"))
 
 
+def test_local_delete_file_removes_only_exact_file(tmp_path: Path) -> None:
+    media_root = tmp_path / "media"
+    target = media_root / "library" / "folder" / "target.bin"
+    neighbor = media_root / "library" / "folder" / "neighbor.bin"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"target")
+    neighbor.write_bytes(b"neighbor")
+    adapter = LocalStorageAdapter("library", media_root=media_root)
+
+    adapter.delete_file("folder/target.bin")
+
+    assert not target.exists()
+    assert neighbor.read_bytes() == b"neighbor"
+
+
+def test_remote_delete_file_uses_exact_deletefile_command() -> None:
+    runner = ScriptedRunner([_result()])
+    adapter = _remote_adapter(runner)
+
+    adapter.delete_file("folder/target.bin")
+
+    assert runner.calls[0][0][0] == "deletefile"
+    assert runner.calls[0][0][1].endswith("/folder/target.bin")
+
+
 def test_local_publish_falls_back_to_copy_when_hardlink_is_cross_device(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

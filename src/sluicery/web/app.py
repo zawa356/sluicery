@@ -56,6 +56,18 @@ from sluicery.core.options import (
     guard_freeform,
     validate_source_url,
 )
+from sluicery.core.retention import (
+    RetentionConfirmationError,
+    RetentionConfirmationSigner,
+    RetentionExecutionError,
+    RetentionPlan,
+    RetentionPolicy,
+    RetentionPolicyError,
+    RetentionSafetyError,
+    build_retention_plan,
+    execute_retention,
+    save_retention_policy,
+)
 from sluicery.core.settings import OperationalSettings
 from sluicery.core.sync import enqueue_discover_run, execute_download_run
 from sluicery.core.target_state import sync_target_after_task, transition_target
@@ -266,6 +278,8 @@ def create_app(
     app.state.scheduler_service = scheduler_service
     format_probe_limiter = FormatProbeLimiter()
     app.state.format_probe_limiter = format_probe_limiter
+    retention_signer = RetentionConfirmationSigner(settings.SECRET_KEY)
+    app.state.retention_signer = retention_signer
     app.add_middleware(
         AuthenticationMiddleware,
         auth=auth,
@@ -776,6 +790,214 @@ def create_app(
             else:
                 auth.add_flash(request.state.auth, "success", "Target状態を更新しました")
         return RedirectResponse(f"/playlists/{playlist_id}", status_code=303)
+
+    def retention_page_response(
+        request: Request,
+        playlist_id: int,
+        *,
+        plan: RetentionPlan | None = None,
+        confirmation_token: str | None = None,
+        confirmation_purpose: str | None = None,
+        error: str | None = None,
+        status_code: int = 200,
+    ) -> Response:
+        with session_factory() as db:
+            playlist = db.get(Playlist, playlist_id)
+            if playlist is None:
+                raise HTTPException(status_code=404)
+            try:
+                current_policy = RetentionPolicy.from_json(
+                    playlist.retention_policy_json
+                )
+            except RetentionPolicyError:
+                current_policy = RetentionPolicy()
+            operational = OperationalSettings(db)
+            max_delete = operational.retention_max_delete_per_run
+            ttl_sec = operational.retention_dryrun_ttl_sec
+        return templates.TemplateResponse(
+            request,
+            "playlists/retention.html",
+            context(
+                request,
+                active_nav="playlists",
+                playlist=playlist,
+                current_policy=current_policy,
+                plan=plan,
+                confirmation_token=confirmation_token,
+                confirmation_purpose=confirmation_purpose,
+                max_delete=max_delete,
+                ttl_sec=ttl_sec,
+                error=error,
+            ),
+            status_code=status_code,
+        )
+
+    @app.get("/playlists/{playlist_id}/retention")
+    def playlist_retention_page(request: Request, playlist_id: int) -> Response:
+        return retention_page_response(request, playlist_id)
+
+    @app.post("/playlists/{playlist_id}/retention/preview")
+    async def playlist_retention_preview(request: Request, playlist_id: int) -> Response:
+        form = await request.form()
+        purpose = str(form.get("purpose", "enable"))
+        try:
+            with session_factory() as db:
+                playlist = db.get(Playlist, playlist_id)
+                if playlist is None:
+                    raise HTTPException(status_code=404)
+                operational = OperationalSettings(db)
+                if purpose == "enable":
+                    policy = RetentionPolicy.from_json(
+                        {
+                            "enabled": form.get("enabled") == "true",
+                            "keep_latest": form.get("keep_latest"),
+                            "max_age_days": form.get("max_age_days"),
+                        }
+                    )
+                elif purpose == "execute":
+                    policy = RetentionPolicy.from_json(
+                        playlist.retention_policy_json
+                    )
+                    if not policy.enabled:
+                        raise RetentionPolicyError("retentionは無効です")
+                else:
+                    raise RetentionPolicyError("dry-runの目的が不正です")
+                plan = build_retention_plan(
+                    db,
+                    playlist_id,
+                    policy,
+                    max_delete_per_run=operational.retention_max_delete_per_run,
+                )
+            token = None
+            if purpose == "enable" or (plan.deletable and plan.delete_count > 0):
+                token = retention_signer.issue(plan, purpose=purpose)
+            return retention_page_response(
+                request,
+                playlist_id,
+                plan=plan,
+                confirmation_token=token,
+                confirmation_purpose=purpose,
+            )
+        except RetentionPolicyError as exc:
+            return retention_page_response(
+                request, playlist_id, error=str(exc), status_code=422
+            )
+
+    @app.post("/playlists/{playlist_id}/retention/save")
+    async def playlist_retention_save(request: Request, playlist_id: int) -> Response:
+        form = await request.form()
+        if form.get("confirmed") != "yes":
+            return retention_page_response(
+                request,
+                playlist_id,
+                error="dry-run結果を確認するチェックが必要です",
+                status_code=422,
+            )
+        try:
+            with session_factory() as db:
+                operational = OperationalSettings(db)
+                ttl_sec = operational.retention_dryrun_ttl_sec
+                max_delete = operational.retention_max_delete_per_run
+            confirmation = retention_signer.load(
+                str(form.get("confirmation_token", "")),
+                purpose="enable",
+                ttl_sec=ttl_sec,
+            )
+            if confirmation.playlist_id != playlist_id:
+                raise RetentionConfirmationError("Playlistが一致しません")
+            with session_factory() as db:
+                plan = build_retention_plan(
+                    db,
+                    playlist_id,
+                    confirmation.policy,
+                    max_delete_per_run=max_delete,
+                )
+                retention_signer.verify_plan(confirmation, plan)
+                save_retention_policy(db, playlist_id, confirmation.policy)
+        except (RetentionConfirmationError, RetentionPolicyError, LookupError) as exc:
+            return retention_page_response(
+                request, playlist_id, error=str(exc), status_code=422
+            )
+        auth.add_flash(request.state.auth, "success", "retention設定を保存しました")
+        return RedirectResponse(f"/playlists/{playlist_id}/retention", status_code=303)
+
+    def retention_adapter_factory(storage: Storage):
+        with session_factory() as db:
+            current = db.get(Storage, storage.id)
+            if current is None:
+                raise LookupError("Storageが見つかりません")
+            return create_storage_adapter(current, OperationalSettings(db))
+
+    @app.post("/playlists/{playlist_id}/retention/execute")
+    async def playlist_retention_execute(request: Request, playlist_id: int) -> Response:
+        form = await request.form()
+        if form.get("confirmed") != "yes":
+            return retention_page_response(
+                request,
+                playlist_id,
+                error="削除対象を確認するチェックが必要です",
+                status_code=422,
+            )
+        try:
+            with session_factory() as db:
+                operational = OperationalSettings(db)
+                ttl_sec = operational.retention_dryrun_ttl_sec
+                max_delete = operational.retention_max_delete_per_run
+                playlist = db.get(Playlist, playlist_id)
+                if playlist is None:
+                    raise HTTPException(status_code=404)
+                current_policy = RetentionPolicy.from_json(
+                    playlist.retention_policy_json
+                )
+            confirmation = retention_signer.load(
+                str(form.get("confirmation_token", "")),
+                purpose="execute",
+                ttl_sec=ttl_sec,
+            )
+            if (
+                confirmation.playlist_id != playlist_id
+                or confirmation.policy != current_policy
+            ):
+                raise RetentionConfirmationError(
+                    "retention設定がdry-run後に変化しました。再確認してください"
+                )
+            with session_factory() as db:
+                plan = build_retention_plan(
+                    db,
+                    playlist_id,
+                    current_policy,
+                    max_delete_per_run=max_delete,
+                )
+                retention_signer.verify_plan(confirmation, plan)
+            if not plan.deletable or plan.delete_count == 0:
+                raise RetentionSafetyError(
+                    " / ".join(plan.blocked_reasons) or "削除候補がありません"
+                )
+            result = await run_in_threadpool(
+                execute_retention,
+                session_factory,
+                plan,
+                data_dir=settings.DATA_DIR,
+                adapter_factory=retention_adapter_factory,
+                confirmation_token=str(form.get("confirmation_token", "")),
+                confirmation_signer=retention_signer,
+                dryrun_ttl_sec=ttl_sec,
+            )
+        except (
+            RetentionConfirmationError,
+            RetentionExecutionError,
+            RetentionPolicyError,
+            RetentionSafetyError,
+        ) as exc:
+            return retention_page_response(
+                request, playlist_id, error=str(exc), status_code=422
+            )
+        auth.add_flash(
+            request.state.auth,
+            "success",
+            f"retention Run {result.run_id}: {result.deleted_count}件を削除しました",
+        )
+        return RedirectResponse(f"/playlists/{playlist_id}/retention", status_code=303)
 
     @app.post("/playlists/{playlist_id}/delete")
     async def playlist_delete(request: Request, playlist_id: int) -> Response:

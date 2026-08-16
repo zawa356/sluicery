@@ -2,7 +2,7 @@
 {% block title %}{{ playlist.name }} — sluicery{% endblock %}
 {% block content %}
 <div class="page-heading"><div><h1>{{ playlist.name }}</h1><p class="muted">{{ playlist.folder_name }} / {{ playlist.kind_hint.value }}</p></div>
-<div class="button-row"><a class="button button-secondary" href="/playlists/{{ playlist.id }}/edit">編集</a><a class="button button-secondary" href="/playlists/{{ playlist.id }}/cookies">Cookie設定</a></div></div>
+<div class="button-row"><a class="button button-secondary" href="/playlists/{{ playlist.id }}/edit">編集</a><a class="button button-secondary" href="/playlists/{{ playlist.id }}/cookies">Cookie設定</a><a class="button button-secondary" href="/playlists/{{ playlist.id }}/retention">retention</a></div></div>
 
 <section class="panel section-block"><h2>手動実行</h2><div class="button-row">
 <form method="post" action="/playlists/{{ playlist.id }}/run"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button name="kind" value="discover"{% if not playlist.enabled or playlist.paused %} disabled{% endif %}>discover</button></form>

@@ -510,6 +510,12 @@ class RcloneStorageAdapter:
         if result.returncode != 0:
             self._raise_result(result, "remote Storage 内の移動に失敗しました")
 
+    def delete_file(self, rel: str) -> None:
+        normalized = validate_relative_path(rel)
+        result = self._run(["deletefile", self._remote_path(normalized)])
+        if result.returncode != 0:
+            self._raise_result(result, "remote Storage のファイル削除に失敗しました")
+
     def free_space(self) -> int | None:
         result = self._run(["about", self._remote_path(), "--json"])
         if result.returncode != 0:

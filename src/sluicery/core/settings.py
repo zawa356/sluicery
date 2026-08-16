@@ -60,6 +60,10 @@ CODE_DEFAULTS: dict[str, SettingSpec] = {
         "integrity.max_candidates_per_source_id", int, 5
     ),
     "format.probe_min_interval_sec": SettingSpec("format.probe_min_interval_sec", int, 10),
+    "retention.max_delete_per_run": SettingSpec(
+        "retention.max_delete_per_run", int, 20
+    ),
+    "retention.dryrun_ttl_sec": SettingSpec("retention.dryrun_ttl_sec", int, 300),
     "schedule.jitter_minutes": SettingSpec("schedule.jitter_minutes", int, 5),
     "schedule.download_window": SettingSpec("schedule.download_window", str, None),
     "ytdlp.update_cron": SettingSpec("ytdlp.update_cron", str, "0 4 * * 0"),
@@ -229,6 +233,8 @@ def set_override(session: Session, key: str, value: Any) -> None:
         "integrity.rescan_timeout_sec",
         "integrity.max_candidates_per_source_id",
         "format.probe_min_interval_sec",
+        "retention.max_delete_per_run",
+        "retention.dryrun_ttl_sec",
     } and casted <= 0:
         raise ValueError("秒数・件数の設定は1以上にしてください")
     encoded = json.dumps(casted, ensure_ascii=False)
@@ -308,6 +314,14 @@ class OperationalSettings:
     @property
     def format_probe_min_interval_sec(self) -> int:
         return get(self._session, "format.probe_min_interval_sec")
+
+    @property
+    def retention_max_delete_per_run(self) -> int:
+        return get(self._session, "retention.max_delete_per_run")
+
+    @property
+    def retention_dryrun_ttl_sec(self) -> int:
+        return get(self._session, "retention.dryrun_ttl_sec")
 
     @property
     def schedule_jitter_minutes(self) -> int:
