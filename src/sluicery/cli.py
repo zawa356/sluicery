@@ -719,6 +719,7 @@ def _cmd_ytdlp_fetch(
 
 def main(argv: list[str] | None = None) -> int:
     from sluicery.cli_crud import configure_parsers
+    from sluicery.cli_integrity import configure_parser as configure_integrity_parser
     from sluicery.cli_staging import configure_parser as configure_staging_parser
     from sluicery.cli_sync import configure_parser as configure_sync_parser
     from sluicery.cli_task import configure_parser as configure_task_parser
@@ -756,6 +757,7 @@ def main(argv: list[str] | None = None) -> int:
     settings_unset_parser.add_argument("key")
 
     configure_parsers(sub)
+    configure_integrity_parser(sub)
     configure_task_parser(sub)
     configure_staging_parser(sub)
     configure_sync_parser(sub)
@@ -795,6 +797,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     from sluicery.cli_crud import dispatch as dispatch_crud
+    from sluicery.cli_integrity import dispatch as dispatch_integrity
     from sluicery.cli_staging import dispatch as dispatch_staging
     from sluicery.cli_sync import dispatch as dispatch_sync
     from sluicery.cli_task import dispatch as dispatch_task
@@ -803,6 +806,9 @@ def main(argv: list[str] | None = None) -> int:
     crud_result = dispatch_crud(args, open_session=_open_session, load_settings=load_settings)
     if crud_result is not None:
         return crud_result
+    integrity_result = dispatch_integrity(args, open_session=_open_session)
+    if integrity_result is not None:
+        return integrity_result
     task_result = dispatch_task(args, open_session=_open_session)
     if task_result is not None:
         return task_result

@@ -188,6 +188,21 @@ def test_storage_error_never_marks_missing(db_session) -> None:
     assert {issue.kind for issue in report.issues} == {"storage_error"}
 
 
+def test_adapter_factory_error_never_marks_missing(db_session) -> None:
+    _storage, targets, artifacts = _graph(db_session)
+
+    def broken_factory(_storage):
+        raise ValueError("invalid storage configuration")
+
+    report = check_integrity(db_session, broken_factory)
+
+    db_session.refresh(artifacts[0])
+    db_session.refresh(targets[0])
+    assert artifacts[0].missing_since is None
+    assert targets[0].status == TargetStatus.DOWNLOADED
+    assert {issue.kind for issue in report.issues} == {"storage_error"}
+
+
 def test_scan_error_never_marks_missing(db_session) -> None:
     _storage, targets, artifacts = _graph(db_session)
 

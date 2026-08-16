@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from sluicery.core.integrity import check_integrity
 from sluicery.core.settings import OperationalSettings
 from sluicery.core.sync import (
     SyncAlreadyRunningError,
@@ -31,14 +32,16 @@ from sluicery.core.sync import (
     enqueue_discover_run,
     execute_download_run,
 )
-from sluicery.db.models import Playlist, Run, RunStatus, RunTrigger, Task, TaskStatus
+from sluicery.db.models import Playlist, Run, RunStatus, RunTrigger, Storage, Task, TaskStatus
 from sluicery.db.repositories.playlist import PlaylistRepository
 from sluicery.db.repositories.run import RunRepository
+from sluicery.storage import create_storage_adapter
 
 logger = logging.getLogger(__name__)
 
 _JOB_PREFIX = "sluicery:playlist:"
 _RECONCILE_JOB_ID = "sluicery:maintenance:reconcile"
+_INTEGRITY_JOB_ID = "sluicery:maintenance:integrity"
 _MISFIRE_GRACE_SEC = 24 * 60 * 60
 _TASKLESS_DOWNLOAD_RECOVERY_SEC = 24 * 60 * 60
 _active_service: SchedulerService | None = None
@@ -184,6 +187,14 @@ def _reconcile_active_scheduler() -> None:
         logger.warning("Periodic scheduler reconciliation failed", exc_info=True)
 
 
+def _dispatch_integrity_job() -> None:
+    service = _active_service
+    if service is None:
+        logger.error("Integrity job fired without an active app scheduler")
+        return
+    service.execute_integrity_job()
+
+
 class SchedulerService:
     """SQLAlchemyJobStoreを使い、appプロセス内だけで動くscheduler境界。"""
 
@@ -264,6 +275,7 @@ class SchedulerService:
                 "discover": settings.schedule_discover_cron,
                 "download": settings.schedule_download_cron,
             }
+            integrity_expression = settings.schedule_integrity_cron
             playlists = PlaylistRepository(session).list_runnable()
 
         desired: set[str] = set()
@@ -302,6 +314,29 @@ class SchedulerService:
         for job in self._managed_jobs():
             if job.id not in desired:
                 self._scheduler.remove_job(job.id)
+
+        try:
+            integrity_trigger = SymmetricCronTrigger.from_expression(
+                integrity_expression,
+                timezone=self.timezone,
+                jitter_minutes=jitter,
+            )
+        except ValueError:
+            if self._scheduler.get_job(_INTEGRITY_JOB_ID) is not None:
+                self._scheduler.remove_job(_INTEGRITY_JOB_ID)
+            logger.error("Invalid integrity cron; job was not registered")
+        else:
+            existing = self._scheduler.get_job(_INTEGRITY_JOB_ID)
+            if not self._integrity_job_matches(existing, integrity_trigger):
+                self._scheduler.add_job(
+                    _dispatch_integrity_job,
+                    trigger=integrity_trigger,
+                    id=_INTEGRITY_JOB_ID,
+                    replace_existing=True,
+                    coalesce=True,
+                    max_instances=1,
+                    misfire_grace_time=_MISFIRE_GRACE_SEC,
+                )
 
     def recover_orphan_runs(self) -> list[int]:
         """未完了Taskのないrunning Runを終端し、異常終了の残骸を残さない。"""
@@ -410,6 +445,39 @@ class SchedulerService:
                 extra={"playlist_id": playlist_id, "kind": kind},
             )
 
+    def execute_integrity_job(self) -> None:
+        """全Artifactを定期確認する。永続job引数には秘密値もパスも持たせない。"""
+        try:
+            with self._session_factory() as session:
+                operational = OperationalSettings(session)
+
+                def adapter_factory(storage: Storage):
+                    return create_storage_adapter(storage, operational)
+
+                report = check_integrity(
+                    session,
+                    adapter_factory,
+                    rescan_timeout_sec=operational.integrity_rescan_timeout_sec,
+                    max_candidates_per_source_id=(
+                        operational.integrity_max_candidates_per_source_id
+                    ),
+                )
+            error_count = sum(
+                issue.kind in {"storage_error", "scan_error", "scan_timeout"}
+                for issue in report.issues
+            )
+            logger.info(
+                "Scheduled integrity check completed",
+                extra={
+                    "checked": report.checked,
+                    "relinked": report.relinked,
+                    "missing": report.missing,
+                    "errors": error_count,
+                },
+            )
+        except Exception:  # noqa: BLE001 - 保守job失敗でapp schedulerを停めない
+            logger.warning("Scheduled integrity check failed", exc_info=True)
+
     def next_runs(self, playlist_id: int | None = None) -> list[NextRun]:
         rows: list[NextRun] = []
         for job in self._managed_jobs():
@@ -449,6 +517,25 @@ class SchedulerService:
             and str(existing_trigger.timezone) == str(trigger.timezone)
             and existing_trigger.jitter_seconds == trigger.jitter_seconds
             and tuple(job.args) == (playlist_id, kind)
+            and job.coalesce is True
+            and job.max_instances == 1
+            and job.misfire_grace_time == _MISFIRE_GRACE_SEC
+        )
+
+    def _integrity_job_matches(
+        self,
+        job: Job | None,
+        trigger: SymmetricCronTrigger,
+    ) -> bool:
+        if job is None or not isinstance(job.trigger, SymmetricCronTrigger):
+            return False
+        existing_trigger = job.trigger
+        return (
+            existing_trigger.algorithm_version == trigger.algorithm_version
+            and existing_trigger.expression == trigger.expression
+            and str(existing_trigger.timezone) == str(trigger.timezone)
+            and existing_trigger.jitter_seconds == trigger.jitter_seconds
+            and tuple(job.args) == ()
             and job.coalesce is True
             and job.max_instances == 1
             and job.misfire_grace_time == _MISFIRE_GRACE_SEC

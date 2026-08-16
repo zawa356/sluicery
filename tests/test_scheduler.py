@@ -114,6 +114,36 @@ def test_scheduler_registers_independent_persistent_jobs_in_configured_timezone(
     assert "apscheduler_jobs" in tables
 
 
+def test_scheduler_registers_daily_integrity_job_without_arguments(
+    engine, session_factory, monkeypatch
+) -> None:
+    with session_factory() as session:
+        core_settings.set_override(session, "schedule.jitter_minutes", 0)
+        core_settings.set_override(session, "schedule.integrity_cron", "15 3 * * *")
+    service = SchedulerService(engine, session_factory, "Asia/Tokyo")
+
+    service.start(paused=True)
+    try:
+        job = service._scheduler.get_job(  # noqa: SLF001 - 永続job境界の検査
+            "sluicery:maintenance:integrity"
+        )
+        assert job is not None
+        assert tuple(job.args) == ()
+        assert isinstance(job.trigger, SymmetricCronTrigger)
+        assert job.trigger.expression == "15 3 * * *"
+        assert job.next_run_time.hour == 3
+        assert job.next_run_time.minute == 15
+        assert job.coalesce is True
+        assert job.max_instances == 1
+        assert job.misfire_grace_time == 24 * 60 * 60
+        calls: list[bool] = []
+        monkeypatch.setattr(service, "execute_integrity_job", lambda: calls.append(True))
+        job.func()
+        assert calls == [True]
+    finally:
+        service.shutdown()
+
+
 def test_paused_playlist_is_removed_from_schedule(engine, session_factory) -> None:
     playlist_id = _playlist(session_factory)
     with session_factory() as session:
