@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import queue
 import re
-import threading
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -23,7 +21,12 @@ from sluicery.db.models import (
     Target,
     TargetStatus,
 )
-from sluicery.storage.base import RemoteFile, StorageAdapter, validate_relative_path
+from sluicery.storage.base import (
+    RemoteFile,
+    StorageAdapter,
+    StorageOperationError,
+    validate_relative_path,
+)
 
 AdapterFactory = Callable[[Storage], StorageAdapter]
 
@@ -48,6 +51,26 @@ class IntegrityReport:
     issues: list[IntegrityIssue] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class _ArtifactSnapshot:
+    artifact_id: int
+    target_id: int
+    storage_id: int
+    relative_path: str
+    source_id: str
+    artifact_updated_at: datetime
+    target_status: TargetStatus
+    target_updated_at: datetime
+
+
+@dataclass(frozen=True)
+class _Decision:
+    kind: str
+    relative_path: str | None = None
+    issue_kind: str | None = None
+    candidates: tuple[str, ...] = ()
+
+
 def _matches_source_id(relative_path: str, source_id: str) -> bool:
     """拡張子直前の末尾IDだけを照合し、部分一致を避ける。"""
     name = PurePosixPath(relative_path).name
@@ -57,21 +80,13 @@ def _matches_source_id(relative_path: str, source_id: str) -> bool:
 def _list_with_timeout(
     adapter: StorageAdapter, timeout_sec: int
 ) -> tuple[list[RemoteFile] | None, str | None]:
-    """重いremote走査をdaemon threadへ隔離し、期限後は結果を採用しない。"""
-    result_queue: queue.Queue[tuple[list[RemoteFile] | None, str | None]] = queue.Queue(maxsize=1)
-
-    def run() -> None:
-        try:
-            result_queue.put((list(adapter.list_recursive("")), None))
-        except Exception:  # noqa: BLE001 - Storageエラーをmissingへ誤変換しない境界
-            result_queue.put((None, "scan_error"))
-
-    thread = threading.Thread(target=run, name="integrity-rescan", daemon=True)
-    thread.start()
+    """Adapterの期限付き走査を使い、失敗をmissingと分離する。"""
     try:
-        return result_queue.get(timeout=timeout_sec)
-    except queue.Empty:
-        return None, "scan_timeout"
+        return list(adapter.list_recursive("", timeout_sec=timeout_sec)), None
+    except StorageOperationError as exc:
+        return None, "scan_timeout" if exc.reason_code == "timeout" else "scan_error"
+    except Exception:  # noqa: BLE001 - Storageエラーをmissingへ誤変換しない境界
+        return None, "scan_error"
 
 
 def check_integrity(
@@ -106,41 +121,79 @@ def check_integrity(
         stmt = stmt.where(Storage.id == storage_id)
     if playlist_id is not None:
         stmt = stmt.where(Playlist.id == playlist_id)
-    grouped: dict[int, list[tuple[Artifact, Target, Item, Playlist, Storage]]] = defaultdict(list)
-    for artifact, target, item, playlist, storage in session.execute(stmt).tuples():
-        grouped[storage.id].append((artifact, target, item, playlist, storage))
+    grouped: dict[int, list[_ArtifactSnapshot]] = defaultdict(list)
+    storages: dict[int, Storage] = {}
+    for artifact, target, item, _playlist, storage in session.execute(stmt).tuples():
+        grouped[storage.id].append(
+            _ArtifactSnapshot(
+                artifact.id,
+                target.id,
+                storage.id,
+                artifact.relative_path,
+                item.source_id,
+                artifact.updated_at,
+                target.status,
+                target.updated_at,
+            )
+        )
+        storages[storage.id] = storage
 
     report = IntegrityReport()
+    tracked_by_storage: dict[int, set[str]] = defaultdict(set)
+    if grouped:
+        tracked_stmt = select(Artifact.storage_id, Artifact.relative_path).where(
+            Artifact.storage_id.in_(grouped)
+        )
+        for tracked_storage_id, relative_path in session.execute(tracked_stmt).tuples():
+            tracked_by_storage[tracked_storage_id].add(relative_path)
+
+    adapters: dict[int, StorageAdapter] = {}
     for current_storage_id, rows in grouped.items():
         try:
-            adapter = adapter_factory(rows[0][4])
+            adapters[current_storage_id] = adapter_factory(storages[current_storage_id])
         except Exception:  # noqa: BLE001 - Adapter構築失敗もmissingへ誤変換しない
-            for artifact, target, *_ in rows:
+            for row in rows:
                 report.issues.append(
-                    IntegrityIssue(artifact.id, target.id, current_storage_id, "storage_error")
+                    IntegrityIssue(
+                        row.artifact_id,
+                        row.target_id,
+                        current_storage_id,
+                        "storage_error",
+                    )
                 )
+    # Storage I/Oの前にread transactionを閉じる。結果適用時は現在値を再確認する。
+    session.commit()
+
+    snapshots = {
+        row.artifact_id: row for rows in grouped.values() for row in rows
+    }
+    decisions: dict[int, _Decision] = {}
+    for current_storage_id, rows in grouped.items():
+        adapter = adapters.get(current_storage_id)
+        if adapter is None:
             continue
-        absent: list[tuple[Artifact, Target, Item, Playlist, Storage]] = []
-        present: list[tuple[Artifact, Target, Item, Playlist, Storage]] = []
+        absent: list[_ArtifactSnapshot] = []
+        present: list[_ArtifactSnapshot] = []
         storage_error = False
         for row in rows:
             report.checked += 1
             try:
-                exists = adapter.exists(row[0].relative_path)
+                exists = adapter.exists(row.relative_path)
             except Exception:  # noqa: BLE001 - 到達不能をmissingと判定しない
                 storage_error = True
                 break
             (present if exists else absent).append(row)
         if storage_error:
-            for artifact, target, *_ in rows:
+            for row in rows:
                 report.issues.append(
-                    IntegrityIssue(artifact.id, target.id, current_storage_id, "storage_error")
+                    IntegrityIssue(
+                        row.artifact_id,
+                        row.target_id,
+                        current_storage_id,
+                        "storage_error",
+                    )
                 )
             continue
-
-        for artifact, *_ in present:
-            report.present += 1
-            artifact.missing_since = None
 
         scanned_files: list[RemoteFile] | None = None
         scan_error: str | None = None
@@ -148,66 +201,168 @@ def check_integrity(
             report.rescanned_storages += 1
             scanned_files, scan_error = _list_with_timeout(adapter, rescan_timeout_sec)
         if scan_error is not None:
-            for artifact, target, *_ in absent:
+            # 一部Artifactが存在しても、同一Storageに未確認が残る間は
+            # missing解除やTarget復帰を行わない。
+            for row in absent:
                 report.issues.append(
-                    IntegrityIssue(artifact.id, target.id, current_storage_id, scan_error)
+                    IntegrityIssue(
+                        row.artifact_id,
+                        row.target_id,
+                        current_storage_id,
+                        scan_error,
+                    )
                 )
         elif scanned_files is not None:
-            tracked_paths = {artifact.relative_path for artifact, *_ in rows}
+            tracked_paths = tracked_by_storage[current_storage_id]
             untracked = [
                 entry for entry in scanned_files if entry.relative_path not in tracked_paths
             ]
-            for artifact, target, item, _playlist, _storage in absent:
-                candidates = [
+            candidates_by_artifact = {
+                row.artifact_id: [
                     entry.relative_path
                     for entry in untracked
-                    if _matches_source_id(entry.relative_path, item.source_id)
+                    if _matches_source_id(entry.relative_path, row.source_id)
                 ]
-                if len(candidates) == 1:
-                    artifact.relative_path = candidates[0]
-                    artifact.absolute_path_cache = None
-                    artifact.missing_since = None
-                    report.relinked += 1
-                    tracked_paths.add(candidates[0])
-                    untracked = [e for e in untracked if e.relative_path != candidates[0]]
+                for row in absent
+            }
+            claimants: dict[str, set[int]] = defaultdict(set)
+            for artifact_id, candidates in candidates_by_artifact.items():
+                for candidate in candidates:
+                    claimants[candidate].add(artifact_id)
+            for row in absent:
+                candidates = candidates_by_artifact[row.artifact_id]
+                if len(candidates) == 1 and len(claimants[candidates[0]]) == 1:
+                    decisions[row.artifact_id] = _Decision("relink", candidates[0])
                 else:
-                    artifact.missing_since = artifact.missing_since or checked_at
-                    report.missing += 1
+                    if len(candidates) == 1:
+                        kind = "shared_candidate"
+                    else:
+                        kind = "multiple_candidates" if candidates else "missing"
+                    decisions[row.artifact_id] = _Decision(
+                        "missing",
+                        issue_kind=kind,
+                        candidates=tuple(candidates[:max_candidates_per_source_id]),
+                    )
+            for row in present:
+                decisions[row.artifact_id] = _Decision("present")
+        else:
+            for row in present:
+                decisions[row.artifact_id] = _Decision("present")
+
+    revalidated_decisions: dict[int, _Decision] = {}
+    for artifact_id, decision in decisions.items():
+        snapshot = snapshots[artifact_id]
+        adapter = adapters[snapshot.storage_id]
+        try:
+            original_exists = adapter.exists(snapshot.relative_path)
+            if original_exists:
+                revalidated_decisions[artifact_id] = _Decision("present")
+            elif decision.kind == "missing":
+                revalidated_decisions[artifact_id] = decision
+            elif decision.kind == "relink":
+                assert decision.relative_path is not None
+                if adapter.exists(decision.relative_path):
+                    revalidated_decisions[artifact_id] = decision
+                else:
                     report.issues.append(
                         IntegrityIssue(
-                            artifact.id,
-                            target.id,
-                            current_storage_id,
-                            "multiple_candidates" if candidates else "missing",
-                            tuple(candidates[:max_candidates_per_source_id]),
+                            artifact_id,
+                            snapshot.target_id,
+                            snapshot.storage_id,
+                            "storage_changed",
                         )
                     )
-
-        affected_target_ids = {target.id for _artifact, target, *_ in rows}
-        session.flush()
-        for target_id in affected_target_ids:
-            loaded_target = session.get(Target, target_id)
-            assert loaded_target is not None
-            artifacts = list(
-                session.scalars(select(Artifact).where(Artifact.target_id == target_id))
-            )
-            has_missing = any(artifact.missing_since is not None for artifact in artifacts)
-            if has_missing and loaded_target.status == TargetStatus.DOWNLOADED:
-                loaded_playlist = session.scalar(
-                    select(Playlist)
-                    .join(Item, Item.playlist_id == Playlist.id)
-                    .where(Item.id == loaded_target.item_id)
+            else:
+                report.issues.append(
+                    IntegrityIssue(
+                        artifact_id,
+                        snapshot.target_id,
+                        snapshot.storage_id,
+                        "storage_changed",
+                    )
                 )
-                assert loaded_playlist is not None
-                if loaded_playlist.missing_policy == MissingPolicy.REDOWNLOAD:
-                    loaded_target.status = TargetStatus.PENDING
-                elif loaded_playlist.missing_policy == MissingPolicy.IGNORE:
-                    loaded_target.status = TargetStatus.IGNORED
-                else:
-                    loaded_target.status = TargetStatus.MISSING
-            elif not has_missing and loaded_target.status == TargetStatus.MISSING:
-                loaded_target.status = TargetStatus.DOWNLOADED
-                report.restored += 1
+        except Exception:  # noqa: BLE001 - 再確認失敗時もDBに古い判定を適用しない
+            report.issues.append(
+                IntegrityIssue(
+                    artifact_id,
+                    snapshot.target_id,
+                    snapshot.storage_id,
+                    "storage_error",
+                )
+            )
+
+    session.expire_all()
+    affected_target_ids: set[int] = set()
+    for artifact_id, decision in revalidated_decisions.items():
+        snapshot = snapshots[artifact_id]
+        loaded_artifact = session.get(Artifact, artifact_id)
+        loaded_target = session.get(Target, snapshot.target_id)
+        if (
+            loaded_artifact is None
+            or loaded_target is None
+            or loaded_artifact.relative_path != snapshot.relative_path
+            or loaded_artifact.updated_at != snapshot.artifact_updated_at
+            or loaded_target.status != snapshot.target_status
+            or loaded_target.updated_at != snapshot.target_updated_at
+        ):
+            continue
+        if decision.kind == "relink":
+            assert decision.relative_path is not None
+            already_tracked = session.scalar(
+                select(Artifact.id).where(
+                    Artifact.storage_id == snapshot.storage_id,
+                    Artifact.relative_path == decision.relative_path,
+                    Artifact.id != artifact_id,
+                )
+            )
+            if already_tracked is not None:
+                continue
+            loaded_artifact.relative_path = decision.relative_path
+            loaded_artifact.absolute_path_cache = None
+            loaded_artifact.missing_since = None
+            report.relinked += 1
+        elif decision.kind == "missing":
+            loaded_artifact.missing_since = loaded_artifact.missing_since or checked_at
+            report.missing += 1
+            assert decision.issue_kind is not None
+            report.issues.append(
+                IntegrityIssue(
+                    artifact_id,
+                    snapshot.target_id,
+                    snapshot.storage_id,
+                    decision.issue_kind,
+                    decision.candidates,
+                )
+            )
+        else:
+            loaded_artifact.missing_since = None
+            report.present += 1
+        affected_target_ids.add(snapshot.target_id)
+
+    session.flush()
+    for target_id in affected_target_ids:
+        loaded_target = session.get(Target, target_id)
+        assert loaded_target is not None
+        artifacts = list(
+            session.scalars(select(Artifact).where(Artifact.target_id == target_id))
+        )
+        has_missing = any(artifact.missing_since is not None for artifact in artifacts)
+        if has_missing and loaded_target.status == TargetStatus.DOWNLOADED:
+            loaded_playlist = session.scalar(
+                select(Playlist)
+                .join(Item, Item.playlist_id == Playlist.id)
+                .where(Item.id == loaded_target.item_id)
+            )
+            assert loaded_playlist is not None
+            if loaded_playlist.missing_policy == MissingPolicy.REDOWNLOAD:
+                loaded_target.status = TargetStatus.PENDING
+            elif loaded_playlist.missing_policy == MissingPolicy.IGNORE:
+                loaded_target.status = TargetStatus.IGNORED
+            else:
+                loaded_target.status = TargetStatus.MISSING
+        elif not has_missing and loaded_target.status == TargetStatus.MISSING:
+            loaded_target.status = TargetStatus.DOWNLOADED
+            report.restored += 1
     session.commit()
     return report
 
@@ -220,14 +375,15 @@ def list_orphan_files(
     timeout_sec: int = 600,
 ) -> tuple[list[RemoteFile], str | None]:
     """Storage内のArtifact未追跡ファイルを一覧する。ファイル操作は行わない。"""
-    files, error = _list_with_timeout(adapter, timeout_sec)
-    if files is None:
-        return [], error
     tracked = set(
         session.scalars(
             select(Artifact.relative_path).where(Artifact.storage_id == storage.id)
         )
     )
+    session.commit()
+    files, error = _list_with_timeout(adapter, timeout_sec)
+    if files is None:
+        return [], error
     return [entry for entry in files if entry.relative_path not in tracked], None
 
 

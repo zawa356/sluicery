@@ -34,7 +34,9 @@ class FakeStorage:
     def exists(self, relative_path: str) -> bool:
         return relative_path in self.files
 
-    def list_recursive(self, relative_path: str):
+    def list_recursive(
+        self, relative_path: str, *, timeout_sec: float | None = None
+    ):
         yield from (RemoteFile(path, 100) for path in self.files)
 
 

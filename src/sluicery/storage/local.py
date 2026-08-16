@@ -7,6 +7,7 @@ import errno
 import hashlib
 import os
 import shutil
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from uuid import uuid4
@@ -325,12 +326,21 @@ class LocalStorageAdapter:
     def exists(self, rel: str) -> bool:
         return self._path(rel).exists()
 
-    def list_recursive(self, rel: str) -> Iterator[RemoteFile]:
+    def list_recursive(
+        self, rel: str, *, timeout_sec: float | None = None
+    ) -> Iterator[RemoteFile]:
         base = self._path(rel, allow_empty=True)
         if not base.exists():
             return
+        deadline = time.monotonic() + timeout_sec if timeout_sec is not None else None
         try:
             for path in base.rglob("*"):
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise StorageOperationError(
+                        "local Storage の一覧取得がタイムアウトしました",
+                        classification=StorageClassification.UNREACHABLE,
+                        reason_code="timeout",
+                    )
                 resolved = path.resolve(strict=False)
                 if not resolved.is_relative_to(self._root):
                     raise StoragePathError("Storage root 外を指す symlink は一覧できません")
