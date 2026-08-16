@@ -450,6 +450,18 @@ def test_remote_exists_list_move_and_free_space() -> None:
     assert adapter.free_space() == 12345
 
 
+def test_remote_recursive_list_uses_integrity_deadline() -> None:
+    runner = ScriptedRunner([_result(stdout=["[]"])])
+    adapter = _remote_adapter(runner)
+
+    assert list(adapter.list_recursive("", timeout_sec=7)) == []
+
+    timeout = runner.timeouts[-1]
+    assert timeout.idle_sec == 7
+    assert timeout.absolute_sec == 7
+    assert timeout.term_grace_sec == 7
+
+
 def test_remote_connection_distinguishes_auth_failure() -> None:
     runner = ScriptedRunner(
         [

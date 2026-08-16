@@ -4,7 +4,7 @@
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
 最終更新: 2026-08-16
-対応コミット: Phase 13実装中
+対応コミット: Phase 13完了（チェックポイント作成前）
 
 ## プロジェクト概要
 
@@ -19,7 +19,8 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - [x] 10. ダッシュボード、Playlist / Profile / Storage CRUD、運用設定画面
 - [x] 11. Run履歴、HTMX進捗、マスク済みログ、Task / Runキャンセル
 - [x] 12. app専用スケジューラ、分離cron、時間帯、ジッター、整合、misfire
-- [ ] 13–20. 整合性、フォーマット検査、yt-dlp更新、retention、設定移行、フック、mount、仕上げ
+- [x] 13. 整合性、relink、missing方針、手動リンク、差分レポート
+- [ ] 14–20. フォーマット検査、yt-dlp更新、retention、設定移行、フック、mount、仕上げ
 
 ## 直近の作業
 
@@ -28,8 +29,10 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - missing Targetと孤立ファイルを並べる整合性レポート、DBパスだけを変更する手動リンクと取消を実装した。実ファイル不変をコア/Webテストで固定した（D-055）
 - delisted Itemと関連Artifactパスを表示する差分レポートを追加した。Playlistと`TZ`に沿った期間で絞り込め、画面から削除できないことをテストした
 - `sluicery integrity check [--storage][--playlist]`、UI手動実行、既存app schedulerの日次integrity jobを実装した。永続job引数は空で、秘密値やパスを保存しない
+- Phase 13レビュの重大1件・中4件に対応した。絞り込み時の追跡済み候補除外、走査失敗時の復帰抑止、Adapter期限による実走査停止、Storage I/O前後のDB transaction分離、適用直前のStorage実体・DB更新世代再確認を実装し、回帰テストを追加した
 - Phase 13準備として、過去にCookieで成功した既存TargetをCookieなしで1件だけ取得試験した。Denoは検出されたがHTTP 403、生成物0件であり、Cookieが必要な取得対象があると判定した（D-053）。試験用Stagingは削除済みでDBと既存メディアは変更していない
-- 現在の実DBはTarget 659件中downloaded 599、blocked 1、failed 2、unavailable 57で、Artifact 599件・約2.54GiB。Phase 8受け入れ条件#16の「downloadedが大半」は満たすが、全件完走ではない
+- Phase 8残件は、既に再試行中の1件を重複投入せず、形式非互換で4回失敗済みの1件も追加試行しなかった。残る1件だけを一時Cookieで再試行したが同じHTTP 403でunavailableとなったため停止した。一時Cookieと一時ファイルは削除し、Itemのdelisted状態を復元した
+- 現在の実DBはTarget 659件中downloaded 599、blocked 1、failed 1、unavailable 58で、Artifact 599件・約2.54GiB。Phase 8受け入れ条件#16の「downloadedが大半」は満たすが、#14の全件完走は検証制限のままである
 - `app`だけでAPSchedulerを起動し、既存SQLiteのSQLAlchemyJobStoreへPlaylist IDと種別だけを永続化した。workerとホストcron / systemdにはschedulerを置かない
 - Playlistごとのdiscover / download独立cron、グローバルfallback、`TZ`解釈、永続する±jitter位相、paused除外、ダッシュボードと詳細の次回予定を実装した
 - `schedule.download_window`を開始含む・終了含まない時間帯として実装し、日跨ぎと開始終了同時刻（終日）を扱う。時間外の自動downloadはTaskを作らず`skipped` Runへ記録する
@@ -37,12 +40,13 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - 起動時と60秒ごとにPlaylist設定と永続jobを整合する。設定不変のjobは置換せず期限超過時刻を保持し、`coalesce=true`で停止中の複数回分を復帰直後の1回へ畳む
 - レビュー③で負方向jitterの重複候補、生存Runの誤回収、外部CLIとの回収競合、paused発火競合、不正schedule値のCLI保存、起動ログを修正した。重大な残存指摘はない
 - 2時間00分28秒の連続実機試験でdiscover / download各24回、全48回の安全なskip、scheduled Task 0、DB lock / scheduler error 0、SQLite整合性正常を確認した。合成データは削除済み
-- Phase 13の実装完了時点で全411テスト、Ruff、mypy 83ファイルが成功した。`RunStatus.skipped`マイグレーションのupgrade / downgrade / upgradeも実DB検証済み
+- Phase 13のlocal / SMB隔離検証、レビュー対応、実DBマイグレーション往復を完了した。合成ファイルとDB行は対象限定で片付け、SQLite整合性、app healthy、両worker稼働を確認した
+- Phase 13対応後の全419テスト、Ruff、mypy 83 source filesが成功した
 
 ## 次にやること
 
-1. Phase 13の独立レビュを実施し、指摘修正後にlocal / SMBの実機検証を行う
-2. Phase 8残存3件（blocked 1、failed 2）は原因別に少量再試行し、同種エラー多発時は停止する
+1. Phase 13の全テストを再確認して`checkpoint/step-13`を作成する
+2. Phase 14–15のフォーマット検査とyt-dlp自動更新へ進む
 
 ## 未解決・保留
 
@@ -77,7 +81,7 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - 同期: `make sync`またはappコンテナ内の`python3 -m sluicery.cli sync ...`
 - 実機資格情報、Playlist URL、Cookieはignoredかつmode 600の`.local/`だけに置く。文書・コミットへ記載しない
 - `/data/staging/trailer_1080p.mov`は削除禁止。孤立検出対象を自動削除しない
-- `sync.max_targets_per_run`は既定50、DBマイグレーションheadは`d0e1f2a3b4c5`
+- `sync.max_targets_per_run`は既定50、DBマイグレーションheadは`f2a3b4c5d6e7`
 - schedulerの設定反映周期は60秒、Playlist jobのmisfire猶予は24時間、既定jitterは±5分
 
 ## 既知の落とし穴

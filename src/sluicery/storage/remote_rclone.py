@@ -132,10 +132,11 @@ class RcloneStorageAdapter:
         args: list[str],
         *,
         stats_interval: str | None = None,
+        timeout: TimeoutPolicy | None = None,
     ) -> RcloneRunResult:
         return self._runner.run(
             args,
-            timeout=self._normal_timeout,
+            timeout=timeout or self._normal_timeout,
             config_env=self._config_env(),
             retries=self._retries,
             stats_interval=stats_interval,
@@ -462,10 +463,21 @@ class RcloneStorageAdapter:
         self._raise_result(result, "remote Storage の存在確認に失敗しました")
         return False
 
-    def list_recursive(self, rel: str) -> Iterator[RemoteFile]:
+    def list_recursive(
+        self, rel: str, *, timeout_sec: float | None = None
+    ) -> Iterator[RemoteFile]:
         normalized = validate_relative_path(rel, allow_empty=True)
+        timeout = self._normal_timeout
+        if timeout_sec is not None:
+            limit = max(0.01, timeout_sec)
+            timeout = TimeoutPolicy(
+                min(timeout.idle_sec or limit, limit),
+                min(timeout.absolute_sec or limit, limit),
+                min(timeout.term_grace_sec, limit),
+            )
         result = self._run(
-            ["lsjson", self._remote_path(normalized), "--recursive", "--files-only", "--hash"]
+            ["lsjson", self._remote_path(normalized), "--recursive", "--files-only", "--hash"],
+            timeout=timeout,
         )
         if result.returncode != 0:
             self._raise_result(result, "remote Storage の一覧取得に失敗しました")

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import select
 
 from sluicery.core.integrity import (
     check_integrity,
@@ -37,19 +38,25 @@ class FakeStorage:
         *,
         exists_error: bool = False,
         scan_error: bool = False,
+        scan_timeout: bool = False,
     ) -> None:
         self.files = files
         self.exists_error = exists_error
         self.scan_error = scan_error
+        self.scan_timeout = scan_timeout
         self.scan_count = 0
+        self.scan_timeout_sec: float | None = None
 
     def exists(self, rel: str) -> bool:
         if self.exists_error:
             raise StorageOperationError("unreachable")
         return rel in self.files
 
-    def list_recursive(self, rel: str):
+    def list_recursive(self, rel: str, *, timeout_sec: float | None = None):
         self.scan_count += 1
+        self.scan_timeout_sec = timeout_sec
+        if self.scan_timeout:
+            raise StorageOperationError("timeout", reason_code="timeout")
         if self.scan_error:
             raise StorageOperationError("unreachable")
         yield from [RemoteFile(path, 1) for path in self.files]
@@ -173,6 +180,29 @@ def test_multiple_candidates_are_not_selected(db_session) -> None:
     )
 
 
+def test_one_candidate_claimed_by_multiple_artifacts_is_not_selected(db_session) -> None:
+    storage, targets, artifacts = _graph(db_session)
+    derived = Artifact(
+        target_id=targets[0].id,
+        role=ArtifactRole.DERIVED,
+        storage_id=storage.id,
+        relative_path="old/derived [source-0].mkv",
+    )
+    db_session.add(derived)
+    db_session.commit()
+    candidate = "new/shared [source-0].mkv"
+
+    report = check_integrity(db_session, lambda _: FakeStorage([candidate]))
+
+    db_session.refresh(artifacts[0])
+    db_session.refresh(derived)
+    assert artifacts[0].relative_path == "old/title [source-0].mkv"
+    assert derived.relative_path == "old/derived [source-0].mkv"
+    assert artifacts[0].missing_since is not None
+    assert derived.missing_since is not None
+    assert {issue.kind for issue in report.issues} == {"shared_candidate"}
+
+
 def test_storage_error_never_marks_missing(db_session) -> None:
     _storage, targets, artifacts = _graph(db_session)
 
@@ -212,6 +242,50 @@ def test_scan_error_never_marks_missing(db_session) -> None:
     db_session.refresh(targets[0])
     assert artifacts[0].missing_since is None
     assert targets[0].status == TargetStatus.DOWNLOADED
+    assert {issue.kind for issue in report.issues} == {"scan_error"}
+
+
+def test_scan_timeout_stops_adapter_and_never_marks_missing(db_session) -> None:
+    _storage, targets, artifacts = _graph(db_session)
+    adapter = FakeStorage([], scan_timeout=True)
+
+    report = check_integrity(
+        db_session,
+        lambda _: adapter,
+        rescan_timeout_sec=7,
+    )
+
+    db_session.refresh(artifacts[0])
+    db_session.refresh(targets[0])
+    assert adapter.scan_timeout_sec == 7
+    assert artifacts[0].missing_since is None
+    assert targets[0].status == TargetStatus.DOWNLOADED
+    assert {issue.kind for issue in report.issues} == {"scan_timeout"}
+
+
+def test_scan_error_does_not_restore_partially_confirmed_target(db_session) -> None:
+    storage, targets, artifacts = _graph(db_session)
+    returned_at = datetime(2026, 8, 15, tzinfo=UTC)
+    artifacts[0].missing_since = returned_at
+    targets[0].status = TargetStatus.MISSING
+    sibling = Artifact(
+        target_id=targets[0].id,
+        role=ArtifactRole.DERIVED,
+        storage_id=storage.id,
+        relative_path="old/derived [source-0].mkv",
+    )
+    db_session.add(sibling)
+    db_session.commit()
+    adapter = FakeStorage([artifacts[0].relative_path], scan_error=True)
+
+    report = check_integrity(db_session, lambda _: adapter)
+
+    db_session.refresh(artifacts[0])
+    db_session.refresh(targets[0])
+    assert artifacts[0].missing_since == returned_at
+    assert sibling.missing_since is None
+    assert targets[0].status == TargetStatus.MISSING
+    assert report.restored == 0
     assert {issue.kind for issue in report.issues} == {"scan_error"}
 
 
@@ -317,6 +391,139 @@ def test_tracked_same_id_file_is_not_used_for_relink(db_session) -> None:
     db_session.refresh(artifacts[0])
     assert artifacts[0].relative_path == "old/title [source-0].mkv"
     assert artifacts[0].missing_since is not None
+
+
+def test_playlist_filter_still_excludes_paths_tracked_by_other_playlists(
+    db_session,
+) -> None:
+    storage, targets, artifacts = _graph(db_session)
+    first_item = db_session.get(Item, targets[0].item_id)
+    assert first_item is not None
+    first_playlist = db_session.get(Playlist, first_item.playlist_id)
+    assert first_playlist is not None
+    profile = db_session.scalar(select(Profile))
+    assert profile is not None
+    other_playlist = Playlist(
+        name="other-list",
+        folder_name="other-list",
+        url="https://example.com/other-list",
+        kind_hint=PlaylistKindHint.VIDEO,
+    )
+    db_session.add(other_playlist)
+    db_session.flush()
+    assignment = PlaylistProfile(
+        playlist_id=other_playlist.id,
+        profile_id=profile.id,
+        storage_id=storage.id,
+    )
+    db_session.add(assignment)
+    db_session.flush()
+    other_item = Item(
+        playlist_id=other_playlist.id,
+        source_id="source-0",
+        source_url="https://example.com/other-source",
+    )
+    db_session.add(other_item)
+    db_session.flush()
+    other_target = Target(
+        item_id=other_item.id,
+        playlist_profile_id=assignment.id,
+        status=TargetStatus.DOWNLOADED,
+    )
+    db_session.add(other_target)
+    db_session.flush()
+    tracked_path = "tracked/other [source-0].mkv"
+    db_session.add(
+        Artifact(
+            target_id=other_target.id,
+            role=ArtifactRole.SOURCE,
+            storage_id=storage.id,
+            relative_path=tracked_path,
+        )
+    )
+    db_session.commit()
+
+    check_integrity(
+        db_session,
+        lambda _: FakeStorage([tracked_path]),
+        playlist_id=first_playlist.id,
+    )
+
+    db_session.refresh(artifacts[0])
+    assert artifacts[0].relative_path == "old/title [source-0].mkv"
+    assert artifacts[0].missing_since is not None
+
+
+def test_storage_io_runs_without_an_open_database_transaction(db_session) -> None:
+    _storage, _targets, _artifacts = _graph(db_session)
+
+    class TransactionCheckingStorage(FakeStorage):
+        def exists(self, rel: str) -> bool:
+            assert not db_session.in_transaction()
+            return super().exists(rel)
+
+        def list_recursive(self, rel: str, *, timeout_sec: float | None = None):
+            assert not db_session.in_transaction()
+            yield from super().list_recursive(rel, timeout_sec=timeout_sec)
+
+    check_integrity(db_session, lambda _: TransactionCheckingStorage([]))
+
+
+def test_file_returned_after_scan_is_not_marked_missing(db_session) -> None:
+    _storage, targets, artifacts = _graph(db_session)
+    missing_at = datetime(2026, 8, 15, tzinfo=UTC)
+    targets[0].status = TargetStatus.MISSING
+    artifacts[0].missing_since = missing_at
+    db_session.commit()
+
+    class ReturningStorage(FakeStorage):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.exists_calls = 0
+
+        def exists(self, rel: str) -> bool:
+            self.exists_calls += 1
+            return self.exists_calls >= 2
+
+    report = check_integrity(db_session, lambda _: ReturningStorage())
+
+    db_session.refresh(artifacts[0])
+    db_session.refresh(targets[0])
+    assert artifacts[0].missing_since is None
+    assert targets[0].status == TargetStatus.DOWNLOADED
+    assert report.missing == 0
+    assert report.restored == 1
+    assert report.issues == []
+
+
+def test_concurrent_target_update_skips_stale_missing_decision(
+    db_session, session_factory
+) -> None:
+    _storage, targets, artifacts = _graph(db_session)
+
+    class ConcurrentUpdateStorage(FakeStorage):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.exists_calls = 0
+
+        def exists(self, rel: str) -> bool:
+            self.exists_calls += 1
+            if self.exists_calls == 2:
+                with session_factory() as other:
+                    target = other.get(Target, targets[0].id)
+                    assert target is not None
+                    target.retry_count += 1
+                    other.commit()
+            return False
+
+    report = check_integrity(db_session, lambda _: ConcurrentUpdateStorage())
+
+    db_session.refresh(artifacts[0])
+    db_session.refresh(targets[0])
+    assert artifacts[0].missing_since is None
+    assert targets[0].status == TargetStatus.DOWNLOADED
+    assert targets[0].retry_count == 1
+    assert report.missing == 0
 
 
 def test_source_id_matching_is_anchored_at_extension() -> None:
