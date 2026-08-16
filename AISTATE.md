@@ -4,7 +4,7 @@
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
 最終更新: 2026-08-16
-対応コミット: Phase 15実装 `e593421`（実機検証・レビュー②対応済み）
+対応コミット: Phase 16実装 `bacffb1`（安全装置・検証済み）
 
 ## プロジェクト概要
 
@@ -22,10 +22,14 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - [x] 13. 整合性、relink、missing方針、手動リンク、差分レポート
 - [x] 14. Profile編集からのフォーマット検査、レート制限、URL非保持
 - [x] 15. yt-dlp自動更新、強化スモークテスト、安全なロールバック
-- [ ] 16–20. retention、設定移行、フック、mount、仕上げ
+- [x] 16. retention（dry-run必須・安全装置付き）
+- [ ] 17–20. 設定移行、フック、mount、仕上げ
 
 ## 直近の作業
 
+- Phase 16のretentionを実装した。Playlistごとに最新N件 / M日超を指定するが既定は無効で、有効化と実行の両方に署名付きdry-run確認が必要
+- 20件上限、Artifact過半数guard、300秒TTL、snapshot再検証、Playlist排他、exact path削除、fsync済み監査logを追加した（D-057）。成功時はArtifact行を削除しTargetを`ignored`にする
+- 実環境は読み取り専用でretention有効Playlist 0、候補0、Artifact 599件不変を確認し、実メディアは削除していない。合成一時ファイルでの安全経路を含む全448テスト、Ruff、mypy 85 source filesが成功した
 - Phase 15の週次yt-dlp更新を実装した。実ダウンロード、Deno検出、challenge警告、default extras、固定markerのメタデータと実thumbnail埋込みを検査し、専用Stagingを必ず削除する
 - 新版失敗時は直前版を未切替のまま同じスモークで検査し、成功時だけ戻す。新旧両失敗は新版を維持し、`run_failed` Hookへ安全なreasonだけを記録する（D-056）
 - WebとCLIへ手動更新・ロールバックと履歴表示を追加した。app専用週次jobは引数なしで、`ytdlp.update_cron`を空にすると無効化できる
@@ -55,8 +59,8 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 
 ## 次にやること
 
-1. Phase 16のretentionは実ファイルを削除せず、実装・dry-run・拒否系検証まで進める
-2. Phase 17の設定エクスポート / インポートへ進む
+1. Phase 17の設定エクスポート / インポートを実装する
+2. Phase 18のHookがPhase 15の`run_failed`呼出しと安全に統合することを確認する
 
 ## 未解決・保留
 
@@ -82,6 +86,7 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - Web UIとCLIは併存し、CLIを自動化・デバッグ用の恒久機能として維持する
 - schedulerはappだけで動かし、workerやホストcron / systemdへ置かない
 - 自動syncの時間帯外・活動中競合はTaskを作らず`skipped` Runへ理由を記録する
+- retentionは既定無効で、有効化と実行の両方にdry-runを必須とする。実メディの削除検証はユーザー判断なしに行わない
 - `git push` / `gh repo create` / `gh repo edit`は履歴監査とユーザー承認後だけ許可する
 
 ## 環境メモ
