@@ -27,6 +27,7 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - Playlist単位のmissing方針を`leave`（既定）/`redownload`/`ignore`として永続化し、Web UI・CLI・明示Target操作から選べるようにした。自動再取得は既定無効
 - missing Targetと孤立ファイルを並べる整合性レポート、DBパスだけを変更する手動リンクと取消を実装した。実ファイル不変をコア/Webテストで固定した（D-055）
 - delisted Itemと関連Artifactパスを表示する差分レポートを追加した。Playlistと`TZ`に沿った期間で絞り込め、画面から削除できないことをテストした
+- `sluicery integrity check [--storage][--playlist]`、UI手動実行、既存app schedulerの日次integrity jobを実装した。永続job引数は空で、秘密値やパスを保存しない
 - Phase 13準備として、過去にCookieで成功した既存TargetをCookieなしで1件だけ取得試験した。Denoは検出されたがHTTP 403、生成物0件であり、Cookieが必要な取得対象があると判定した（D-053）。試験用Stagingは削除済みでDBと既存メディアは変更していない
 - 現在の実DBはTarget 659件中downloaded 599、blocked 1、failed 2、unavailable 57で、Artifact 599件・約2.54GiB。Phase 8受け入れ条件#16の「downloadedが大半」は満たすが、全件完走ではない
 - `app`だけでAPSchedulerを起動し、既存SQLiteのSQLAlchemyJobStoreへPlaylist IDと種別だけを永続化した。workerとホストcron / systemdにはschedulerを置かない
@@ -36,11 +37,11 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - 起動時と60秒ごとにPlaylist設定と永続jobを整合する。設定不変のjobは置換せず期限超過時刻を保持し、`coalesce=true`で停止中の複数回分を復帰直後の1回へ畳む
 - レビュー③で負方向jitterの重複候補、生存Runの誤回収、外部CLIとの回収競合、paused発火競合、不正schedule値のCLI保存、起動ログを修正した。重大な残存指摘はない
 - 2時間00分28秒の連続実機試験でdiscover / download各24回、全48回の安全なskip、scheduled Task 0、DB lock / scheduler error 0、SQLite整合性正常を確認した。合成データは削除済み
-- `RunStatus.skipped`マイグレーションのupgrade / downgrade / upgradeを実DBで確認した。全389テスト、Ruff、mypy 82ファイルが成功した
+- Phase 13の実装完了時点で全411テスト、Ruff、mypy 83ファイルが成功した。`RunStatus.skipped`マイグレーションのupgrade / downgrade / upgradeも実DB検証済み
 
 ## 次にやること
 
-1. integrity checkのCLI・UI・日次cronを既存app schedulerへ追加し、job引数へ秘密値やパスを保存しない
+1. Phase 13の独立レビュを実施し、指摘修正後にlocal / SMBの実機検証を行う
 2. Phase 8残存3件（blocked 1、failed 2）は原因別に少量再試行し、同種エラー多発時は停止する
 
 ## 未解決・保留

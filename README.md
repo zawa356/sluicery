@@ -177,6 +177,14 @@ Staging上で対応するTaskを持たないファイルは、削除せず一覧
 docker compose exec app python3 -m sluicery.cli staging orphans
 ```
 
+Artifactの実体確認とrelinkはCLIからも実行できます。絞り込みは省略できます。
+整合性チェックはファイルを削除・移動しません。
+
+```bash
+docker compose exec app python3 -m sluicery.cli integrity check \
+  --storage <名前またはID> --playlist <名前またはID>
+```
+
 ### レコード管理 CLI
 
 Web UIと併用して、以下の CLI でもStorage / Profile / Playlistレコードと運用設定を管理できます。CLIは自動化とデバッグのための恒久的な操作手段として維持します。

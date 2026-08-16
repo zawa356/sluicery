@@ -112,7 +112,14 @@ def check_integrity(
 
     report = IntegrityReport()
     for current_storage_id, rows in grouped.items():
-        adapter = adapter_factory(rows[0][4])
+        try:
+            adapter = adapter_factory(rows[0][4])
+        except Exception:  # noqa: BLE001 - Adapter構築失敗もmissingへ誤変換しない
+            for artifact, target, *_ in rows:
+                report.issues.append(
+                    IntegrityIssue(artifact.id, target.id, current_storage_id, "storage_error")
+                )
+            continue
         absent: list[tuple[Artifact, Target, Item, Playlist, Storage]] = []
         present: list[tuple[Artifact, Target, Item, Playlist, Storage]] = []
         storage_error = False
