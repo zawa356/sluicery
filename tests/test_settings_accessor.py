@@ -105,3 +105,14 @@ def test_ytdlp_update_can_be_disabled_with_empty_cron(db_session) -> None:
 def test_ytdlp_smoketest_url_requires_http_url(db_session) -> None:
     with pytest.raises(ValueError, match="URL"):
         core_settings.set_override(db_session, "ytdlp.smoketest_url", "file:///tmp/media")
+
+
+def test_retention_safety_defaults_and_positive_validation(db_session) -> None:
+    operational = core_settings.OperationalSettings(db_session)
+    assert operational.retention_max_delete_per_run == 20
+    assert operational.retention_dryrun_ttl_sec == 300
+
+    with pytest.raises(ValueError, match="1以上"):
+        core_settings.set_override(db_session, "retention.max_delete_per_run", 0)
+    with pytest.raises(ValueError, match="1以上"):
+        core_settings.set_override(db_session, "retention.dryrun_ttl_sec", -1)

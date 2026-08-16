@@ -375,6 +375,25 @@ class LocalStorageAdapter:
                 reason_code="move_failed",
             ) from exc
 
+    def delete_file(self, rel: str) -> None:
+        path = self._path(rel)
+        if not path.exists():
+            raise StorageOperationError(
+                "削除対象ファイルが存在しません", reason_code="source_not_found"
+            )
+        if not path.is_file():
+            raise StorageOperationError(
+                "削除対象は通常ファイルではありません", reason_code="not_a_file"
+            )
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise StorageOperationError(
+                "local Storage のファイル削除に失敗しました",
+                classification=_classification_for_os_error(exc),
+                reason_code="delete_failed",
+            ) from exc
+
     def free_space(self) -> int | None:
         try:
             return shutil.disk_usage(self._root).free

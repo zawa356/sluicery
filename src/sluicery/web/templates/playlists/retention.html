@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}retention — {{ playlist.name }} — sluicery{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>retention</h1><p class="muted">{{ playlist.name }}</p></div><a class="button button-secondary" href="/playlists/{{ playlist.id }}">Playlistへ戻る</a></div>
+{% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+
+<section class="panel section-block">
+  <h2>現在の設定</h2>
+  <p><strong>{{ '有効' if current_policy.enabled else '無効（既定）' }}</strong></p>
+  <ul><li>最新件数: {{ current_policy.keep_latest or '未設定' }}</li><li>期間: {{ (current_policy.max_age_days ~ '日') if current_policy.max_age_days else '未設定' }}</li></ul>
+  <p class="muted">設定の有効化・変更にもdry-run確認が必要です。無効な間はファイルを削除しません。</p>
+  <form method="post" action="/playlists/{{ playlist.id }}/retention/preview">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="purpose" value="enable">
+    <label><input type="checkbox" name="enabled" value="true"{% if current_policy.enabled %} checked{% endif %}> retentionを有効にする</label>
+    <label>最新N件のみ保持 <input type="number" min="1" name="keep_latest" value="{{ current_policy.keep_latest or '' }}"></label>
+    <label>M日より古いものを削除 <input type="number" min="1" name="max_age_days" value="{{ current_policy.max_age_days or '' }}"></label>
+    <button>設定dry-run</button>
+  </form>
+</section>
+
+<section class="panel section-block">
+  <h2>実行</h2>
+  {% if current_policy.enabled %}
+  <form method="post" action="/playlists/{{ playlist.id }}/retention/preview"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="purpose" value="execute"><button class="button-danger">削除dry-run</button></form>
+  {% else %}<p class="muted">retentionは無効です。設定dry-runと確認を経て有効にしてください。</p>{% endif %}
+  <p class="muted">1回の上限は{{ max_delete }}件、dry-run結果は{{ ttl_sec }}秒で失効します。PlaylistのArtifactの過半数は1回で削除できません。</p>
+</section>
+
+{% if plan %}
+<section class="panel section-block{% if confirmation_purpose == 'execute' %} danger-zone{% endif %}">
+  <h2>dry-run結果</h2>
+  <p>候補 {{ plan.delete_count }} / 全Artifact {{ plan.total_artifacts }}件</p>
+  {% for reason in plan.blocked_reasons %}<div class="flash flash-error">{{ reason }}</div>{% endfor %}
+  <table><thead><tr><th>Storage</th><th>パス</th><th>サイズ</th><th>日付</th></tr></thead><tbody>
+  {% for row in plan.candidates %}<tr><td>{{ row.storage_id }}</td><td>{{ row.relative_path }}</td><td>{{ row.filesize|filesize }}</td><td>{{ row.item_date or '—' }}</td></tr>{% else %}<tr><td colspan="4">候補はありません</td></tr>{% endfor %}
+  </tbody></table>
+  {% if confirmation_token %}
+  <form method="post" action="/playlists/{{ playlist.id }}/retention/{{ 'save' if confirmation_purpose == 'enable' else 'execute' }}" onsubmit="return confirm('{{ 'この設定を保存しますか？' if confirmation_purpose == 'enable' else '表示されたファイルを削除します。取り消せません。実行しますか？' }}')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="confirmation_token" value="{{ confirmation_token }}">
+    <label><input type="checkbox" name="confirmed" value="yes" required> 表示されたdry-run結果を確認しました</label><br>
+    <button{% if confirmation_purpose == 'execute' %} class="button-danger"{% endif %}>{{ '設定を保存' if confirmation_purpose == 'enable' else '確認済み対象を削除' }}</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

@@ -84,7 +84,9 @@ def playlist_sync_is_active(session: Session, playlist_id: int) -> bool:
     return bool(session.scalar(select(or_(direct_task, target_task, running_run))))
 
 
-def _lock_and_validate_sync_start(session: Session, playlist_id: int) -> None:
+def lock_and_validate_playlist_operation_start(
+    session: Session, playlist_id: int
+) -> None:
     """SQLiteの書込み予約を先に取り、確認とRun作成の競合窓を閉じる。"""
     if session.in_transaction():
         if session.new or session.dirty or session.deleted:
@@ -123,7 +125,7 @@ def enqueue_discover_run(
     max_attempts: int | None = None,
 ) -> tuple[Run, Task]:
     """discover Runとnetwork Taskを同じtransactionで作成する。"""
-    _lock_and_validate_sync_start(session, playlist_id)
+    lock_and_validate_playlist_operation_start(session, playlist_id)
     playlist = PlaylistRepository(session).get(playlist_id)
     if playlist is None:
         session.rollback()
@@ -169,7 +171,7 @@ def execute_download_run(
     adapter_factory: AdapterFactory = create_storage_adapter,
 ) -> Run:
     """download Runを作成し、チェーン投入完了時点で統計と成否を確定する。"""
-    _lock_and_validate_sync_start(session, playlist_id)
+    lock_and_validate_playlist_operation_start(session, playlist_id)
     playlist = PlaylistRepository(session).get(playlist_id)
     if playlist is None:
         session.rollback()
