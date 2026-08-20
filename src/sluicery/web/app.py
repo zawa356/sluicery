@@ -142,6 +142,7 @@ from sluicery.storage.base import (
     StoragePathError,
     validate_relative_path,
 )
+from sluicery.storage.mount_cifs import MountStorageConfig, mount_storage_available
 from sluicery.web.auth import (
     LOGIN_ERROR_MESSAGE,
     SESSION_COOKIE_NAME,
@@ -1435,8 +1436,6 @@ def create_app(
             kind = StorageKind(str(form.get("kind", "local")))
         except ValueError:
             raise ValueError("Storage kindが不正です") from None
-        if kind == StorageKind.MOUNT:
-            raise ValueError("mount StorageはPhase 19で実装予定です")
         values: dict[str, Any] = {
             "name": name,
             "kind": kind,
@@ -1446,7 +1445,7 @@ def create_app(
         if kind == StorageKind.LOCAL:
             values["config_json"] = {"path": normalize_local_path(str(form.get("path", "")))}
             values["credentials_encrypted"] = None
-        else:
+        elif kind == StorageKind.REMOTE:
             protocol = str(form.get("protocol", "smb")).strip()
             host = str(form.get("host", "")).strip()
             share = str(form.get("share", "")).strip()
@@ -1493,6 +1492,73 @@ def create_app(
             else:
                 credentials = existing_credentials
             values["credentials_encrypted"] = credentials
+        else:
+            if not mount_storage_available():
+                raise ValueError(
+                    "mount Storageはcompose.privileged.yaml明示指定時だけ利用できます"
+                )
+            protocol = str(form.get("mount_protocol", "cifs")).strip()
+            host = str(form.get("mount_host", "")).strip()
+            share = str(form.get("mount_share", "")).strip()
+            user = str(form.get("mount_user", "")).strip()
+            password = str(form.get("mount_password", ""))
+            domain = str(form.get("mount_domain", "")).strip()
+            default_port = 445 if protocol == "cifs" else 2049
+            try:
+                port = int(str(form.get("mount_port", default_port)))
+                config = MountStorageConfig.parse(
+                    {
+                        "protocol": protocol,
+                        "host": host,
+                        "share": share,
+                        "path": str(form.get("mount_path", "")),
+                        "port": port,
+                    }
+                )
+            except (TypeError, ValueError):
+                raise ValueError("mount Storage設定が不正です") from None
+            values["config_json"] = {
+                "protocol": config.protocol,
+                "host": config.host,
+                "share": config.share,
+                "path": config.path,
+                "port": config.port,
+            }
+            if protocol == "nfs":
+                values["credentials_encrypted"] = None
+            else:
+                existing_config = (
+                    current.config_json
+                    if current is not None and isinstance(current.config_json, dict)
+                    else {}
+                )
+                same_endpoint = bool(
+                    current is not None
+                    and current.kind == StorageKind.MOUNT
+                    and existing_config.get("protocol") == "cifs"
+                    and existing_config.get("host") == config.host
+                    and existing_config.get("share") == config.share
+                )
+                existing_credentials = (
+                    dict(current.credentials_encrypted)
+                    if same_endpoint
+                    and current is not None
+                    and isinstance(current.credentials_encrypted, dict)
+                    else None
+                )
+                if password:
+                    if not user:
+                        raise ValueError("CIFSクレデンシャル変更にはuserが必要です")
+                    credentials = {"user": user, "password": password, "domain": domain}
+                elif existing_credentials is None:
+                    raise ValueError("新規または接続先変更後のCIFS mountにはpasswordが必要です")
+                elif user or domain:
+                    raise ValueError(
+                        "クレデンシャルを変更する場合はuserとpasswordを両方入力してください"
+                    )
+                else:
+                    credentials = existing_credentials
+                values["credentials_encrypted"] = credentials
         return values, credentials
 
     def storage_editor_response(
@@ -1515,6 +1581,7 @@ def create_app(
                 values=values or {},
                 config=config,
                 credentials_configured=credentials_configured,
+                mount_storage_enabled=mount_storage_available(),
                 error=error,
             ),
             status_code=status_code,
@@ -1533,7 +1600,15 @@ def create_app(
             safe_values = {
                 key: value
                 for key, value in form.items()
-                if key not in {"password", "user", "domain"}
+                if key
+                not in {
+                    "password",
+                    "user",
+                    "domain",
+                    "mount_password",
+                    "mount_user",
+                    "mount_domain",
+                }
             }
             return storage_editor_response(
                 request, values=safe_values, error=str(exc), status_code=422
@@ -1564,7 +1639,15 @@ def create_app(
                 safe_values = {
                     key: value
                     for key, value in form.items()
-                    if key not in {"password", "user", "domain"}
+                    if key
+                    not in {
+                        "password",
+                        "user",
+                        "domain",
+                        "mount_password",
+                        "mount_user",
+                        "mount_domain",
+                    }
                 }
                 return storage_editor_response(
                     request,

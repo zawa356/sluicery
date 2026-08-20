@@ -4,7 +4,7 @@
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
 最終更新: 2026-08-21
-対応コミット: Phase 18実装・レビュー③対応 `ffaac62`（検証済み）
+対応コミット: Phase 19実装作業中（Phase 18 checkpoint `bea410b`から継続）
 
 ## プロジェクト概要
 
@@ -25,10 +25,14 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - [x] 16. retention（dry-run必須・実体CAS・二相監査付き）
 - [x] 17. 設定エクスポート / インポート
 - [x] 18. フック機構と12イベント発火点
-- [ ] 19–20. privileged mount / GPU、バックアップ、仕上げ
+- [x] 19. privileged mount / GPU整合確認
+- [ ] 20. バックアップ、仕上げ
 
 ## 直近の作業
 
+- Phase 19の既定無効`compose.privileged.yaml`とCIFS / NFS kernel mount adapterを実装した。app / worker-networkだけへ必要な2 capabilityを付け、fixed sentinelと実効capabilityが揃う場合だけUI / CLI / factoryを有効にする（D-060）
+- CIFS資格情報は`/run/sluicery`のmode 600一時ファイルだけに展開し、argvへ載せず直後に削除する。接続先競合、symlink、非空mountpoint、危険な設定値は拒否し、mount後の全操作はlocal adapterへ委譲する
+- ローカルDockerで通常Composeの無効化、補助コマンド、非root UIDへのcapability継承、エラー分類を確認した。WSL2のbind元がprivate mountでoverlay Composeを開始できず、外部VMにも接続できないため実CIFS / NFS mountは未検証。全486テスト、Ruff、mypy 86 source filesは成功した
 - Phase 18の12イベント発火点と`config/hooks.yaml`購読を実装した。組み込み`event_log`は単一worker・容量1000の非同期queueで順序を保ち、設定不正・DB失敗・queue飽和を本体から隔離する。payloadはイベント別allowlistとURL / 秘密key除外を通す（D-059）
 - runtime imageを再buildし、app healthy、両worker稼働、3サービスすべてで12購読、起動ログのHook設定エラー / 未処理例外0を確認した
 - Phase 17のYAML設定export / importを実装した。Storage kind別positive schemaを使い、自由入力yt-dlp引数、postprocess、smoketest URL override、秘密を含み得るsource URLは要再入力として省略する。importでは既存資格情報・Cookieを常に消去し、remote Storageとretentionを無効へ戻す（D-058）
@@ -65,8 +69,8 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 
 ## 次にやること
 
-1. Phase 19の明示指定時だけ有効になるprivileged compose overlay、mount Storage、GPU検出を実装する
-2. Phase 20の`make backup` / `make restore`、受け入れ条件確認、公開前監査を実施する
+1. Phase 20の`make backup` / `make restore`を実装し、安全な隔離環境で検証する
+2. 要件定義§19の受け入れ条件確認、公開前監査、レビュー④を実施する
 3. `checkpoint/step-18`以降もpushせず、最終履歴監査とユーザー承認を待つ
 
 ## 未解決・保留
@@ -79,6 +83,7 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 | 4 | ffmpegの`--download-sections` 1秒区間切り出しは`-11` | ffprobe通常検証は健全。D-036 |
 | 5 | ローカルコミットとタグのGitHub push | 公開前監査とユーザー承認前は禁止 |
 | 6 | 外部検証VMへのSSH認証が拒否される | ローカルDockerで継続。次の外部実機確認までに要確認 |
+| 7 | mount Storageの実CIFS / NFS検証 | 外部VM接続不可かつWSL2 bind元がprivate mount。実装・unit・capability継承まで完了 |
 
 ## 重要な合意
 

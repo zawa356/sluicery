@@ -307,3 +307,51 @@ def test_overwrite_clears_existing_secrets_and_requires_reenable(db_session) -> 
     assert playlist.cookies_encrypted is None
     assert playlist.retention_policy_json is not None
     assert playlist.retention_policy_json["enabled"] is False
+
+
+def test_mount_config_exports_without_credentials_and_imports_disabled(
+    db_session, tmp_path: Path
+) -> None:
+    mount = Storage(
+        name="kernel-cifs",
+        kind=StorageKind.MOUNT,
+        enabled=True,
+        config_json={
+            "protocol": "cifs",
+            "host": "nas.invalid",
+            "share": "media",
+            "path": "library",
+            "port": 445,
+        },
+        credentials_encrypted={
+            "user": "private-user",
+            "password": "private-password",
+            "domain": "PRIVATE",
+        },
+    )
+    db_session.add(mount)
+    db_session.commit()
+
+    document = export_config(db_session)
+    rendered = dump_config_yaml(document)
+
+    assert "private-user" not in rendered
+    assert "private-password" not in rendered
+    assert "PRIVATE" not in rendered
+    assert document.storages[0].config == mount.config_json
+    assert document.storages[0].requires_credentials is True
+
+    target_engine = create_engine_for(tmp_path / "mount-import.db")
+    metadata_obj.create_all(target_engine)
+    target_factory = create_session_factory(target_engine)
+    try:
+        with target_factory() as target:
+            plan = preview_config_import(target, document, "overwrite")
+            apply_config_import(target, document, plan)
+            imported = target.scalar(select(Storage))
+            assert imported is not None
+            assert imported.kind == StorageKind.MOUNT
+            assert imported.enabled is False
+            assert imported.credentials_encrypted is None
+    finally:
+        target_engine.dispose()

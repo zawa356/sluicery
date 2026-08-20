@@ -58,6 +58,7 @@ from sluicery.storage.base import (
     StoragePathError,
     validate_relative_path,
 )
+from sluicery.storage.mount_cifs import MountStorageConfig, mount_storage_available
 from sluicery.storage.rclone import RcloneConfigurationError, RcloneObscureError
 from sluicery.storage.remote_rclone import UnsupportedRemoteProtocolError
 
@@ -276,13 +277,13 @@ def configure_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
     storage_add = storage_sub.add_parser("add")
     storage_add.add_argument("--name", required=True)
     storage_add.add_argument(
-        "--kind", choices=[StorageKind.LOCAL.value, StorageKind.REMOTE.value], required=True
+        "--kind", choices=[kind.value for kind in StorageKind], required=True
     )
     storage_add.add_argument("--path")
-    storage_add.add_argument("--protocol", choices=["smb"])
+    storage_add.add_argument("--protocol", choices=["smb", "cifs", "nfs"])
     storage_add.add_argument("--host")
     storage_add.add_argument("--share")
-    storage_add.add_argument("--port", type=int, default=445)
+    storage_add.add_argument("--port", type=int)
     storage_add.add_argument("--user")
     storage_add.add_argument("--domain")
     storage_add.add_argument(
@@ -433,7 +434,8 @@ def _validate_remote_values(args: argparse.Namespace) -> tuple[dict[str, Any], d
         raise CliValidationError("Phase 5 で実装・検証済みの protocol は smb だけです")
     if "/" in args.share or "\\" in args.share or args.share in {".", ".."}:
         raise CliValidationError("share はパス区切りを含まない共有名で指定してください")
-    if not 1 <= args.port <= 65535:
+    port = args.port if args.port is not None else 445
+    if not 1 <= port <= 65535:
         raise CliValidationError("port は1〜65535で指定してください")
     try:
         remote_path = validate_relative_path(args.path or "", allow_empty=True)
@@ -446,7 +448,7 @@ def _validate_remote_values(args: argparse.Namespace) -> tuple[dict[str, Any], d
             "host": args.host,
             "share": args.share,
             "path": remote_path,
-            "port": args.port,
+            "port": port,
         },
         {"user": args.user, "password": password, "domain": args.domain or ""},
     )
@@ -456,12 +458,48 @@ def _read_password(*, password_stdin: bool, prompt: bool) -> str:
     if password_stdin:
         password = sys.stdin.readline().rstrip("\r\n")
     elif prompt:
-        password = getpass.getpass("SMB password: ")
+        password = getpass.getpass("Storage password: ")
     else:
         raise CliValidationError("password の入力方法が指定されていません")
     if not password:
         raise CliValidationError("password を空にできません")
     return password
+
+
+def _validate_mount_values(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], dict[str, str] | None]:
+    if not mount_storage_available():
+        raise CliValidationError(
+            "mount Storageはcompose.privileged.yaml明示指定時だけ利用できます"
+        )
+    protocol = args.protocol or "cifs"
+    default_port = 445 if protocol == "cifs" else 2049
+    try:
+        config = MountStorageConfig.parse(
+            {
+                "protocol": protocol,
+                "host": args.host,
+                "share": args.share,
+                "path": args.path or "",
+                "port": args.port if args.port is not None else default_port,
+            }
+        )
+    except ValueError as exc:
+        raise CliValidationError(str(exc)) from exc
+    portable: dict[str, Any] = {
+        "protocol": config.protocol,
+        "host": config.host,
+        "share": config.share,
+        "path": config.path,
+        "port": config.port,
+    }
+    if protocol == "nfs":
+        return portable, None
+    if not args.user:
+        raise CliValidationError("CIFS mountには--userが必要です")
+    password = _read_password(password_stdin=args.password_stdin, prompt=True)
+    return portable, {"user": args.user, "password": password, "domain": args.domain or ""}
 
 
 _STAGE_LABELS = {
@@ -638,7 +676,7 @@ def _storage_command(args: argparse.Namespace, session: Session) -> int:
                 enabled=True,
                 config_json={"path": _validate_local_path(args.path)},
             )
-        else:
+        elif args.kind == StorageKind.REMOTE.value:
             config, credentials = _validate_remote_values(args)
             # credentials_encrypted は設定エクスポート（Phase 17）の対象外。
             storage = repo.create(
@@ -647,6 +685,15 @@ def _storage_command(args: argparse.Namespace, session: Session) -> int:
                 enabled=True,
                 config_json=config,
                 credentials_encrypted=credentials,
+            )
+        else:
+            config, mount_credentials = _validate_mount_values(args)
+            storage = repo.create(
+                name=args.name,
+                kind=StorageKind.MOUNT,
+                enabled=True,
+                config_json=config,
+                credentials_encrypted=mount_credentials,
             )
         print(f"Storage を作成しました: id={storage.id}")
         return 0
@@ -697,11 +744,20 @@ def _storage_command(args: argparse.Namespace, session: Session) -> int:
                 )
             except StoragePathError as exc:
                 raise CliValidationError(str(exc)) from exc
+            if storage.kind == StorageKind.MOUNT:
+                if not mount_storage_available():
+                    raise CliValidationError(
+                        "mount Storageはcompose.privileged.yaml明示指定時だけ編集できます"
+                    )
+                try:
+                    MountStorageConfig.parse(config)
+                except ValueError as exc:
+                    raise CliValidationError(str(exc)) from exc
             updates["config_json"] = config
         remote_fields = ("host", "share", "port")
         if any(getattr(args, field) is not None for field in remote_fields):
-            if storage.kind != StorageKind.REMOTE:
-                raise CliValidationError("host/share/port は remote Storage 専用です")
+            if storage.kind not in {StorageKind.REMOTE, StorageKind.MOUNT}:
+                raise CliValidationError("host/share/port は remote / mount Storage 専用です")
             config = dict(updates.get("config_json", storage.config_json or {}))
             for field in remote_fields:
                 value = getattr(args, field)
@@ -709,9 +765,21 @@ def _storage_command(args: argparse.Namespace, session: Session) -> int:
                     config[field] = value
             if not 1 <= int(config.get("port", 445)) <= 65535:
                 raise CliValidationError("port は1〜65535で指定してください")
-            share = config.get("share", "")
-            if "/" in share or "\\" in share or share in {".", ".."}:
-                raise CliValidationError("share はパス区切りを含まない共有名で指定してください")
+            if storage.kind == StorageKind.REMOTE:
+                share = config.get("share", "")
+                if "/" in share or "\\" in share or share in {".", ".."}:
+                    raise CliValidationError(
+                        "share はパス区切りを含まない共有名で指定してください"
+                    )
+            else:
+                if not mount_storage_available():
+                    raise CliValidationError(
+                        "mount Storageはcompose.privileged.yaml明示指定時だけ編集できます"
+                    )
+                try:
+                    MountStorageConfig.parse(config)
+                except ValueError as exc:
+                    raise CliValidationError(str(exc)) from exc
             updates["config_json"] = config
         credential_change = (
             args.user is not None
@@ -721,8 +789,16 @@ def _storage_command(args: argparse.Namespace, session: Session) -> int:
             or args.password_stdin
         )
         if credential_change:
-            if storage.kind != StorageKind.REMOTE:
-                raise CliValidationError("認証情報は remote Storage 専用です")
+            mount_cifs = bool(
+                storage.kind == StorageKind.MOUNT
+                and (storage.config_json or {}).get("protocol") == "cifs"
+            )
+            if storage.kind != StorageKind.REMOTE and not mount_cifs:
+                raise CliValidationError("認証情報はremoteまたはCIFS mount専用です")
+            if storage.kind == StorageKind.MOUNT and not mount_storage_available():
+                raise CliValidationError(
+                    "mount Storageはcompose.privileged.yaml明示指定時だけ編集できます"
+                )
             credentials = dict(storage.credentials_encrypted or {})
             if args.user is not None:
                 credentials["user"] = args.user

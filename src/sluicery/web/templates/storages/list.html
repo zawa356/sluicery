@@ -5,7 +5,7 @@
 <div class="panel section-block"><table><thead><tr><th>ID</th><th>名前</th><th>種別</th><th>保存先</th><th>状態</th><th>クレデンシャル</th><th>最終接続テスト</th><th>参照Playlist</th></tr></thead><tbody>
 {% for row in rows %}{% set storage = row.storage %}{% set config = storage.config_json or {} %}<tr>
 <td>{{ storage.id }}</td><td><a href="/storages/{{ storage.id }}/edit">{{ storage.name }}</a></td><td>{{ storage.kind.value }}</td>
-<td>{% if storage.kind.value == 'local' %}{{ config.get('path', '—') }}{% elif storage.kind.value == 'remote' %}SMB: {{ config.get('host', '—') }}/{{ config.get('share', '—') }}{% else %}—{% endif %}</td>
+<td>{% if storage.kind.value == 'local' %}{{ config.get('path', '—') }}{% elif storage.kind.value == 'remote' %}SMB: {{ config.get('host', '—') }}/{{ config.get('share', '—') }}{% elif storage.kind.value == 'mount' %}{{ config.get('protocol', 'mount')|upper }}: {{ config.get('host', '—') }} / {{ config.get('share', '—') }}{% else %}—{% endif %}</td>
 <td>{{ "有効" if storage.enabled else "無効" }}</td><td>{{ "設定済み" if row.credentials_configured else "不要・未設定" }}</td>
 <td>{% if storage.last_check_result_json %}{{ "成功" if storage.last_check_result_json.get('ok') else "失敗" }} / {{ storage.last_check_at }}{% else %}未実行{% endif %}</td><td>{{ row.refs }}</td>
 </tr>{% else %}<tr><td colspan="8">Storageはありません。</td></tr>{% endfor %}</tbody></table></div>

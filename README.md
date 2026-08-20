@@ -101,7 +101,7 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 |---|---|
 | 一般的な Linux VM（Debian / Ubuntu） | 検証済み（Ubuntu 22.04.5 LTS、2026-08-09。ただし検証環境は専用のクリーンな VM ではなく、他サービスと同居する共用ホストだった。詳細・注意点は [docs/deployment.md](docs/deployment.md) §7） |
 | Proxmox LXC | 未検証。`nesting=1,keyctl=1` 等の設定が必要になる見込み（参考情報。[docs/deployment.md](docs/deployment.md) §8 参照） |
-| WSL2 | 未検証 |
+| WSL2 | 通常Compose起動と、隔離した一時コンテナでのcapability継承まで検証済み。ホストのbind元がprivate mountのため、CIFS / NFSの実mountは未検証 |
 | NAS（Synology / QNAP 等） | 未検証 |
 
 ## 初期設定
@@ -119,6 +119,11 @@ argon2でハッシュ化され、平文はDBへ保存しません。
 
 起動後は `http://localhost:8080/`（ポート変更時はその値）をブラウザで開きます。HTTPSの
 リバースプロキシ経由で利用する場合は `AUTH_COOKIE_SECURE=true` にしてください。
+
+カーネルCIFS / NFSを使う`mount` Storageはオプトインの非推奨機能です。通常の
+`docker compose up`では選択肢に表示されず利用できません。隔離が大幅に弱くなること、ホスト側の
+shared mount設定が必要なこと、実CIFS / NFS環境では未検証であることを理解した場合だけ、
+`compose.privileged.yaml`を明示指定してください。詳細は[docs/storage.md](docs/storage.md)を参照してください。
 
 認証が必要な取得元では、Playlist単位でNetscape形式のCookieファイルを暗号化保存できます。
 既定は無効で、有効化時にはアカウント停止リスクへの明示確認が必要です。平文は実行中だけ

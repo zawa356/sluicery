@@ -36,7 +36,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
+        cifs-utils \
         curl \
+        nfs-common \
         unzip \
         xz-utils \
         util-linux \
@@ -97,3 +99,4 @@ COPY requirements-dev.lock ./
 RUN pip install --require-hashes -r requirements-dev.lock
 
 COPY tests ./tests
+COPY compose.yaml compose.privileged.yaml Dockerfile ./

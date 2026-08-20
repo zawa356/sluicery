@@ -14,6 +14,7 @@ fi
 : "${DATA_DIR:=/data}"
 : "${STAGING_DIR:=${DATA_DIR}/staging}"
 : "${MEDIA_MOUNT:=/mnt/media}"
+: "${MOUNT_RUNTIME_ROOT:=/mnt/sluicery-mounts}"
 : "${RUN_DIR:=/run/sluicery}"
 
 umask "${UMASK}"
@@ -61,6 +62,14 @@ if [ "$(id -u)" = "0" ]; then
     check_writable "${MEDIA_MOUNT}" "MEDIA_ROOT"
     check_writable "${STAGING_DIR}" "STAGING_DIR"
 
+    if [ "${SLUICERY_PRIVILEGED_MOUNT:-}" = "enabled-by-compose-overlay" ]; then
+        check_writable "${MOUNT_RUNTIME_ROOT}" "MOUNT_ROOT"
+        # mountだけに必要なcapabilityをPUID/PGIDへ引き継ぐ。overlayを指定しない
+        # 通常起動では従来どおり全capabilityを破棄する。
+        exec setpriv --reuid "${PUID}" --regid "${PGID}" --init-groups \
+            --inh-caps=+sys_admin,+dac_read_search \
+            --ambient-caps=+sys_admin,+dac_read_search "$0" "$@"
+    fi
     exec setpriv --reuid "${PUID}" --regid "${PGID}" --init-groups --inh-caps=-all "$0" "$@"
 fi
 
