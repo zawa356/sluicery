@@ -153,6 +153,15 @@ class StorageAdapter(Protocol):
 
     def inspect_file(self, rel: str) -> RemoteFile: ...
 
+    def hardlink_from(
+        self,
+        source_adapter: StorageAdapter,
+        src_rel: str,
+        dest_rel: str,
+        *,
+        expected: RemoteFile,
+    ) -> bool: ...
+
     def move(self, src_rel: str, dest_rel: str) -> None: ...
 
     def delete_file(

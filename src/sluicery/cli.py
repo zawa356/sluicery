@@ -273,6 +273,7 @@ def _run_worker(worker_class: str) -> int:
         config,
         handler_factories=handler_factories,
         hook=event_hook,
+        log_dir=settings.DATA_DIR / "logs",
     )
     print(f"[sluicery] {worker.worker_id}: Taskキューの処理を開始します", flush=True)
     try:

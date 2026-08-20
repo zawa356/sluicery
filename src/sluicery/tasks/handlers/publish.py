@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
@@ -10,7 +12,15 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from sluicery.core.settings import OperationalSettings
 from sluicery.core.target_state import advance_target, transition_target
-from sluicery.db.models import PlaylistProfile, Storage, Target, TargetStatus
+from sluicery.db.models import (
+    Artifact,
+    Item,
+    Playlist,
+    PlaylistProfile,
+    Storage,
+    Target,
+    TargetStatus,
+)
 from sluicery.storage import create_storage_adapter
 from sluicery.storage.base import (
     StorageAdapter,
@@ -60,20 +70,54 @@ class PublishHandler:
             return TaskResult(TaskOutcome.FAILED, "publish payloadが不正です")
         with self._session_factory() as session:
             previous = dependency_payload(session, execution_task_id(payload))
-            storage = session.scalar(
-                select(Storage)
+            graph = session.execute(
+                select(Storage, PlaylistProfile, Playlist, Item)
                 .join(PlaylistProfile, Storage.id == PlaylistProfile.storage_id)
                 .join(Target, PlaylistProfile.id == Target.playlist_profile_id)
+                .join(Item, Target.item_id == Item.id)
+                .join(Playlist, Item.playlist_id == Playlist.id)
                 .where(Target.id == target_id)
-            )
-            if storage is None or not storage.enabled:
+            ).one_or_none()
+            if graph is None or not graph[0].enabled:
                 return self._failure(
                     target_id,
                     StorageClassification.UNREACHABLE,
                     "出力先Storageが無効、または見つかりません",
                 )
+            storage, assignment, playlist, item = graph
+            dedup_source = None
+            dedup_source_storage_id: int | None = None
+            dedup_source_adapter: StorageAdapter | None = None
+            if playlist.dedup_hardlink:
+                dedup_row = session.execute(
+                    select(Artifact.relative_path, Artifact.storage_id)
+                    .join(Target, Artifact.target_id == Target.id)
+                    .join(Item, Target.item_id == Item.id)
+                    .join(
+                        PlaylistProfile,
+                        Target.playlist_profile_id == PlaylistProfile.id,
+                    )
+                    .where(
+                        Item.source_id == item.source_id,
+                        PlaylistProfile.profile_id == assignment.profile_id,
+                        Artifact.missing_since.is_(None),
+                        Target.id != target_id,
+                    )
+                    .order_by(Artifact.id)
+                    .limit(1)
+                ).first()
+                if dedup_row is not None:
+                    dedup_source = dedup_row.relative_path
+                    dedup_source_storage_id = int(dedup_row.storage_id)
             ops = OperationalSettings(session)
             adapter = self._adapter_factory(storage, ops)
+            if dedup_source is not None and dedup_source_storage_id is not None:
+                if dedup_source_storage_id == storage.id:
+                    dedup_source_adapter = adapter
+                else:
+                    source_storage = session.get(Storage, dedup_source_storage_id)
+                    if source_storage is not None and source_storage.enabled:
+                        dedup_source_adapter = self._adapter_factory(source_storage, ops)
             self._adapter = adapter
             self._observed_runner = getattr(adapter, "_runner", None)
             warn_bytes = ops.storage_free_space_warn_bytes
@@ -111,6 +155,7 @@ class PublishHandler:
                     "Storageの空き容量が停止閾値を下回っています",
                 )
             source_size = resolved.stat().st_size
+            source_sha256 = _sha256(resolved) if dedup_source is not None else None
             existing_size = _existing_size(adapter, destination)
             if existing_size is not None:
                 if existing_size != source_size:
@@ -130,6 +175,43 @@ class PublishHandler:
                     },
                 )
             on_progress({"status": "publishing", "percent": 0.0})
+            if dedup_source is not None and dedup_source_adapter is not None:
+                try:
+                    existing = dedup_source_adapter.inspect_file(dedup_source)
+                    hardlinked = (
+                        existing.size == source_size
+                        and source_sha256 is not None
+                        and existing.hashes.get("sha256") == source_sha256
+                        and adapter.hardlink_from(
+                            dedup_source_adapter,
+                            dedup_source,
+                            destination,
+                            expected=existing,
+                        )
+                    )
+                except StorageOperationError:
+                    hardlinked = False
+                if hardlinked:
+                    self._record_dedup(
+                        work_root,
+                        f"hardlink created: {dedup_source} -> {destination}",
+                    )
+                    on_progress({"status": "published", "percent": 100.0})
+                    return TaskResult(
+                        TaskOutcome.SUCCEEDED,
+                        payload_update={
+                            **previous,
+                            "storage_id": storage.id,
+                            "relative_path": destination,
+                            "publish_size": source_size,
+                            "publish_resumed": False,
+                            "publish_hardlinked": True,
+                        },
+                    )
+                self._record_dedup(
+                    work_root,
+                    "hardlink unavailable; falling back to normal publish",
+                )
             result = adapter.publish(resolved, destination)
         except StorageOperationError as exc:
             return self._failure(target_id, exc.classification, str(exc))
@@ -156,6 +238,14 @@ class PublishHandler:
                 "publish_resumed": False,
             },
         )
+
+    def _record_dedup(self, work_root: Path, message: str) -> None:
+        log_path = work_root / "dedup-hardlink.log"
+        with log_path.open("a", encoding="utf-8") as output:
+            output.write(message + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        self._log_paths.append(log_path)
 
     def _failure(
         self,
@@ -195,6 +285,14 @@ def _existing_size(adapter: StorageAdapter, destination: str) -> int | None:
         classification=StorageClassification.FAILED,
         reason_code="existing_size_unknown",
     )
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 __all__ = ["PublishHandler"]

@@ -309,6 +309,18 @@ def test_overwrite_clears_existing_secrets_and_requires_reenable(db_session) -> 
     assert playlist.retention_policy_json["enabled"] is False
 
 
+def test_overwrite_preserves_existing_playlist_folder_name(db_session) -> None:
+    _storage, _profile, playlist = _configuration_graph(db_session)
+    document = export_config(db_session)
+    document.playlists[0].folder_name = "imported-new-folder"
+    plan = preview_config_import(db_session, document, "overwrite")
+
+    apply_config_import(db_session, document, plan)
+
+    db_session.refresh(playlist)
+    assert playlist.folder_name == "source-list"
+
+
 def test_mount_config_exports_without_credentials_and_imports_disabled(
     db_session, tmp_path: Path
 ) -> None:

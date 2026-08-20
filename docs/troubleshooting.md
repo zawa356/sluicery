@@ -3,9 +3,8 @@
 ## restoreが`SECRET_KEY指紋が現在の鍵と一致しません`で停止する
 
 backup作成時と同じ`SECRET_KEY`を`.env`へ戻してから再実行する。鍵はarchiveへ意図的に含めていない。
-元の鍵を紛失した場合、DB内のStorage資格情報とPlaylist Cookieは復号できない。復号不能を承知して
-DB・非秘密設定だけを救出する場合に限り`ALLOW_SECRET_KEY_MISMATCH=1`を明示し、復元後に全資格情報を
-再入力する。安易にこのguardを無効化しない。
+元の鍵を紛失した場合、DB内のStorage資格情報とPlaylist Cookieを復号できず、archiveのmanifest HMACも
+認証できないため全面restoreは行えない。認証を省略するoverrideはない。別に保管した元の鍵を復旧する。
 
 ## restoreがarchive検証またはSQLite WAL checkpointで停止する
 
@@ -166,6 +165,7 @@ docker compose exec app python3 -m sluicery.cli ytdlp update
 検出すると、既存fileを上書きせず停止する。大量fileのremote移動では処理途中の障害も起こりうる。
 
 **対処**：Run詳細の`moved_count`を確認し、接続と移動先の競合を解消してから同じ新フォルダ名で再度
-preview・実行する。成功済みArtifactはDB上も新pathへ更新されているため再移動せず、残りだけが候補になる。
+preview・実行する。成功済みArtifactはDB上も新pathへ更新されているため再移動しない。move後・DB反映前に
+processが停止した場合も、永続intentと移動先の強いidentityが一致すれば同じ操作でDB進捗を回収する。
 通常のPlaylist編集で`name`を変えてもfileは移動しない。手動でDB pathや実fileを合わせようとせず、
 不一致が残る場合は読み取り専用の整合性レポートで状況を確認する。

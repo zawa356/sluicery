@@ -303,7 +303,6 @@ def _read_archive(
     staging_dir: Path,
     *,
     secret_key: str,
-    allow_secret_key_mismatch: bool,
 ) -> dict[str, object]:
     if not archive_path.is_file() or archive_path.is_symlink():
         raise BackupError("backup archiveが存在しないか安全ではありません")
@@ -360,17 +359,16 @@ def _read_archive(
         if not isinstance(supplied_hmac, str) or _SHA256.fullmatch(supplied_hmac) is None:
             raise BackupError("manifest HMACが不正です")
         current_fingerprint = secret_key_fingerprint(secret_key)
-        if fingerprint != current_fingerprint and not allow_secret_key_mismatch:
+        if fingerprint != current_fingerprint:
             raise SecretKeyMismatchError(
                 "backupのSECRET_KEY指紋が現在の鍵と一致しません。"
                 "復号不能になるためrestoreを中止しました"
             )
-        if fingerprint == current_fingerprint:
-            unsigned_manifest = dict(manifest)
-            del unsigned_manifest["manifest_hmac_sha256"]
-            expected_hmac = _manifest_hmac(unsigned_manifest, secret_key)
-            if not hmac.compare_digest(supplied_hmac, expected_hmac):
-                raise BackupError("manifest HMACが一致しません")
+        unsigned_manifest = dict(manifest)
+        del unsigned_manifest["manifest_hmac_sha256"]
+        expected_hmac = _manifest_hmac(unsigned_manifest, secret_key)
+        if not hmac.compare_digest(supplied_hmac, expected_hmac):
+            raise BackupError("manifest HMACが一致しません")
         entries = manifest["files"]
         if not isinstance(entries, list):
             raise BackupError("manifest filesが不正です")
@@ -502,7 +500,6 @@ def restore_backup(
     config_dir: Path,
     log_dir: Path,
     secret_key: str,
-    allow_secret_key_mismatch: bool = False,
 ) -> RestoreResult:
     """全member検証と現DB checkpoint後に、media / Staging / yt-dlpへ触れず復元する。"""
     Fernet(secret_key.encode("utf-8"))
@@ -513,7 +510,6 @@ def restore_backup(
             archive_path,
             staging_dir,
             secret_key=secret_key,
-            allow_secret_key_mismatch=allow_secret_key_mismatch,
         )
         expected = manifest["secret_key_fingerprint"]
         actual = secret_key_fingerprint(secret_key)
@@ -528,10 +524,12 @@ def restore_backup(
             _validate_target_tree(log_dir)
         if db_path.exists() and (db_path.is_symlink() or not db_path.is_file()):
             raise BackupError("既存SQLite DBが安全な通常fileではありません")
+        # checkpoint失敗時にDBだけ旧状態、configだけ新状態となる部分適用を防ぐ。
+        # 全target検証と同様、最初の書込みより前に実行する。
+        _checkpoint_existing_database(db_path)
         config_files = _restore_tree(staging_dir / "config", config_dir, exact=True)
         logs_root = staging_dir / "logs"
         log_files = _restore_tree(logs_root, log_dir, exact=False) if logs_root.exists() else 0
-        _checkpoint_existing_database(db_path)
         _atomic_copy(restored_db, db_path)
         for suffix in ("-wal", "-shm"):
             Path(f"{db_path}{suffix}").unlink(missing_ok=True)
@@ -566,7 +564,6 @@ def _parser() -> argparse.ArgumentParser:
     restore.add_argument("--db", type=Path, default=None)
     restore.add_argument("--config", type=Path, required=True)
     restore.add_argument("--logs", type=Path, default=None)
-    restore.add_argument("--allow-secret-key-mismatch", action="store_true")
     return parser
 
 
@@ -603,14 +600,7 @@ def main(argv: list[str] | None = None) -> int:
             config_dir=args.config,
             log_dir=log_dir,
             secret_key=secret_key,
-            allow_secret_key_mismatch=args.allow_secret_key_mismatch,
         )
-        if not restore_result.secret_key_matched:
-            print(
-                "WARNING: SECRET_KEY指紋の不一致を明示指定により無視しました。"
-                "保存済み資格情報は復号できません。",
-                file=sys.stderr,
-            )
         print(
             f"restore完了: config_files={restore_result.config_files} "
             f"log_files={restore_result.log_files}"

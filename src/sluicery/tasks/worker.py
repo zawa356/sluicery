@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import logging
 import os
 import random
+import re
 import signal
 import socket
+import stat
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -17,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from sluicery.core.settings import OperationalSettings
@@ -32,6 +36,164 @@ from sluicery.tasks.queue import TaskOutcome, TaskResult, retry_delay_sec
 
 logger = logging.getLogger(__name__)
 HandlerFactory = Callable[[], TaskHandler]
+_TRANSIENT_LOG_NAME = re.compile(
+    r"(?:ytdlp|rclone|ffprobe|dummy-spawn)-[0-9a-f]{32}\.log\Z"
+)
+_RETENTION_LOG_NAME = re.compile(r"retention-[0-9a-f]{32}\.log\Z")
+
+
+def _retention_audit_has_no_unfinished_intent(path: Path) -> bool:
+    pending: set[tuple[int, str]] = set()
+    try:
+        if path.stat().st_size > 1024 * 1024:
+            return False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                return False
+            event = payload.get("event")
+            artifact_id = payload.get("artifact_id")
+            item_path = payload.get("path")
+            if not isinstance(artifact_id, int) or not isinstance(item_path, str):
+                return False
+            key = (artifact_id, item_path)
+            if event == "delete_intent":
+                pending.add(key)
+            elif event == "deleted":
+                pending.discard(key)
+            else:
+                return False
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return not pending
+
+
+def _unlink_locked_regular(path: Path) -> bool:
+    """writerと競合しない通常fileだけを、開いたdirectory entryのまま削除する。"""
+    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return False
+        os.unlink(path)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(descriptor)
+
+
+def cleanup_expired_run_logs(
+    session_factory: sessionmaker[Session],
+    log_dir: Path,
+    *,
+    retention_days: int,
+    now: datetime | None = None,
+) -> int:
+    """終了済みRunの既知logと集約前の既知runner logだけを期限後に削除する。"""
+    if retention_days < 1:
+        raise ValueError("log.retention_daysは1以上にしてください")
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=retention_days)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    if log_dir.is_symlink() or not log_dir.is_dir():
+        raise ValueError("Run log directoryが安全ではありません")
+    root = log_dir.resolve(strict=True)
+    deleted = 0
+    with session_factory() as session:
+        candidates = list(
+            session.execute(
+                select(Run.id, Run.log_path).where(
+                    Run.finished_at.is_not(None),
+                    Run.finished_at < cutoff,
+                    Run.log_path.is_not(None),
+                )
+            )
+        )
+    for run_id, candidate_log_path in candidates:
+        with session_factory() as session:
+            # retry/claim/log_path更新と直列化し、active確認後の再投入を挟ませない。
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            run = session.get(Run, run_id)
+            if (
+                run is None
+                or run.finished_at is None
+                or run.finished_at >= cutoff
+                or run.log_path != candidate_log_path
+            ):
+                session.rollback()
+                continue
+            active_task = session.scalar(
+                select(Task.id)
+                .where(
+                    Task.run_id == run.id,
+                    Task.status.in_(
+                        (
+                            TaskStatus.PENDING,
+                            TaskStatus.QUEUED,
+                            TaskStatus.RUNNING,
+                            TaskStatus.BLOCKED,
+                        )
+                    ),
+                )
+                .limit(1)
+            )
+            if active_task is not None:
+                session.rollback()
+                continue
+            path = Path(run.log_path or "")
+            expected_name = f"run-{run.id}.log"
+            try:
+                if (
+                    path.parent.resolve(strict=True) != root
+                    or path.is_symlink()
+                    or not path.is_file()
+                ):
+                    session.rollback()
+                    continue
+                is_run_log = path.name == expected_name
+                is_completed_retention_audit = (
+                    run.kind == "retention"
+                    and _RETENTION_LOG_NAME.fullmatch(path.name) is not None
+                    and _retention_audit_has_no_unfinished_intent(path)
+                )
+                if not is_run_log and not is_completed_retention_audit:
+                    session.rollback()
+                    continue
+                if not _unlink_locked_regular(path):
+                    session.rollback()
+                    continue
+            except OSError:
+                logger.warning("Expired Run log could not be removed", extra={"run_id": run.id})
+                session.rollback()
+                continue
+            run.log_path = None
+            session.commit()
+            deleted += 1
+
+    cutoff_timestamp = cutoff.timestamp()
+    try:
+        for path in root.iterdir():
+            if (
+                _TRANSIENT_LOG_NAME.fullmatch(path.name) is None
+                or path.is_symlink()
+                or not path.is_file()
+                or path.stat().st_mtime >= cutoff_timestamp
+            ):
+                continue
+            if _unlink_locked_regular(path):
+                deleted += 1
+    except OSError:
+        logger.warning("Transient runner log cleanup failed", exc_info=True)
+    return deleted
 
 
 @dataclass(frozen=True)
@@ -49,6 +211,8 @@ class WorkerConfig:
     progress_write_percent_step: float
     shutdown_grace_sec: float
     enable_test_tasks: bool
+    item_concurrency: int = 1
+    log_retention_days: int = 30
 
     def __post_init__(self) -> None:
         positive = {
@@ -68,6 +232,10 @@ class WorkerConfig:
             invalid.append("poll_jitter_sec")
         if self.max_attempts < 1:
             invalid.append("max_attempts")
+        if self.item_concurrency < 1:
+            invalid.append("item_concurrency")
+        if self.log_retention_days < 1:
+            invalid.append("log_retention_days")
         if self.stale_threshold_sec < self.heartbeat_interval_sec * 3:
             invalid.append("stale_threshold_sec")
         if invalid:
@@ -90,6 +258,8 @@ class WorkerConfig:
             progress_write_percent_step=settings.worker_progress_write_percent_step,
             shutdown_grace_sec=settings.worker_shutdown_grace_sec,
             enable_test_tasks=settings.worker_enable_test_tasks,
+            item_concurrency=settings.download_item_concurrency,
+            log_retention_days=settings.log_retention_days,
         )
 
 
@@ -111,6 +281,7 @@ class Worker:
         hook: Hook | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         random_fraction: Callable[[], float] = random.random,
+        log_dir: Path | None = None,
     ) -> None:
         self._session_factory = session_factory
         self.worker_class = worker_class
@@ -122,15 +293,17 @@ class Worker:
         self._hook = hook or EventLogHook(session_factory)
         self._clock = clock
         self._random_fraction = random_fraction
+        self._log_dir = log_dir
+        self._next_log_cleanup_monotonic = 0.0
         self._shutdown = threading.Event()
         self._handler_lock = threading.Lock()
-        self._current_handler: TaskHandler | None = None
+        self._active_handlers: dict[int, TaskHandler] = {}
 
     def request_shutdown(self) -> None:
         self._shutdown.set()
         with self._handler_lock:
-            handler = self._current_handler
-        if handler is not None:
+            handlers = tuple(self._active_handlers.values())
+        for handler in handlers:
             handler.cancel()
 
     def run(self, *, install_signal_handlers: bool = True) -> None:
@@ -140,30 +313,78 @@ class Worker:
                 previous_handlers[signum] = signal.getsignal(signum)
                 signal.signal(signum, lambda _signum, _frame: self.request_shutdown())
         logger.info("Task worker started", extra={"worker_id": self.worker_id})
+        active_threads: dict[int, threading.Thread] = {}
         try:
+            self._cleanup_logs_safely()
             while not self._shutdown.is_set():
-                claimed = self.run_once()
-                if not claimed:
+                self._cleanup_logs_safely()
+                active_threads = {
+                    task_id: thread
+                    for task_id, thread in active_threads.items()
+                    if thread.is_alive()
+                }
+                pool_size = (
+                    self.config.item_concurrency
+                    if self.worker_class == WorkerClass.NETWORK
+                    else 1
+                )
+                claimed_any = False
+                while len(active_threads) < pool_size and not self._shutdown.is_set():
+                    task = self._claim_next()
+                    if task is None:
+                        break
+                    claimed_any = True
+                    thread = threading.Thread(
+                        target=self._execute,
+                        args=(task,),
+                        daemon=True,
+                        name=f"worker-task-{task.id}",
+                    )
+                    active_threads[task.id] = thread
+                    thread.start()
+                if not claimed_any:
                     delay = self.config.poll_interval_sec + (
                         self.config.poll_jitter_sec * self._random_fraction()
                     )
                     self._shutdown.wait(delay)
         finally:
             self.request_shutdown()
+            deadline = time.monotonic() + self.config.shutdown_grace_sec
+            for thread in active_threads.values():
+                remaining = max(0.0, deadline - time.monotonic())
+                thread.join(timeout=remaining)
             if install_signal_handlers:
                 for signum, previous in previous_handlers.items():
                     signal.signal(signum, previous)
             logger.info("Task worker stopped", extra={"worker_id": self.worker_id})
 
-    def run_once(self) -> bool:
-        if self._shutdown.is_set():
-            return False
+    def _cleanup_logs_safely(self) -> None:
+        if self._log_dir is None or time.monotonic() < self._next_log_cleanup_monotonic:
+            return
+        self._next_log_cleanup_monotonic = time.monotonic() + 60 * 60
+        try:
+            cleanup_expired_run_logs(
+                self._session_factory,
+                self._log_dir,
+                retention_days=self.config.log_retention_days,
+                now=self._clock(),
+            )
+        except Exception:  # noqa: BLE001 - log cleanup障害でTask処理を停止しない
+            logger.warning("Run log cleanup failed", exc_info=True)
+
+    def _claim_next(self) -> Task | None:
         with self._session_factory() as session:
-            task = TaskRepository(session).claim_next(
+            return TaskRepository(session).claim_next(
                 self.worker_class,
                 worker_id=self.worker_id,
                 now=self._clock(),
+                item_concurrency=self.config.item_concurrency,
             )
+
+    def run_once(self) -> bool:
+        if self._shutdown.is_set():
+            return False
+        task = self._claim_next()
         if task is None:
             return False
         logger.info(
@@ -180,7 +401,7 @@ class Worker:
             return
         handler = factory()
         with self._handler_lock:
-            self._current_handler = handler
+            self._active_handlers[task.id] = handler
 
         heartbeat_stop = threading.Event()
         cancel_seen = threading.Event()
@@ -233,7 +454,7 @@ class Worker:
         heartbeat_stop.set()
         heartbeat_thread.join(timeout=min(2.0, self.config.heartbeat_interval_sec + 0.1))
         with self._handler_lock:
-            self._current_handler = None
+            self._active_handlers.pop(task.id, None)
 
         if self._shutdown.is_set():
             with self._session_factory() as session:
@@ -516,4 +737,10 @@ class StaleTaskReaper:
             stop.wait(self._config.heartbeat_interval_sec)
 
 
-__all__ = ["StaleTaskReaper", "Worker", "WorkerConfig", "make_worker_id"]
+__all__ = [
+    "StaleTaskReaper",
+    "Worker",
+    "WorkerConfig",
+    "cleanup_expired_run_logs",
+    "make_worker_id",
+]

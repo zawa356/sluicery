@@ -569,6 +569,7 @@ def create_app(
             "missing_policy": MissingPolicy(str(form.get("missing_policy") or "leave")),
             "discover_cron": discover_cron,
             "download_cron": download_cron,
+            "dedup_hardlink": form.get("dedup_hardlink") == "yes",
         }
 
     def playlist_editor_response(
@@ -611,7 +612,7 @@ def create_app(
                 status_code=422,
             )
         with session_factory() as db:
-            playlist = PlaylistRepository(db).create(**values, dedup_hardlink=False)
+            playlist = PlaylistRepository(db).create(**values)
         if scheduler_service is not None:
             scheduler_service.reconcile()
         auth.add_flash(request.state.auth, "success", "Playlistを作成しました")
@@ -774,6 +775,7 @@ def create_app(
                 confirmation_token=str(form.get("confirmation_token", "")),
                 confirmation_signer=folder_move_signer,
                 confirmation_ttl_sec=ttl_sec,
+                data_dir=settings.DATA_DIR,
                 hook=event_hook,
             )
         except (
@@ -2438,6 +2440,8 @@ def create_app(
             raise ValueError(f"{spec.type_.__name__}として解釈できません") from exc
         if isinstance(value, (int, float)) and value < 0:
             raise ValueError("数値は0以上にしてください")
+        if key in {"download.item_concurrency", "log.retention_days"} and value < 1:
+            raise ValueError("1以上にしてください")
         if isinstance(value, float) and not math.isfinite(value):
             raise ValueError("有限の数値を指定してください")
         if key in {"staging.warn_pct", "staging.stop_pct"} and value > 100:
@@ -2477,6 +2481,14 @@ def create_app(
         raw = str(form.get("value", ""))
         try:
             value = parse_setting_form_value(key, raw)
+            if (
+                key == "download.item_concurrency"
+                and value >= 2
+                and form.get("confirm_high_concurrency") != "yes"
+            ):
+                raise ValueError(
+                    "2以上は配信元へのアクセス集中を招きます。警告を確認して再保存してください"
+                )
             with session_factory() as db:
                 validate_setting_relationships(db, key, value)
                 core_settings.set_override(db, key, value)

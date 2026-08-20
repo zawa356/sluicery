@@ -648,6 +648,10 @@ def apply_config_import(
                         values["ytdlp_args"] = None
                 if operation.action == "overwrite":
                     assert existing is not None
+                    if isinstance(row, PlaylistConfig):
+                        # 既存Playlistのfolder_name変更は、実体移動を伴う専用の
+                        # preview / confirmation境界だけで行う。import値は新規作成時だけ使う。
+                        values.pop("folder_name", None)
                     for key, value in values.items():
                         setattr(existing, key, value)
                     obj = existing

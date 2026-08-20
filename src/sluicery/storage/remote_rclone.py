@@ -19,6 +19,7 @@ from sluicery.storage.base import (
     PublishResult,
     RemoteFile,
     StageStatus,
+    StorageAdapter,
     StorageOperationError,
     StoragePathError,
     validate_relative_path,
@@ -571,6 +572,21 @@ class RcloneStorageAdapter:
                 "remote Storage の移動結果を確認できません",
                 reason_code="move_verification_failed",
             )
+
+    def hardlink_from(
+        self,
+        source_adapter: StorageAdapter,
+        src_rel: str,
+        dest_rel: str,
+        *,
+        expected: RemoteFile,
+    ) -> bool:
+        # object/remote Storageにはinode hardlinkの概念がない。
+        del source_adapter
+        del expected
+        validate_relative_path(src_rel)
+        validate_relative_path(dest_rel)
+        return False
 
     def delete_file(
         self,
