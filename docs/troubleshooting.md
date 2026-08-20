@@ -157,3 +157,15 @@ docker compose exec app python3 -m sluicery.cli ytdlp update
 
 更新後はWebのyt-dlp更新履歴で、Deno検出、challenge警告なし、実ダウンロード、Staging削除が
 すべて成功したことを確認する。
+
+## Playlistのフォルダ移動が途中で失敗する
+
+**症状**：「フォルダも移動する」のRunが`failed`になり、一部Artifactだけが新しいpathになっている。
+
+**原因**：remote / SMBの通信断、移動先の同名file、preview後のStorage・Profile割当・Artifact変更などを
+検出すると、既存fileを上書きせず停止する。大量fileのremote移動では処理途中の障害も起こりうる。
+
+**対処**：Run詳細の`moved_count`を確認し、接続と移動先の競合を解消してから同じ新フォルダ名で再度
+preview・実行する。成功済みArtifactはDB上も新pathへ更新されているため再移動せず、残りだけが候補になる。
+通常のPlaylist編集で`name`を変えてもfileは移動しない。手動でDB pathや実fileを合わせようとせず、
+不一致が残る場合は読み取り専用の整合性レポートで状況を確認する。

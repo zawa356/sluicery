@@ -32,6 +32,11 @@ SHA-256）を検証し、同一ディレクトリ内で rename する。local �
 `--ignore-existing` と一時名消滅確認を使い、競合時も既存の最終名を上書きしない。
 失敗した一時ファイルは原因調査とデータ保護のため自動削除せず、呼び出し元へ相対パスを報告する。
 
+Playlistの明示フォルダ移動も同じ上書き拒否境界を使う。preview時にArtifactの実体識別情報と移動先不在を
+確認し、期限付き署名tokenへDB snapshotを束縛する。実行時はlocalの原子的no-replace rename、remoteの
+`--ignore-existing`と移動元消滅・移動先存在確認を使い、成功したArtifact pathを1件ずつDBへ反映する。
+Playlist名の通常編集、整合性チェック、差分レポートからこの移動経路を呼ぶことはない。
+
 ## mount（オプトイン、非推奨）
 
 `compose.privileged.yaml` で `privileged` 系の cap を明示的に有効化した場合にのみ選択できる。
