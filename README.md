@@ -149,7 +149,19 @@ yt-dlpは既定で週次に更新確認されます。更新後はDeno検出、�
 Playlist詳細のretentionで「最新N件」または「M日より古いもの」の削除を明示設定できます。
 既定は無効で、有効化と実行の両方に期限付きdry-runと二段確認が必要です。1回の削除は既定20件までで、
 PlaylistのArtifactの過半数になる計画は拒否します。削除履歴はRunと監査logに残り、差分レポート自体には
-削除機能がありません。
+削除機能がありません。実行直前にはDB snapshotだけでなく実ファイルの強い識別情報も再確認し、
+未完了の削除意図を検出した場合は自動復旧・自動移動せず、監査logの手動確認を求めます。
+
+設定画面からPlaylist、Profile、割当、Storageの非秘密設定、グローバル設定を単一YAMLへ
+エクスポートし、差分preview後にインポートできます。衝突時はスキップ・上書き・新規作成を選べます。
+Storage資格情報、Cookie、内部設定、実行状態は含めません。安全性を証明できない自由入力yt-dlp引数、
+postprocess設定、URLは省略され、画面での再入力が必要です。インポート時は既存の資格情報とCookieも
+再利用せず、remote Storageとretentionを無効化して明示的な再確認を求めます。
+
+`config/hooks.yaml`では12種のイベントを組み込み`event_log`へ記録する購読を設定できます。
+記録は単一のbounded非同期queueで順序を保ち、Hook障害は同期・worker・Web処理へ伝播しません。
+payloadはイベント別allowlistで絞り、URL・Cookie・秘密値を保存しません。将来のJellyfin / Navidrome
+設定例は`config/hooks.example.yaml`にコメントだけを置いており、外部アダプタ自体は未実装です。
 
 ## 運用コマンド
 
