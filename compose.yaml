@@ -15,6 +15,7 @@ services:
     volumes:
       - data:/data
       - ${MEDIA_ROOT:-/mnt/media}:/mnt/media
+      - ./config:/app/config:ro
     tmpfs:
       - /run/sluicery:mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}
     healthcheck:
@@ -39,6 +40,7 @@ services:
     volumes:
       - data:/data
       - ${MEDIA_ROOT:-/mnt/media}:/mnt/media
+      - ./config:/app/config:ro
     tmpfs:
       - /run/sluicery:mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}
     depends_on:
@@ -60,6 +62,7 @@ services:
     volumes:
       - data:/data
       - ${MEDIA_ROOT:-/mnt/media}:/mnt/media
+      - ./config:/app/config:ro
     tmpfs:
       - /run/sluicery:mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}
     depends_on:

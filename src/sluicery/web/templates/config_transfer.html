@@ -26,7 +26,7 @@
   <h2>差分プレビュー</h2>
   <p>新規 {{ plan.creates }} / 上書き {{ plan.overwrites }} / スキップ {{ plan.skips }}</p>
   <table><thead><tr><th>種類</th><th>対象</th><th>操作</th><th>注記</th></tr></thead><tbody>{% for row in plan.operations %}<tr><td>{{ row.entity }}</td><td>{{ row.identity }}</td><td>{{ row.action }}</td><td>{{ row.note or '—' }}</td></tr>{% else %}<tr><td colspan="4">差分はありません</td></tr>{% endfor %}</tbody></table>
-  <p class="muted">「要再入力」の新規Storageは無効、Playlistは一時停止で作成します。上書きでは既存の暗号化値を保持します。</p>
+  <p class="muted">「要再入力」のStorageは無効、Playlistは一時停止にし、既存値を含むクレデンシャル・Cookie・秘密オプションは再利用しません。retention有効設定は無効化して取り込み、専用画面のdry-run後に有効化してください。</p>
   <form method="post" action="/config-transfer/apply" onsubmit="return confirm('表示されたDB設定差分を適用しますか？')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="confirmation_token" value="{{ confirmation_token }}">
     <label><input type="checkbox" name="confirmed" value="yes" required> 差分と要再入力項目を確認しました</label><br>

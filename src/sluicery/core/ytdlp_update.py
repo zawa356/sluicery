@@ -592,6 +592,15 @@ def update_ytdlp(
             with session_factory() as session:
                 prune_old_versions(root, session, keep)
             status = "no_change" if previous == candidate_version else "updated"
+            if status == "updated":
+                emit_safely(
+                    event_hook,
+                    "ytdlp_updated",
+                    {
+                        "version": candidate_version,
+                        "previous_version": previous,
+                    },
+                )
             return UpdateResult(status, candidate_version, candidate_version, candidate_smoke)
 
         rollback_smoke = None
@@ -612,6 +621,14 @@ def update_ytdlp(
                     use(root, session, rollback_version)
                 active = rollback_version
                 rolled_back = True
+                emit_safely(
+                    event_hook,
+                    "ytdlp_rollback",
+                    {
+                        "version": rollback_version,
+                        "previous_version": candidate_version,
+                    },
+                )
         _failure_event(
             event_hook,
             version=candidate_version,
@@ -655,6 +672,11 @@ def rollback_ytdlp(
             )
         with session_factory() as session:
             use(root, session, previous)
+        emit_safely(
+            event_hook,
+            "ytdlp_rollback",
+            {"version": previous, "previous_version": current},
+        )
         return UpdateResult("rolled_back", previous, previous, smoke)
 
 

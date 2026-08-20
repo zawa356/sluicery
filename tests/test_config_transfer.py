@@ -43,6 +43,10 @@ def _configuration_graph(db_session):
             "host": "nas.invalid",
             "share": "media",
             "token": "config-token-secret",
+            "api_key": "api-key-secret",
+            "access_key": "access-key-secret",
+            "private_key": "private-key-secret",
+            "auth_header": "auth-header-secret",
         },
         credentials_encrypted={
             "user": "secret-user",
@@ -66,6 +70,7 @@ def _configuration_graph(db_session):
         paused=False,
         kind_hint=PlaylistKindHint.VIDEO,
         missing_policy=MissingPolicy.LEAVE,
+        retention_policy_json={"enabled": True, "keep_latest": 10},
         cookie_enabled=True,
         cookies_encrypted={"netscape": "cookie-value-secret"},
     )
@@ -84,6 +89,11 @@ def _configuration_graph(db_session):
     )
     db_session.add_all([assignment, item])
     core_settings.set_override(db_session, "download.retries", 7)
+    core_settings.set_override(
+        db_session,
+        "ytdlp.smoketest_url",
+        "https://example.com/video?token=smoketest-url-secret",
+    )
     db_session.add(Setting(key="_internal.secret", value_json='"internal-secret"'))
     db_session.commit()
     return storage, profile, playlist
@@ -96,6 +106,10 @@ def test_export_yaml_excludes_all_secret_and_execution_state(db_session) -> None
 
     for secret in (
         "config-token-secret",
+        "api-key-secret",
+        "access-key-secret",
+        "private-key-secret",
+        "auth-header-secret",
         "secret-user",
         "credential-secret",
         "secret-domain",
@@ -104,6 +118,7 @@ def test_export_yaml_excludes_all_secret_and_execution_state(db_session) -> None
         "playlist-url-secret",
         "item-secret",
         "internal-secret",
+        "smoketest-url-secret",
     ):
         assert secret not in exported
     assert "requires_credentials: true" in exported
@@ -140,6 +155,8 @@ def test_import_creates_portable_config_disabled_until_secrets_are_reentered(
             assert playlist is not None and playlist.paused is True
             assert playlist.cookie_enabled is False
             assert playlist.cookies_encrypted is None
+            assert playlist.retention_policy_json is not None
+            assert playlist.retention_policy_json["enabled"] is False
             assert target.scalar(select(func.count()).select_from(Item)) == 0
             assert core_settings.get(target, "download.retries") == 7
     finally:
@@ -231,3 +248,62 @@ settings: {}
 
     with pytest.raises(ConfigTransferError, match="alias / anchor"):
         load_config_yaml("version: 1\nstorages: &rows []\nprofiles: *rows\n")
+
+    with pytest.raises(ConfigTransferError):
+        load_config_yaml(
+            """
+version: 1
+storages:
+  - ref: s1
+    name: media
+    kind: remote
+    enabled: true
+    config: {protocol: smb, host: host, share: media, api_key: leaked}
+profiles: []
+playlists: []
+playlist_profiles: []
+settings: {}
+"""
+        )
+
+    with pytest.raises(ConfigTransferError):
+        load_config_yaml(
+            """
+version: 1
+storages: []
+profiles:
+  - ref: p1
+    name: unsafe
+    kind: video
+    layout_strategy: flat
+    expert_mode: true
+    allow_exec: false
+    ytdlp_args: "--extractor-args youtube:po_token=LEAK"
+playlists: []
+playlist_profiles: []
+settings: {}
+"""
+        )
+
+
+def test_overwrite_clears_existing_secrets_and_requires_reenable(db_session) -> None:
+    storage, profile, playlist = _configuration_graph(db_session)
+    document = export_config(db_session)
+    # import文書側のmarkerを偽装しても既存secretを再利用できない。
+    document.storages[0].requires_credentials = False
+    document.playlists[0].requires_cookie_reentry = False
+    plan = preview_config_import(db_session, document, "overwrite")
+
+    apply_config_import(db_session, document, plan)
+
+    db_session.refresh(storage)
+    db_session.refresh(profile)
+    db_session.refresh(playlist)
+    assert storage.enabled is False
+    assert storage.credentials_encrypted is None
+    assert profile.ytdlp_args is None
+    assert playlist.paused is True
+    assert playlist.cookie_enabled is False
+    assert playlist.cookies_encrypted is None
+    assert playlist.retention_policy_json is not None
+    assert playlist.retention_policy_json["enabled"] is False

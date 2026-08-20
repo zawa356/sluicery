@@ -27,6 +27,14 @@ from sluicery.scheduler import (
 )
 
 
+class _Hook:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def emit(self, event_type: str, payload: dict) -> None:
+        self.events.append((event_type, payload))
+
+
 def _playlist(
     session_factory,
     *,
@@ -368,7 +376,10 @@ def test_reconcile_recovers_only_runs_without_active_tasks(engine, session_facto
         orphan_id, active_id = orphan.id, active.id
         live_download_id = live_taskless_download.id
         old_download_id = old_taskless_download.id
-    service = SchedulerService(engine, session_factory, "UTC", clock=lambda: now)
+    hook = _Hook()
+    service = SchedulerService(
+        engine, session_factory, "UTC", clock=lambda: now, hook=hook
+    )
 
     assert set(service.recover_orphan_runs()) == {orphan_id, old_download_id}
 
@@ -382,6 +393,10 @@ def test_reconcile_recovers_only_runs_without_active_tasks(engine, session_facto
         assert still_active is not None and still_active.status == RunStatus.RUNNING
         assert live_download is not None and live_download.status == RunStatus.RUNNING
         assert old_download is not None and old_download.status == RunStatus.FAILED
+    assert [event_type for event_type, _payload in hook.events] == [
+        "run_failed",
+        "run_failed",
+    ]
 
 
 def test_periodic_reconcile_does_not_recover_a_live_taskless_run(

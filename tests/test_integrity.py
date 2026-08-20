@@ -62,6 +62,14 @@ class FakeStorage:
         yield from [RemoteFile(path, 1) for path in self.files]
 
 
+class _Hook:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def emit(self, event_type: str, payload: dict) -> None:
+        self.events.append((event_type, payload))
+
+
 def _graph(db_session, *, count: int = 1) -> tuple[Storage, list[Target], list[Artifact]]:
     storage = Storage(name="media", kind=StorageKind.LOCAL, config_json={"path": "/media"})
     profile = Profile(name="video", kind=ProfileKind.VIDEO, layout_strategy=LayoutStrategy.FLAT)
@@ -129,14 +137,21 @@ def test_relinks_moved_file_without_moving_it(db_session) -> None:
 def test_marks_missing_only_after_successful_rescan(db_session) -> None:
     _storage, targets, artifacts = _graph(db_session)
     checked_at = datetime(2026, 8, 16, tzinfo=UTC)
+    hook = _Hook()
 
-    report = check_integrity(db_session, lambda _: FakeStorage([]), now=checked_at)
+    report = check_integrity(
+        db_session, lambda _: FakeStorage([]), now=checked_at, hook=hook
+    )
 
     db_session.refresh(artifacts[0])
     db_session.refresh(targets[0])
     assert artifacts[0].missing_since == checked_at
     assert targets[0].status == TargetStatus.MISSING
     assert report.missing == 1
+    assert [event_type for event_type, _payload in hook.events] == ["artifact_missing"]
+
+    check_integrity(db_session, lambda _: FakeStorage([]), now=checked_at, hook=hook)
+    assert [event_type for event_type, _payload in hook.events] == ["artifact_missing"]
 
 
 @pytest.mark.parametrize(
@@ -205,10 +220,12 @@ def test_one_candidate_claimed_by_multiple_artifacts_is_not_selected(db_session)
 
 def test_storage_error_never_marks_missing(db_session) -> None:
     _storage, targets, artifacts = _graph(db_session)
+    hook = _Hook()
 
     report = check_integrity(
         db_session,
         lambda _: FakeStorage([], exists_error=True),
+        hook=hook,
     )
 
     db_session.refresh(artifacts[0])
@@ -216,6 +233,9 @@ def test_storage_error_never_marks_missing(db_session) -> None:
     assert artifacts[0].missing_since is None
     assert targets[0].status == TargetStatus.DOWNLOADED
     assert {issue.kind for issue in report.issues} == {"storage_error"}
+    assert [event_type for event_type, _payload in hook.events] == [
+        "storage_unreachable"
+    ]
 
 
 def test_adapter_factory_error_never_marks_missing(db_session) -> None:
@@ -356,7 +376,8 @@ def test_manual_link_and_undo_only_change_database(db_session) -> None:
     assert targets[0].status == TargetStatus.DOWNLOADED
     assert adapter.files == ["orphan/renamed.mkv"]
 
-    undo_manual_link(db_session, artifacts[0].id)
+    hook = _Hook()
+    undo_manual_link(db_session, artifacts[0].id, hook=hook)
 
     db_session.refresh(artifacts[0])
     db_session.refresh(targets[0])
@@ -367,6 +388,7 @@ def test_manual_link_and_undo_only_change_database(db_session) -> None:
     orphans, error = list_orphan_files(db_session, storage, adapter)
     assert error is None
     assert [entry.relative_path for entry in orphans] == ["orphan/renamed.mkv"]
+    assert [event_type for event_type, _payload in hook.events] == ["artifact_missing"]
 
 
 def test_manual_link_rejects_tracked_candidate(db_session) -> None:

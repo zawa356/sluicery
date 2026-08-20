@@ -77,6 +77,7 @@ from sluicery.core.retention import (
     RetentionPolicy,
     RetentionPolicyError,
     RetentionSafetyError,
+    assert_no_unfinished_retention_intents,
     build_retention_plan,
     execute_retention,
     save_retention_policy,
@@ -126,6 +127,7 @@ from sluicery.downloader.version import (
     ytdlp_root,
 )
 from sluicery.downloader.ytdlp import TimeoutPolicy, YtdlpRunner, mask_command_line
+from sluicery.hooks import EventLogHook, Hook, emit_safely
 from sluicery.layout import LayoutContext, LayoutValidationError, resolve_layout
 from sluicery.runner.base import mask_log_text
 from sluicery.scheduler import (
@@ -258,6 +260,7 @@ def create_app(
     settings: Settings | None = None,
     session_factory: sessionmaker[Session] | None = None,
     scheduler_service: SchedulerService | None = None,
+    hook: Hook | None = None,
 ) -> FastAPI:
     app = FastAPI(title="sluicery", dependencies=[Depends(require_csrf)])
     templates = Jinja2Templates(directory=WEB_DIR / "templates")
@@ -295,6 +298,8 @@ def create_app(
     app.state.retention_signer = retention_signer
     config_import_signer = ConfigImportSigner(settings.SECRET_KEY)
     app.state.config_import_signer = config_import_signer
+    event_hook = hook or EventLogHook(session_factory)
+    app.state.event_hook = event_hook
     app.add_middleware(
         AuthenticationMiddleware,
         auth=auth,
@@ -459,6 +464,7 @@ def create_app(
             settings,
             session_factory,
             source=YtdlpReleaseSource.MANUAL,
+            hook=event_hook,
         )
 
     @app.post("/ytdlp/update")
@@ -491,7 +497,9 @@ def create_app(
     @app.post("/ytdlp/rollback")
     async def ytdlp_rollback(request: Request) -> Response:
         try:
-            await run_in_threadpool(rollback_ytdlp, settings, session_factory)
+            await run_in_threadpool(
+                rollback_ytdlp, settings, session_factory, hook=event_hook
+            )
         except (YtdlpRollbackError, YtdlpUpdateBusyError) as exc:
             auth.add_flash(request.state.auth, "error", str(exc))
         else:
@@ -851,6 +859,32 @@ def create_app(
     def playlist_retention_page(request: Request, playlist_id: int) -> Response:
         return retention_page_response(request, playlist_id)
 
+    def retention_adapter_factory(storage: Storage):
+        with session_factory() as db:
+            # dry-run/execute開始時にCAS確認したdetached snapshotを使い、途中の
+            # Storage root/share変更で別保存先へ切り替わらないようにする。
+            return create_storage_adapter(storage, OperationalSettings(db))
+
+    def build_retention_plan_for_web(
+        playlist_id: int,
+        policy: RetentionPolicy,
+        max_delete: int,
+        *,
+        include_file_identity: bool,
+    ) -> RetentionPlan:
+        with session_factory() as db:
+            if include_file_identity:
+                assert_no_unfinished_retention_intents(settings.DATA_DIR)
+            return build_retention_plan(
+                db,
+                playlist_id,
+                policy,
+                max_delete_per_run=max_delete,
+                adapter_factory=retention_adapter_factory
+                if include_file_identity
+                else None,
+            )
+
     @app.post("/playlists/{playlist_id}/retention/preview")
     async def playlist_retention_preview(request: Request, playlist_id: int) -> Response:
         form = await request.form()
@@ -877,12 +911,14 @@ def create_app(
                         raise RetentionPolicyError("retentionは無効です")
                 else:
                     raise RetentionPolicyError("dry-runの目的が不正です")
-                plan = build_retention_plan(
-                    db,
-                    playlist_id,
-                    policy,
-                    max_delete_per_run=operational.retention_max_delete_per_run,
-                )
+                max_delete = operational.retention_max_delete_per_run
+            plan = await run_in_threadpool(
+                build_retention_plan_for_web,
+                playlist_id,
+                policy,
+                max_delete,
+                include_file_identity=purpose == "execute",
+            )
             token = None
             if purpose == "enable" or (plan.deletable and plan.delete_count > 0):
                 token = retention_signer.issue(plan, purpose=purpose)
@@ -893,7 +929,7 @@ def create_app(
                 confirmation_token=token,
                 confirmation_purpose=purpose,
             )
-        except RetentionPolicyError as exc:
+        except (RetentionPolicyError, RetentionSafetyError) as exc:
             return retention_page_response(
                 request, playlist_id, error=str(exc), status_code=422
             )
@@ -936,13 +972,6 @@ def create_app(
         auth.add_flash(request.state.auth, "success", "retention設定を保存しました")
         return RedirectResponse(f"/playlists/{playlist_id}/retention", status_code=303)
 
-    def retention_adapter_factory(storage: Storage):
-        with session_factory() as db:
-            current = db.get(Storage, storage.id)
-            if current is None:
-                raise LookupError("Storageが見つかりません")
-            return create_storage_adapter(current, OperationalSettings(db))
-
     @app.post("/playlists/{playlist_id}/retention/execute")
     async def playlist_retention_execute(request: Request, playlist_id: int) -> Response:
         form = await request.form()
@@ -976,14 +1005,14 @@ def create_app(
                 raise RetentionConfirmationError(
                     "retention設定がdry-run後に変化しました。再確認してください"
                 )
-            with session_factory() as db:
-                plan = build_retention_plan(
-                    db,
-                    playlist_id,
-                    current_policy,
-                    max_delete_per_run=max_delete,
-                )
-                retention_signer.verify_plan(confirmation, plan)
+            plan = await run_in_threadpool(
+                build_retention_plan_for_web,
+                playlist_id,
+                current_policy,
+                max_delete,
+                include_file_identity=True,
+            )
+            retention_signer.verify_plan(confirmation, plan)
             if not plan.deletable or plan.delete_count == 0:
                 raise RetentionSafetyError(
                     " / ".join(plan.blocked_reasons) or "削除候補がありません"
@@ -997,6 +1026,7 @@ def create_app(
                 confirmation_token=str(form.get("confirmation_token", "")),
                 confirmation_signer=retention_signer,
                 dryrun_ttl_sec=ttl_sec,
+                hook=event_hook,
             )
         except (
             RetentionConfirmationError,
@@ -1890,6 +1920,16 @@ def create_app(
                     dict(run.stats_json or {}),
                 )
                 sync_cancelled_targets(db, run_id)
+                emit_safely(
+                    event_hook,
+                    "run_finished",
+                    {
+                        "run_id": run_id,
+                        "playlist_id": run.playlist_id,
+                        "kind": run.kind,
+                        "status": RunStatus.CANCELLED.value,
+                    },
+                )
         auth.add_flash(
             request.state.auth,
             "success" if changed else "error",
@@ -2041,7 +2081,7 @@ def create_app(
             artifact_id = int(str(form.get("artifact_id", "0")))
             storage_id = int(str(form.get("storage_id", "0")))
             with session_factory() as db:
-                undo_manual_link(db, artifact_id)
+                undo_manual_link(db, artifact_id, hook=event_hook)
             auth.add_flash(request.state.auth, "success", "手動リンクを取り消しました")
         except (LookupError, ValueError):
             auth.add_flash(request.state.auth, "error", "手動リンクを取り消せませんでした")

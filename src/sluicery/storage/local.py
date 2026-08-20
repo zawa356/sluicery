@@ -7,6 +7,7 @@ import errno
 import hashlib
 import os
 import shutil
+import stat
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -375,19 +376,103 @@ class LocalStorageAdapter:
                 reason_code="move_failed",
             ) from exc
 
-    def delete_file(self, rel: str) -> None:
-        path = self._path(rel)
-        if not path.exists():
+    def _no_follow_path(self, rel: str) -> Path:
+        normalized = validate_relative_path(rel)
+        unresolved = self._root / normalized
+        try:
+            parent = unresolved.parent.resolve(strict=True)
+        except OSError as exc:
+            raise StorageOperationError(
+                "削除対象の親ディレクトリを確認できません",
+                classification=_classification_for_os_error(exc),
+                reason_code="source_not_found",
+            ) from exc
+        if not parent.is_relative_to(self._root):
+            raise StoragePathError("local Storage root 外は削除できません")
+        return parent / unresolved.name
+
+    def _inspect_path(self, path: Path, relative_path: str) -> RemoteFile:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(path, flags)
+        except FileNotFoundError as exc:
             raise StorageOperationError(
                 "削除対象ファイルが存在しません", reason_code="source_not_found"
-            )
-        if not path.is_file():
-            raise StorageOperationError(
-                "削除対象は通常ファイルではありません", reason_code="not_a_file"
-            )
-        try:
-            path.unlink()
+            ) from exc
         except OSError as exc:
+            raise StorageOperationError(
+                "削除対象ファイルを安全に確認できません",
+                classification=_classification_for_os_error(exc),
+                reason_code="unsafe_file",
+            ) from exc
+        try:
+            file_stat = os.fstat(descriptor)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise StorageOperationError(
+                    "削除対象は通常ファイルではありません", reason_code="not_a_file"
+                )
+            digest = hashlib.sha256()
+            while chunk := os.read(descriptor, 1024 * 1024):
+                digest.update(chunk)
+        finally:
+            os.close(descriptor)
+        return RemoteFile(
+            validate_relative_path(relative_path),
+            file_stat.st_size,
+            str(file_stat.st_mtime_ns),
+            {"sha256": digest.hexdigest()},
+            f"{file_stat.st_dev}:{file_stat.st_ino}",
+        )
+
+    def inspect_file(self, rel: str) -> RemoteFile:
+        return self._inspect_path(self._no_follow_path(rel), rel)
+
+    def delete_file(
+        self,
+        rel: str,
+        *,
+        expected: RemoteFile | None = None,
+        quarantine_rel: str | None = None,
+    ) -> None:
+        path = self._no_follow_path(rel)
+        quarantine = (
+            self._no_follow_path(quarantine_rel)
+            if quarantine_rel is not None
+            else path.with_name(f".sluicery-retention-{uuid4().hex}")
+        )
+        if quarantine.parent != path.parent or os.path.lexists(quarantine):
+            raise StorageOperationError(
+                "retention quarantine pathが不正または使用中です",
+                reason_code="quarantine_conflict",
+            )
+        if expected is None:
+            self.inspect_file(rel)
+        try:
+            # no-replace renameでdirectory entryを確保し、元pathだけでなく
+            # audit済みquarantine pathの同時差替えも上書きしない。
+            _rename_noreplace(path, quarantine)
+            current = self._inspect_path(quarantine, rel)
+            if expected is not None and current != expected:
+                try:
+                    _rename_noreplace(quarantine, path)
+                except OSError as exc:
+                    raise StorageOperationError(
+                        f"削除対象が変化し、実体をquarantineに保持しました: {quarantine.name}",
+                        reason_code="identity_changed_quarantined",
+                    ) from exc
+                raise StorageOperationError(
+                    "dry-run後に削除対象ファイルの実体が変化しました",
+                    reason_code="identity_changed",
+                )
+            quarantine.unlink()
+        except StorageOperationError:
+            raise
+        except OSError as exc:
+            if os.path.lexists(quarantine) and not os.path.lexists(path):
+                try:
+                    _rename_noreplace(quarantine, path)
+                except OSError:
+                    pass
             raise StorageOperationError(
                 "local Storage のファイル削除に失敗しました",
                 classification=_classification_for_os_error(exc),

@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from sluicery.config import Settings
-from sluicery.core.retention import RetentionExecutionResult
+from sluicery.core.retention import RetentionExecutionResult, RetentionSafetyError
 from sluicery.db.models import (
     Artifact,
     ArtifactRole,
@@ -22,6 +22,7 @@ from sluicery.db.models import (
     Target,
     TargetStatus,
 )
+from sluicery.storage.base import RemoteFile
 from sluicery.web.app import create_app
 from sluicery.web.auth import ensure_initial_user
 
@@ -165,7 +166,16 @@ def test_retention_enable_and_execute_both_require_dryrun_confirmation(
         called.append(True)
         return RetentionExecutionResult(99, 1, 100, Path(tmp_path / "audit.log"))
 
+    class _IdentityAdapter:
+        def inspect_file(self, rel: str) -> RemoteFile:
+            index = int(Path(rel).stem.removeprefix("source-"))
+            return RemoteFile(rel, 100 + index, "1", {"sha256": f"{index:064x}"})
+
     monkeypatch.setattr("sluicery.web.app.execute_retention", fake_execute)
+    monkeypatch.setattr(
+        "sluicery.web.app.create_storage_adapter",
+        lambda _storage, _settings: _IdentityAdapter(),
+    )
     enabled_page = client.get(f"/playlists/{playlist_id}/retention")
     direct_execute = client.post(
         f"/playlists/{playlist_id}/retention/execute",
@@ -198,3 +208,38 @@ def test_retention_enable_and_execute_both_require_dryrun_confirmation(
     assert called == [True]
     with session_factory() as db:
         assert all(db.get(Artifact, artifact_id) is not None for artifact_id in artifact_ids)
+
+
+def test_execute_preview_reports_unfinished_intent_as_422(
+    base_env, session_factory, monkeypatch
+) -> None:
+    client = _client(base_env, session_factory)
+    playlist_id, _artifact_ids = _graph(session_factory)
+    with session_factory() as db:
+        playlist = db.get(Playlist, playlist_id)
+        assert playlist is not None
+        playlist.retention_policy_json = {
+            "enabled": True,
+            "keep_latest": 2,
+            "max_age_days": None,
+        }
+        db.commit()
+
+    def refuse_unfinished(_data_dir: Path) -> None:
+        raise RetentionSafetyError("未完了のretention削除意図があります")
+
+    monkeypatch.setattr(
+        "sluicery.web.app.assert_no_unfinished_retention_intents",
+        refuse_unfinished,
+    )
+    page = client.get(f"/playlists/{playlist_id}/retention")
+    response = client.post(
+        f"/playlists/{playlist_id}/retention/preview",
+        data={
+            "csrf_token": _hidden(page, "csrf_token"),
+            "purpose": "execute",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "未完了のretention削除意図があります" in response.text

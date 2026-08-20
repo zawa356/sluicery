@@ -33,6 +33,7 @@ from sluicery.db.repositories.playlist_profile import PlaylistProfileRepository
 from sluicery.db.repositories.run import RunRepository
 from sluicery.db.repositories.target import TargetRepository
 from sluicery.db.repositories.task import TaskRepository
+from sluicery.hooks import Hook, emit_safely, event_log_hook_for_session
 from sluicery.storage import create_storage_adapter
 from sluicery.storage.base import StorageAdapter, evaluate_capacity
 from sluicery.tasks.pipeline import enqueue_target_pipeline
@@ -123,6 +124,7 @@ def enqueue_discover_run(
     dry_run: bool = False,
     trigger: RunTrigger = RunTrigger.MANUAL,
     max_attempts: int | None = None,
+    hook: Hook | None = None,
 ) -> tuple[Run, Task]:
     """discover Runとnetwork Taskを同じtransactionで作成する。"""
     lock_and_validate_playlist_operation_start(session, playlist_id)
@@ -158,6 +160,16 @@ def enqueue_discover_run(
     session.commit()
     session.refresh(run)
     session.refresh(task)
+    emit_safely(
+        hook or event_log_hook_for_session(session),
+        "run_started",
+        {
+            "run_id": run.id,
+            "playlist_id": playlist_id,
+            "kind": run.kind,
+            "trigger": run.trigger.value,
+        },
+    )
     return run, task
 
 
@@ -169,6 +181,7 @@ def execute_download_run(
     max_targets: int | None = None,
     max_attempts: int | None = None,
     adapter_factory: AdapterFactory = create_storage_adapter,
+    hook: Hook | None = None,
 ) -> Run:
     """download Runを作成し、チェーン投入完了時点で統計と成否を確定する。"""
     lock_and_validate_playlist_operation_start(session, playlist_id)
@@ -183,6 +196,17 @@ def execute_download_run(
         trigger=trigger,
         kind="download",
         playlist_id=playlist_id,
+    )
+    event_hook = hook or event_log_hook_for_session(session)
+    emit_safely(
+        event_hook,
+        "run_started",
+        {
+            "run_id": run.id,
+            "playlist_id": playlist_id,
+            "kind": run.kind,
+            "trigger": run.trigger.value,
+        },
     )
     try:
         stats = queue_download_phase(
@@ -202,8 +226,31 @@ def execute_download_run(
     except Exception:
         session.rollback()
         RunRepository(session).finish(run.id, RunStatus.FAILED, SyncStats().to_dict())
+        emit_safely(
+            event_hook,
+            "run_failed",
+            {
+                "run_id": run.id,
+                "playlist_id": playlist_id,
+                "kind": run.kind,
+                "reason_code": "download_enqueue_failed",
+            },
+        )
         raise
     session.refresh(run)
+    emit_safely(
+        event_hook,
+        "run_failed" if run.status == RunStatus.FAILED else "run_finished",
+        {
+            "run_id": run.id,
+            "playlist_id": playlist_id,
+            "kind": run.kind,
+            "status": run.status.value,
+            "reason_code": "storage_preflight_failed"
+            if run.status == RunStatus.FAILED
+            else None,
+        },
+    )
     return run
 
 

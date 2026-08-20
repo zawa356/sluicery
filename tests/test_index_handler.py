@@ -24,6 +24,7 @@ from sluicery.db.models import (
     TaskType,
     WorkerClass,
 )
+from sluicery.hooks import flush_pending_hooks
 from sluicery.tasks.handlers.index import IndexHandler
 from sluicery.tasks.queue import TaskOutcome
 
@@ -97,6 +98,7 @@ def test_index_creates_artifact_then_deletes_staging(session_factory, tmp_path: 
 
     assert result.outcome == TaskOutcome.SUCCEEDED
     assert not source.exists()
+    assert flush_pending_hooks()
     with session_factory() as session:
         artifact = session.scalar(select(Artifact))
         assert artifact is not None

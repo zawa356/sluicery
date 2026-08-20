@@ -21,6 +21,7 @@ from sluicery.db.models import (
     Target,
     TargetStatus,
 )
+from sluicery.hooks import Hook, emit_safely, event_log_hook_for_session
 from sluicery.storage.base import (
     RemoteFile,
     StorageAdapter,
@@ -98,6 +99,7 @@ def check_integrity(
     rescan_timeout_sec: int = 600,
     max_candidates_per_source_id: int = 5,
     now: datetime | None = None,
+    hook: Hook | None = None,
 ) -> IntegrityReport:
     """Artifactを確認し、DBだけをrelink/missing更新する。
 
@@ -139,6 +141,7 @@ def check_integrity(
         storages[storage.id] = storage
 
     report = IntegrityReport()
+    event_hook = hook or event_log_hook_for_session(session)
     tracked_by_storage: dict[int, set[str]] = defaultdict(set)
     if grouped:
         tracked_stmt = select(Artifact.storage_id, Artifact.relative_path).where(
@@ -293,6 +296,7 @@ def check_integrity(
 
     session.expire_all()
     affected_target_ids: set[int] = set()
+    missing_events: list[dict[str, object]] = []
     for artifact_id, decision in revalidated_decisions.items():
         snapshot = snapshots[artifact_id]
         loaded_artifact = session.get(Artifact, artifact_id)
@@ -322,8 +326,18 @@ def check_integrity(
             loaded_artifact.missing_since = None
             report.relinked += 1
         elif decision.kind == "missing":
+            newly_missing = loaded_artifact.missing_since is None
             loaded_artifact.missing_since = loaded_artifact.missing_since or checked_at
             report.missing += 1
+            if newly_missing:
+                missing_events.append(
+                    {
+                        "artifact_id": artifact_id,
+                        "target_id": snapshot.target_id,
+                        "storage_id": snapshot.storage_id,
+                        "relative_path": snapshot.relative_path,
+                    }
+                )
             assert decision.issue_kind is not None
             report.issues.append(
                 IntegrityIssue(
@@ -364,6 +378,19 @@ def check_integrity(
             loaded_target.status = TargetStatus.DOWNLOADED
             report.restored += 1
     session.commit()
+    for payload in missing_events:
+        emit_safely(event_hook, "artifact_missing", payload)
+    storage_failures = {
+        (issue.storage_id, issue.kind)
+        for issue in report.issues
+        if issue.kind in {"storage_error", "scan_error", "scan_timeout"}
+    }
+    for failed_storage_id, reason_code in storage_failures:
+        emit_safely(
+            event_hook,
+            "storage_unreachable",
+            {"storage_id": failed_storage_id, "reason_code": reason_code},
+        )
     return report
 
 
@@ -458,7 +485,11 @@ def manual_link(
 
 
 def undo_manual_link(
-    session: Session, artifact_id: int, *, now: datetime | None = None
+    session: Session,
+    artifact_id: int,
+    *,
+    now: datetime | None = None,
+    hook: Hook | None = None,
 ) -> None:
     """直前のDBパスへ戻し、Targetをmissingへ戻す。ファイルは動かさない。"""
     artifact = session.get(Artifact, artifact_id)
@@ -475,6 +506,16 @@ def undo_manual_link(
     assert target is not None
     target.status = TargetStatus.MISSING
     session.commit()
+    emit_safely(
+        hook or event_log_hook_for_session(session),
+        "artifact_missing",
+        {
+            "artifact_id": artifact.id,
+            "target_id": target.id,
+            "storage_id": artifact.storage_id,
+            "relative_path": artifact.relative_path,
+        },
+    )
 
 
 __all__ = [

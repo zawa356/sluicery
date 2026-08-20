@@ -15,6 +15,14 @@ from sluicery.tasks.worker import StaleTaskReaper, Worker, WorkerConfig, make_wo
 NOW = datetime(2026, 8, 12, 0, 0, tzinfo=UTC)
 
 
+class _Hook:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def emit(self, event_type: str, payload: dict) -> None:
+        self.events.append((event_type, payload))
+
+
 def _config(**overrides) -> WorkerConfig:
     values = {
         "poll_interval_sec": 0.01,
@@ -68,7 +76,10 @@ def test_stale_terminal_discover_finishes_its_run(session_factory) -> None:
         )
         run_id = run.id
 
-    reaper = StaleTaskReaper(session_factory, _config(), clock=lambda: NOW)
+    hook = _Hook()
+    reaper = StaleTaskReaper(
+        session_factory, _config(), hook=hook, clock=lambda: NOW
+    )
 
     assert reaper.run_once() == [task_id]
     with session_factory() as session:
@@ -76,6 +87,33 @@ def test_stale_terminal_discover_finishes_its_run(session_factory) -> None:
         assert run is not None and run.status == RunStatus.FAILED
         assert run.stats_json is not None
         assert run.stats_json["stale_recovered"] is True
+    assert [event_type for event_type, _payload in hook.events] == ["run_failed"]
+
+
+def test_terminal_target_failure_emits_hook(session_factory) -> None:
+    hook = _Hook()
+    task_id = _enqueue(
+        session_factory,
+        TaskType.FAIL_UNAVAILABLE,
+        target_ref_type="target",
+        target_ref_id=42,
+    )
+    worker = Worker(
+        session_factory,
+        WorkerClass.NETWORK,
+        _config(),
+        worker_id="worker:test:target-failure",
+        hook=hook,
+        clock=lambda: NOW,
+    )
+
+    assert worker.run_once()
+    assert hook.events == [
+        (
+            "target_failed",
+            {"target_id": 42, "task_id": task_id, "reason_code": "unavailable"},
+        )
+    ]
 
 
 @pytest.mark.parametrize(

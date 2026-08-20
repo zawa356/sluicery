@@ -1,0 +1,17 @@
+version: 1
+subscriptions:
+  event_log:
+    enabled: true
+    events:
+      - item_discovered
+      - item_delisted
+      - target_downloaded
+      - target_failed
+      - run_started
+      - run_finished
+      - run_failed
+      - artifact_published
+      - artifact_missing
+      - storage_unreachable
+      - ytdlp_updated
+      - ytdlp_rollback
