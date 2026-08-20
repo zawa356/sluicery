@@ -3,8 +3,8 @@
 > このファイルはセッション間の引き継ぎ用です。
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
-最終更新: 2026-08-16
-対応コミット: Phase 16実装 `bacffb1`（安全装置・検証済み）
+最終更新: 2026-08-21
+対応コミット: Phase 18実装・レビュー③対応 `ffaac62`（検証済み）
 
 ## プロジェクト概要
 
@@ -22,14 +22,20 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - [x] 13. 整合性、relink、missing方針、手動リンク、差分レポート
 - [x] 14. Profile編集からのフォーマット検査、レート制限、URL非保持
 - [x] 15. yt-dlp自動更新、強化スモークテスト、安全なロールバック
-- [x] 16. retention（dry-run必須・安全装置付き）
-- [ ] 17–20. 設定移行、フック、mount、仕上げ
+- [x] 16. retention（dry-run必須・実体CAS・二相監査付き）
+- [x] 17. 設定エクスポート / インポート
+- [x] 18. フック機構と12イベント発火点
+- [ ] 19–20. privileged mount / GPU、バックアップ、仕上げ
 
 ## 直近の作業
 
-- Phase 16のretentionを実装した。Playlistごとに最新N件 / M日超を指定するが既定は無効で、有効化と実行の両方に署名付きdry-run確認が必要
-- 20件上限、Artifact過半数guard、300秒TTL、snapshot再検証、Playlist排他、exact path削除、fsync済み監査logを追加した（D-057）。成功時はArtifact行を削除しTargetを`ignored`にする
-- 実環境は読み取り専用でretention有効Playlist 0、候補0、Artifact 599件不変を確認し、実メディアは削除していない。合成一時ファイルでの安全経路を含む全448テスト、Ruff、mypy 85 source filesが成功した
+- Phase 18の12イベント発火点と`config/hooks.yaml`購読を実装した。組み込み`event_log`は単一worker・容量1000の非同期queueで順序を保ち、設定不正・DB失敗・queue飽和を本体から隔離する。payloadはイベント別allowlistとURL / 秘密key除外を通す（D-059）
+- runtime imageを再buildし、app healthy、両worker稼働、3サービスすべてで12購読、起動ログのHook設定エラー / 未処理例外0を確認した
+- Phase 17のYAML設定export / importを実装した。Storage kind別positive schemaを使い、自由入力yt-dlp引数、postprocess、smoketest URL override、秘密を含み得るsource URLは要再入力として省略する。importでは既存資格情報・Cookieを常に消去し、remote Storageとretentionを無効へ戻す（D-058）
+- 実環境の読み取り検証では10,675 bytes、Storage 3、Profile 7、Playlist 8、割当19、設定1をexportし、秘密値一致0、禁止フィールド一致0、DB不変だった。skip / overwrite / create previewもDB不変で、ファイル操作は行っていない
+- Phase 16のretentionをレビュー③で補強した。DB snapshotに加えてStorage設定と実体SHA-256 / file IDを署名・CASし、local / remoteをno-replace quarantineで再照合する。削除前intentと削除後resultを二相fsyncし、未完了intentは自動移動せず次回previewを停止する（D-057）
+- 実環境のretentionは引き続き有効Playlist 0、候補0で、実メディアの削除・移動は行っていない
+- Phase 16–18独立レビューの重大・中指摘をすべて回帰試験付きで対応し、最終再レビューの残存指摘は0。commit `ffaac62`から焼いたtest imageで全472テスト、Ruff、mypy 86 source filesが成功した（既知のStarlette TestClient警告1件）
 - Phase 15の週次yt-dlp更新を実装した。実ダウンロード、Deno検出、challenge警告、default extras、固定markerのメタデータと実thumbnail埋込みを検査し、専用Stagingを必ず削除する
 - 新版失敗時は直前版を未切替のまま同じスモークで検査し、成功時だけ戻す。新旧両失敗は新版を維持し、`run_failed` Hookへ安全なreasonだけを記録する（D-056）
 - WebとCLIへ手動更新・ロールバックと履歴表示を追加した。app専用週次jobは引数なしで、`ytdlp.update_cron`を空にすると無効化できる
@@ -59,8 +65,9 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 
 ## 次にやること
 
-1. Phase 17の設定エクスポート / インポートを実装する
-2. Phase 18のHookがPhase 15の`run_failed`呼出しと安全に統合することを確認する
+1. Phase 19の明示指定時だけ有効になるprivileged compose overlay、mount Storage、GPU検出を実装する
+2. Phase 20の`make backup` / `make restore`、受け入れ条件確認、公開前監査を実施する
+3. `checkpoint/step-18`以降もpushせず、最終履歴監査とユーザー承認を待つ
 
 ## 未解決・保留
 
