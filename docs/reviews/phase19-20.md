@@ -48,7 +48,7 @@ FAILEDへ終端して生成済みlogを追跡する。hardlinkはopen FDのinode
 - mypy: 88 source files PASS
 - 重点回帰: hardlink hash不一致fallback、実並列2、retention未完了intent保護を含めPASS
 - migration: 既存revisionのみでschema変更なし。隔離DBのupgrade / downgrade base / upgradeをPASS
-- 公開前監査: 履歴182 commitsを対象に危険file名、秘密pattern、環境patternを分類し、検出は既知の
+- 公開前監査: 履歴全体を対象に危険file名、秘密pattern、環境patternを分類し、検出は既知の
   sample・test・監査手順・環境記録だけだった。gitleaks（redact有効）は検出0
 
 ## 公開前の利用者判断
