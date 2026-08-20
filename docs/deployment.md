@@ -119,6 +119,13 @@ CLIで設定やPlaylistを変更した場合も60秒以内にjobstoreへ反映�
 畳み込まれます。同一Playlistの手動syncと自動syncは並行せず、自動側の見送り理由はRun履歴で
 確認できます。
 
+### Playlistフォルダの明示移動
+
+Playlist名の変更だけでは`folder_name`や保存済みファイルを変更しない。フォルダも変更する場合は、
+Playlist詳細の専用画面で新しいフォルダ名を入力し、対象ファイル数と警告をpreviewしてから明示実行する。
+実行中は同じPlaylistの同期と直列化し、移動先の既存fileを上書きしない。1件ごとにArtifact pathとRun進捗を
+commitするため、remote / SMB接続が途中で失敗しても成功分を維持したまま残りを再実行できる。
+
 ## 5. バックアップとリストア
 
 ```bash
@@ -155,6 +162,11 @@ restoreは次の順で行う。
 指紋不一致は既定で中止する。災害復旧等で資格情報が復号不能になることを承知のうえ続行する場合だけ、
 `make restore ... ALLOW_SECRET_KEY_MISMATCH=1`を明示する。通常運用では使用しない。restore失敗時も
 Makefileのtrapがservice再起動を試みるため、終了出力と`docker compose ps`を必ず確認する。
+
+2026-08-21に、別Compose project・別volume・別port・別configを使う隔離環境で、backup時点へのDB/config
+復元、余分なconfigの除去、自動pre-restore backup、migration head、3service再起動を確認した。さらに
+コミット済み状態だけのローカルcloneを作り、`make purge`後の再build・初回起動・再purgeを実施した。
+隔離projectのコンテナ、volume、networkは0件となり、bind先メディアdirectoryは保持された。
 
 ## 6. アンインストール
 
