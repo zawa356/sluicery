@@ -24,6 +24,7 @@ from sluicery.core.target_state import sync_target_after_task
 from sluicery.db.models import Run, RunStatus, Task, TaskStatus, TaskType, WorkerClass
 from sluicery.db.repositories.run import RunRepository
 from sluicery.db.repositories.task import TaskRepository
+from sluicery.hooks import EventLogHook, Hook, emit_safely
 from sluicery.runner.base import mask_log_text
 from sluicery.tasks.handlers import DUMMY_HANDLER_FACTORIES, TaskHandler
 from sluicery.tasks.progress import ProgressWriter
@@ -107,6 +108,7 @@ class Worker:
         *,
         worker_id: str | None = None,
         handler_factories: Mapping[str, HandlerFactory] | None = None,
+        hook: Hook | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         random_fraction: Callable[[], float] = random.random,
     ) -> None:
@@ -117,6 +119,7 @@ class Worker:
         if handler_factories is None:
             handler_factories = DUMMY_HANDLER_FACTORIES if config.enable_test_tasks else {}
         self._handler_factories = dict(handler_factories)
+        self._hook = hook or EventLogHook(session_factory)
         self._clock = clock
         self._random_fraction = random_fraction
         self._shutdown = threading.Event()
@@ -331,9 +334,9 @@ class Worker:
                 return
 
     def _apply_result(self, task: Task, result: TaskResult) -> None:
+        final_status: TaskStatus | None = None
         with self._session_factory() as session:
             repo = TaskRepository(session)
-            final_status: TaskStatus | None = None
             if result.payload_update:
                 repo.write_result_payload(task.id, self.worker_id, result.payload_update)
             if result.outcome == TaskOutcome.SUCCEEDED:
@@ -387,14 +390,40 @@ class Worker:
                     error=result.message,
                     failed_attempt=result.outcome == TaskOutcome.FAILED,
                 )
+        if (
+            final_status in {TaskStatus.FAILED, TaskStatus.UNAVAILABLE}
+            and task.target_ref_type == "target"
+        ):
+            emit_safely(
+                self._hook,
+                "target_failed",
+                {
+                    "target_id": task.target_ref_id,
+                    "task_id": task.id,
+                    "reason_code": result.reason_code or final_status.value,
+                },
+            )
 
     def _finish_unavailable(self, task_id: int, message: str) -> None:
+        target_id: int | None = None
         with self._session_factory() as session:
             task = session.get(Task, task_id)
             if task is not None and TaskRepository(session).mark_unavailable(
                 task_id, self.worker_id, error_message=message, now=self._clock()
             ):
                 sync_target_after_task(session, task, TaskStatus.UNAVAILABLE, error=message)
+                if task.target_ref_type == "target":
+                    target_id = task.target_ref_id
+        if target_id is not None:
+            emit_safely(
+                self._hook,
+                "target_failed",
+                {
+                    "target_id": target_id,
+                    "task_id": task_id,
+                    "reason_code": "handler_unavailable",
+                },
+            )
 
     def _write_progress(self, task_id: int, progress: dict[str, Any]) -> None:
         with self._session_factory() as session:
@@ -413,15 +442,19 @@ class StaleTaskReaper:
         session_factory: sessionmaker[Session],
         config: WorkerConfig,
         *,
+        hook: Hook | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._session_factory = session_factory
         self._config = config
+        self._hook = hook or EventLogHook(session_factory)
         self._clock = clock
 
     def run_once(self) -> list[int]:
         now = self._clock()
         stale_before = now - timedelta(seconds=self._config.stale_threshold_sec)
+        target_failures: list[tuple[int, int]] = []
+        run_failures: list[tuple[int, int | None, str]] = []
         with self._session_factory() as session:
             recovered = TaskRepository(session).recover_stale(
                 stale_before=stale_before,
@@ -436,6 +469,8 @@ class StaleTaskReaper:
                         TaskStatus.UNAVAILABLE,
                         error=task.error_message or "stale Taskが再試行上限に達しました",
                     )
+                    if task.target_ref_type == "target":
+                        target_failures.append((task.target_ref_id, task.id))
                     if task.type == TaskType.DISCOVER and task.run_id is not None:
                         run = session.get(Run, task.run_id)
                         if run is not None and run.status == RunStatus.RUNNING:
@@ -446,6 +481,28 @@ class StaleTaskReaper:
                                 RunStatus.FAILED,
                                 stats,
                             )
+                            run_failures.append((run.id, run.playlist_id, run.kind))
+        for target_id, task_id in target_failures:
+            emit_safely(
+                self._hook,
+                "target_failed",
+                {
+                    "target_id": target_id,
+                    "task_id": task_id,
+                    "reason_code": "stale_retry_exhausted",
+                },
+            )
+        for run_id, playlist_id, kind in run_failures:
+            emit_safely(
+                self._hook,
+                "run_failed",
+                {
+                    "run_id": run_id,
+                    "playlist_id": playlist_id,
+                    "kind": kind,
+                    "reason_code": "stale_task_recovered",
+                },
+            )
         if recovered:
             logger.warning("Recovered stale tasks", extra={"task_ids": recovered})
         return recovered

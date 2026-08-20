@@ -86,6 +86,7 @@ class RemoteFile:
     size: int | None
     modified_at: str | None = None
     hashes: dict[str, str] = field(default_factory=dict)
+    file_id: str | None = None
 
 
 class CapacityState(StrEnum):
@@ -150,9 +151,17 @@ class StorageAdapter(Protocol):
         self, rel: str, *, timeout_sec: float | None = None
     ) -> Iterator[RemoteFile]: ...
 
+    def inspect_file(self, rel: str) -> RemoteFile: ...
+
     def move(self, src_rel: str, dest_rel: str) -> None: ...
 
-    def delete_file(self, rel: str) -> None: ...
+    def delete_file(
+        self,
+        rel: str,
+        *,
+        expected: RemoteFile | None = None,
+        quarantine_rel: str | None = None,
+    ) -> None: ...
 
     def free_space(self) -> int | None: ...
 

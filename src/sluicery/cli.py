@@ -133,6 +133,7 @@ def _run_web() -> int:
     from sluicery.config import load_settings
     from sluicery.db import crypto
     from sluicery.db.session import create_engine_for, create_session_factory
+    from sluicery.hooks import EventLogHook, flush_pending_hooks
     from sluicery.scheduler import SchedulerService
     from sluicery.tasks.worker import StaleTaskReaper, WorkerConfig
     from sluicery.web.app import create_app
@@ -159,8 +160,9 @@ def _run_web() -> int:
             )
         with session_factory() as session:
             worker_config = WorkerConfig.from_session(session)
+        event_hook = EventLogHook(session_factory)
         reaper_stop = threading.Event()
-        reaper = StaleTaskReaper(session_factory, worker_config)
+        reaper = StaleTaskReaper(session_factory, worker_config, hook=event_hook)
         reaper_thread = threading.Thread(
             target=reaper.run,
             args=(reaper_stop,),
@@ -174,7 +176,10 @@ def _run_web() -> int:
             engine,
             session_factory,
             settings.TZ,
-            ytdlp_update_callback=lambda: update_ytdlp(settings, session_factory),
+            ytdlp_update_callback=lambda: update_ytdlp(
+                settings, session_factory, hook=event_hook
+            ),
+            hook=event_hook,
         )
         scheduler_service.start()
         print(
@@ -193,17 +198,20 @@ def _run_web() -> int:
                 settings=settings,
                 session_factory=session_factory,
                 scheduler_service=scheduler_service,
+                hook=event_hook if session_factory is not None else None,
             ),
             host="0.0.0.0",
             port=port,
             log_level="info",
         )
     finally:
-        if scheduler_service is not None:
-            scheduler_service.shutdown()
         if reaper_stop is not None and reaper_thread is not None:
             reaper_stop.set()
-            reaper_thread.join(timeout=2)
+            reaper_thread.join(timeout=5)
+        if scheduler_service is not None:
+            scheduler_service.shutdown()
+        if session_factory is not None:
+            flush_pending_hooks()
         if engine is not None:
             engine.dispose()
     return 0
@@ -239,6 +247,7 @@ def _run_worker(worker_class: str) -> int:
     from sluicery.db.models import WorkerClass
     from sluicery.db.session import create_engine_for, create_session_factory
     from sluicery.downloader.version import ytdlp_root
+    from sluicery.hooks import EventLogHook, flush_pending_hooks
     from sluicery.tasks.handlers import DUMMY_HANDLER_FACTORIES, build_pipeline_handler_factories
     from sluicery.tasks.worker import Worker, WorkerConfig
 
@@ -252,7 +261,10 @@ def _run_worker(worker_class: str) -> int:
     session_factory = create_session_factory(engine)
     with session_factory() as session:
         config = WorkerConfig.from_session(session)
-    handler_factories = build_pipeline_handler_factories(session_factory, settings)
+    event_hook = EventLogHook(session_factory)
+    handler_factories = build_pipeline_handler_factories(
+        session_factory, settings, hook=event_hook
+    )
     if config.enable_test_tasks:
         handler_factories.update(DUMMY_HANDLER_FACTORIES)
     worker = Worker(
@@ -260,11 +272,13 @@ def _run_worker(worker_class: str) -> int:
         WorkerClass(worker_class),
         config,
         handler_factories=handler_factories,
+        hook=event_hook,
     )
     print(f"[sluicery] {worker.worker_id}: Taskキューの処理を開始します", flush=True)
     try:
         worker.run()
     finally:
+        flush_pending_hooks()
         engine.dispose()
     return 0
 

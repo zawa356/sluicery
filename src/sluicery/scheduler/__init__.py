@@ -35,6 +35,7 @@ from sluicery.core.sync import (
 from sluicery.db.models import Playlist, Run, RunStatus, RunTrigger, Storage, Task, TaskStatus
 from sluicery.db.repositories.playlist import PlaylistRepository
 from sluicery.db.repositories.run import RunRepository
+from sluicery.hooks import EventLogHook, Hook, emit_safely
 from sluicery.storage import create_storage_adapter
 
 logger = logging.getLogger(__name__)
@@ -215,11 +216,13 @@ class SchedulerService:
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         ytdlp_update_callback: Callable[[], object] | None = None,
+        hook: Hook | None = None,
     ) -> None:
         self._session_factory = session_factory
         self.timezone = ZoneInfo(timezone_name)
         self._clock = clock
         self._ytdlp_update_callback = ytdlp_update_callback
+        self._hook = hook or EventLogHook(session_factory)
         self._scheduler = BackgroundScheduler(
             timezone=self.timezone,
             jobstores={"default": SQLAlchemyJobStore(engine=engine)},
@@ -266,7 +269,7 @@ class SchedulerService:
     def shutdown(self) -> None:
         global _active_service
         if self._started:
-            self._scheduler.shutdown(wait=False)
+            self._scheduler.shutdown(wait=True)
             self._started = False
         with _active_service_lock:
             if _active_service is self:
@@ -386,6 +389,7 @@ class SchedulerService:
             TaskStatus.BLOCKED,
         }
         recovered: list[int] = []
+        recovered_events: list[tuple[str, dict[str, object]]] = []
         with self._session_factory() as session:
             settings = OperationalSettings(session)
             now = self._clock().astimezone(UTC)
@@ -428,8 +432,24 @@ class SchedulerService:
                     status = RunStatus.FAILED
                 RunRepository(session).finish(run.id, status, stats, commit=False)
                 recovered.append(run.id)
+                recovered_events.append(
+                    (
+                        "run_failed" if status == RunStatus.FAILED else "run_finished",
+                        {
+                            "run_id": run.id,
+                            "playlist_id": run.playlist_id,
+                            "kind": run.kind,
+                            "status": status.value,
+                            "reason_code": "orphan_run_recovered"
+                            if status == RunStatus.FAILED
+                            else None,
+                        },
+                    )
+                )
             if recovered:
                 session.commit()
+        for event_type, payload in recovered_events:
+            emit_safely(self._hook, event_type, payload)
         if recovered:
             logger.warning("Recovered orphan running runs", extra={"run_ids": recovered})
         return recovered
@@ -462,12 +482,14 @@ class SchedulerService:
                         session,
                         playlist_id,
                         trigger=RunTrigger.SCHEDULE,
+                        hook=self._hook,
                     )
                 elif kind == "download":
                     execute_download_run(
                         session,
                         playlist_id,
                         trigger=RunTrigger.SCHEDULE,
+                        hook=self._hook,
                     )
                 else:
                     raise ValueError(f"未対応のスケジュール種別です: {kind}")
@@ -500,6 +522,7 @@ class SchedulerService:
                     max_candidates_per_source_id=(
                         operational.integrity_max_candidates_per_source_id
                     ),
+                    hook=self._hook,
                 )
             error_count = sum(
                 issue.kind in {"storage_error", "scan_error", "scan_timeout"}
@@ -632,6 +655,21 @@ class SchedulerService:
                 stats,
                 now=datetime.now(UTC),
             )
+            payload = {
+                "run_id": run.id,
+                "playlist_id": playlist_id,
+                "kind": kind,
+            }
+        emit_safely(
+            self._hook,
+            "run_started",
+            {**payload, "trigger": RunTrigger.SCHEDULE.value},
+        )
+        emit_safely(
+            self._hook,
+            "run_finished",
+            {**payload, "status": RunStatus.SKIPPED.value},
+        )
 
 
 __all__ = [

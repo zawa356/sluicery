@@ -10,6 +10,7 @@ from sluicery.config import Settings
 from sluicery.core.settings import OperationalSettings
 from sluicery.downloader.version import current_ytdlp_bin, ytdlp_root
 from sluicery.downloader.ytdlp import YtdlpRunner
+from sluicery.hooks import EventLogHook, Hook
 from sluicery.runner.ffprobe import FFprobeRunner
 from sluicery.storage import create_storage_adapter
 from sluicery.storage.rclone import RcloneRunner
@@ -23,7 +24,10 @@ from sluicery.tasks.handlers.verify import VerifyHandler
 
 
 def build_pipeline_handler_factories(
-    session_factory: sessionmaker[Session], settings: Settings
+    session_factory: sessionmaker[Session],
+    settings: Settings,
+    *,
+    hook: Hook | None = None,
 ) -> dict[str, Callable[[], TaskHandler]]:
     assert settings.STAGING_DIR is not None
     staging_dir = settings.STAGING_DIR
@@ -34,6 +38,7 @@ def build_pipeline_handler_factories(
         delete_staging = ops.sync_delete_staging_after_index
     ytdlp_bin = current_ytdlp_bin(ytdlp_root(settings.DATA_DIR))
     log_dir = settings.DATA_DIR / "logs"
+    event_hook = hook or EventLogHook(session_factory)
     return {
         "discover": lambda: DiscoverHandler(
             session_factory,
@@ -43,6 +48,7 @@ def build_pipeline_handler_factories(
                 log_dir=log_dir,
             ),
             env_allow_exec=settings.ALLOW_EXEC,
+            hook=event_hook,
         ),
         "download": lambda: DownloadHandler(
             session_factory,
@@ -73,6 +79,7 @@ def build_pipeline_handler_factories(
             session_factory,
             staging_dir=staging_dir,
             delete_staging=delete_staging,
+            hook=event_hook,
         ),
     }
 

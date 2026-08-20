@@ -463,6 +463,49 @@ class RcloneStorageAdapter:
         self._raise_result(result, "remote Storage の存在確認に失敗しました")
         return False
 
+    def inspect_file(self, rel: str) -> RemoteFile:
+        normalized = validate_relative_path(rel)
+        result = self._run(["lsjson", self._remote_path(normalized), "--stat", "--hash"])
+        if result.returncode != 0:
+            self._raise_result(result, "remote Storage のファイル情報取得に失敗しました")
+        payload = self._json(result)
+        if not isinstance(payload, dict) or payload.get("IsDir") is True:
+            raise StorageOperationError(
+                "削除対象は通常ファイルではありません", reason_code="not_a_file"
+            )
+        size = payload.get("Size")
+        hashes = payload.get("Hashes")
+        normalized_hashes = (
+            {
+                str(key).lower(): str(value).lower()
+                for key, value in hashes.items()
+                if isinstance(key, str) and isinstance(value, str)
+            }
+            if isinstance(hashes, dict)
+            else {}
+        )
+        if not any(key.replace("-", "") == "sha256" for key in normalized_hashes):
+            hash_result = self._run(
+                ["hashsum", "SHA-256", self._remote_path(normalized)]
+            )
+            digest = (
+                hash_result.stdout_lines[0].split(maxsplit=1)[0].lower()
+                if hash_result.returncode == 0 and hash_result.stdout_lines
+                else ""
+            )
+            if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                raise StorageOperationError(
+                    "remote削除対象の強いhashを取得できません",
+                    reason_code="identity_unavailable",
+                )
+            normalized_hashes["sha256"] = digest
+        return RemoteFile(
+            normalized,
+            int(size) if isinstance(size, int | float) else None,
+            payload.get("ModTime") if isinstance(payload.get("ModTime"), str) else None,
+            normalized_hashes,
+        )
+
     def list_recursive(
         self, rel: str, *, timeout_sec: float | None = None
     ) -> Iterator[RemoteFile]:
@@ -510,11 +553,86 @@ class RcloneStorageAdapter:
         if result.returncode != 0:
             self._raise_result(result, "remote Storage 内の移動に失敗しました")
 
-    def delete_file(self, rel: str) -> None:
+    def delete_file(
+        self,
+        rel: str,
+        *,
+        expected: RemoteFile | None = None,
+        quarantine_rel: str | None = None,
+    ) -> None:
         normalized = validate_relative_path(rel)
+        original = normalized
+        if expected is not None:
+            if quarantine_rel is None:
+                raise StorageOperationError(
+                    "remote条件付き削除にはquarantine pathが必要です",
+                    reason_code="quarantine_required",
+                )
+            quarantine = validate_relative_path(quarantine_rel)
+            if PurePosixPath(quarantine).parent != PurePosixPath(normalized).parent:
+                raise StorageOperationError(
+                    "retention quarantine pathが不正です",
+                    reason_code="quarantine_conflict",
+                )
+            if self.exists(quarantine):
+                raise StorageOperationError(
+                    "retention quarantine pathが既に存在します",
+                    reason_code="quarantine_conflict",
+                )
+            move_result = self._run(
+                [
+                    "moveto",
+                    self._remote_path(normalized),
+                    self._remote_path(quarantine),
+                    "--ignore-existing",
+                ]
+            )
+            if move_result.returncode != 0:
+                self._raise_result(
+                    move_result, "remote削除対象をquarantineへ移動できません"
+                )
+            if self.exists(normalized):
+                raise StorageOperationError(
+                    f"remote削除対象の確保が競合し、quarantineに保持しました: {quarantine}",
+                    reason_code="quarantine_conflict",
+                )
+            current = self.inspect_file(quarantine)
+            if current.relative_path != expected.relative_path:
+                current = RemoteFile(
+                    expected.relative_path,
+                    current.size,
+                    current.modified_at,
+                    current.hashes,
+                    current.file_id,
+                )
+            if current != expected:
+                if not self.exists(normalized):
+                    restore = self._run(
+                        [
+                            "moveto",
+                            self._remote_path(quarantine),
+                            self._remote_path(normalized),
+                            "--ignore-existing",
+                        ]
+                    )
+                    if restore.returncode == 0 and not self.exists(quarantine):
+                        raise StorageOperationError(
+                            "dry-run後に削除対象ファイルの実体が変化しました",
+                            reason_code="identity_changed",
+                        )
+                raise StorageOperationError(
+                    f"削除対象が変化し、実体をquarantineに保持しました: {quarantine}",
+                    reason_code="identity_changed_quarantined",
+                )
+            normalized = quarantine
         result = self._run(["deletefile", self._remote_path(normalized)])
         if result.returncode != 0:
             self._raise_result(result, "remote Storage のファイル削除に失敗しました")
+        if expected is not None and self.exists(original):
+            raise StorageOperationError(
+                "remote削除中に元pathが再作成されたためDB反映を中止します",
+                reason_code="source_recreated",
+            )
 
     def free_space(self) -> int | None:
         result = self._run(["about", self._remote_path(), "--json"])

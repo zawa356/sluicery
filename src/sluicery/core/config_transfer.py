@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shlex
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
+from urllib.parse import parse_qsl, urlsplit
 
 import yaml  # type: ignore[import-untyped]
 from itsdangerous import BadSignature, URLSafeSerializer
@@ -16,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from sluicery.core import settings as core_settings
+from sluicery.core.retention import RetentionPolicy, RetentionPolicyError
 from sluicery.db.models import (
     LayoutStrategy,
     MissingPolicy,
@@ -28,12 +30,63 @@ from sluicery.db.models import (
     Storage,
     StorageKind,
 )
-from sluicery.runner.base import mask_command_line
+from sluicery.storage.base import StoragePathError, validate_relative_path
 
 MAX_CONFIG_BYTES = 1024 * 1024
 IMPORT_CONFIRMATION_TTL_SEC = 1800
 CollisionMode = Literal["skip", "overwrite", "create"]
 Action = Literal["create", "overwrite", "skip"]
+_STORAGE_CONFIG_FIELDS: dict[StorageKind, frozenset[str]] = {
+    StorageKind.LOCAL: frozenset({"path"}),
+    StorageKind.REMOTE: frozenset({"protocol", "host", "share", "path", "port"}),
+    StorageKind.MOUNT: frozenset({"path"}),
+}
+_EXPORTABLE_SETTING_KEYS = frozenset(core_settings.CODE_DEFAULTS) - {
+    "ytdlp.smoketest_url"
+}
+_HOST = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\Z")
+_SENSITIVE_TEXT = re.compile(
+    r"(?i)(?:password|passwd|token|secret|api[_-]?key|authorization|cookie)\s*[:=]"
+)
+
+
+def _plain_portable_text(value: object, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str) or (not allow_empty and not value):
+        raise ValueError("portable文字列が不正です")
+    if any(ord(character) < 32 for character in value) or "://" in value:
+        raise ValueError("portable文字列にURLまたは制御文字は使用できません")
+    if _SENSITIVE_TEXT.search(value):
+        raise ValueError("portable文字列に秘密値を含められません")
+    return value
+
+
+def _validate_storage_config(
+    kind: StorageKind,
+    config: dict[str, Any] | None,
+    *,
+    allow_omitted: bool,
+) -> None:
+    if config in (None, {}) and allow_omitted:
+        return
+    if not isinstance(config, dict) or set(config) != _STORAGE_CONFIG_FIELDS[kind]:
+        raise ValueError("Storage configの項目が不正です")
+    if kind in {StorageKind.LOCAL, StorageKind.MOUNT}:
+        _plain_portable_text(config["path"])
+        return
+    if config["protocol"] != "smb":
+        raise ValueError("remote protocolはsmbだけです")
+    host = _plain_portable_text(config["host"])
+    share = _plain_portable_text(config["share"])
+    if _HOST.fullmatch(host) is None or any(separator in share for separator in "/\\"):
+        raise ValueError("remote host/shareが不正です")
+    port = config["port"]
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("remote portが不正です")
+    path = _plain_portable_text(config["path"], allow_empty=True)
+    try:
+        validate_relative_path(path, allow_empty=True)
+    except StoragePathError as exc:
+        raise ValueError("remote pathが不正です") from exc
 
 
 class ConfigTransferError(ValueError):
@@ -55,6 +108,15 @@ class StorageConfig(_StrictModel):
     enabled: bool
     config: dict[str, Any] | None = None
     requires_credentials: bool = False
+
+    @model_validator(mode="after")
+    def validate_portable_config(self) -> StorageConfig:
+        _validate_storage_config(
+            self.kind,
+            self.config,
+            allow_omitted=self.requires_credentials,
+        )
+        return self
 
 
 class ProfileConfig(_StrictModel):
@@ -82,6 +144,12 @@ class ProfileConfig(_StrictModel):
     postprocess_chain: dict[str, Any] | None = None
     requires_secret_reentry: bool = False
 
+    @model_validator(mode="after")
+    def reject_free_form_secrets(self) -> ProfileConfig:
+        if self.ytdlp_args is not None or self.postprocess_chain not in (None, {}):
+            raise ValueError("free-form設定はimportできません。画面から再入力してください")
+        return self
+
 
 class PlaylistConfig(_StrictModel):
     ref: str = Field(min_length=1, max_length=100)
@@ -100,6 +168,19 @@ class PlaylistConfig(_StrictModel):
     requires_cookie_reentry: bool = False
     requires_secret_reentry: bool = False
     requires_url_reentry: bool = False
+
+    @model_validator(mode="after")
+    def validate_portable_fields(self) -> PlaylistConfig:
+        if self.ytdlp_args is not None:
+            raise ValueError("free-form設定はimportできません。画面から再入力してください")
+        portable_url, omitted = _portable_source_url(self.url)
+        if omitted or portable_url != self.url:
+            raise ValueError("秘密を含み得るsource URLはimportできません")
+        try:
+            RetentionPolicy.from_json(self.retention_policy)
+        except RetentionPolicyError as exc:
+            raise ValueError("retention policyが不正です") from exc
+        return self
 
 
 class PlaylistProfileConfig(_StrictModel):
@@ -188,63 +269,39 @@ class ConfigImportResult:
     skipped: int
 
 
-_SENSITIVE_CONFIG_KEYS = {
-    "authorization",
-    "cookie",
-    "cookies",
-    "credential",
-    "credentials",
-    "domain",
-    "password",
-    "passwd",
-    "secret",
-    "token",
-    "user",
-    "username",
-}
-
-
-def _without_sensitive_config(value: object) -> tuple[object, bool]:
-    if isinstance(value, dict):
-        result: dict[str, object] = {}
-        omitted = False
-        for key, nested in value.items():
-            normalized = str(key).lower().replace("-", "_")
-            if normalized in _SENSITIVE_CONFIG_KEYS or any(
-                fragment in normalized
-                for fragment in ("password", "secret", "token", "cookie", "credential")
-            ):
-                omitted = True
-                continue
-            cleaned, nested_omitted = _without_sensitive_config(nested)
-            result[str(key)] = cleaned
-            omitted = omitted or nested_omitted
-        return result, omitted
-    if isinstance(value, list):
-        result_list = []
-        omitted = False
-        for nested in value:
-            cleaned, nested_omitted = _without_sensitive_config(nested)
-            result_list.append(cleaned)
-            omitted = omitted or nested_omitted
-        return result_list, omitted
-    return value, False
-
-
 def _portable_argument_text(value: str | None) -> tuple[str | None, bool]:
     if value is None:
         return None, False
+    # free-form CLI引数は将来の未知flagも含み得るため、export境界では保存しない。
+    return None, True
+
+
+def _portable_storage_config(storage: Storage) -> tuple[dict[str, object], bool]:
+    config = storage.config_json if isinstance(storage.config_json, dict) else {}
+    allowed = _STORAGE_CONFIG_FIELDS[storage.kind]
+    portable = {str(key): value for key, value in config.items() if key in allowed}
+    omitted = set(config) != set(portable)
     try:
-        tokens = shlex.split(value)
+        _validate_storage_config(storage.kind, portable, allow_omitted=False)
     except ValueError:
-        return None, True
-    if list(mask_command_line(tokens)) != tokens:
-        return None, True
-    return value, False
+        return {}, True
+    return portable, omitted
 
 
 def _portable_source_url(value: str) -> tuple[str, bool]:
-    if list(mask_command_line([value])) != [value]:
+    try:
+        parsed = urlsplit(value)
+        query_keys = {key.lower() for key, _item in parse_qsl(parsed.query)}
+    except ValueError:
+        return "https://invalid.local/reenter-source-url", True
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or not query_keys <= {"list", "v", "index"}
+    ):
         return "https://invalid.local/reenter-source-url", True
     return value, False
 
@@ -263,14 +320,14 @@ def export_config(session: Session) -> ConfigDocument:
 
     storage_docs: list[StorageConfig] = []
     for storage_row in storages:
-        cleaned, omitted = _without_sensitive_config(storage_row.config_json)
+        cleaned, omitted = _portable_storage_config(storage_row)
         storage_docs.append(
             StorageConfig(
                 ref=storage_refs[storage_row.id],
                 name=storage_row.name,
                 kind=storage_row.kind,
                 enabled=storage_row.enabled,
-                config=cleaned if isinstance(cleaned, dict) else None,
+                config=cleaned,
                 requires_credentials=(
                     storage_row.credentials_encrypted is not None
                     or storage_row.kind == StorageKind.REMOTE
@@ -281,9 +338,7 @@ def export_config(session: Session) -> ConfigDocument:
     profile_docs: list[ProfileConfig] = []
     for profile_row in profiles:
         ytdlp_args, args_omitted = _portable_argument_text(profile_row.ytdlp_args)
-        postprocess_chain, postprocess_omitted = _without_sensitive_config(
-            profile_row.postprocess_chain_json
-        )
+        postprocess_omitted = bool(profile_row.postprocess_chain_json)
         profile_docs.append(
             ProfileConfig(
                 ref=profile_refs[profile_row.id],
@@ -307,9 +362,7 @@ def export_config(session: Session) -> ConfigDocument:
                 expert_mode=profile_row.expert_mode,
                 allow_exec=profile_row.allow_exec,
                 concurrent_fragments=profile_row.concurrent_fragments,
-                postprocess_chain=(
-                    postprocess_chain if isinstance(postprocess_chain, dict) else None
-                ),
+                postprocess_chain=None,
                 requires_secret_reentry=args_omitted or postprocess_omitted,
             )
         )
@@ -354,7 +407,7 @@ def export_config(session: Session) -> ConfigDocument:
     overrides = {
         entry.key: entry.value
         for entry in core_settings.list_all(session)
-        if entry.is_override
+        if entry.is_override and entry.key in _EXPORTABLE_SETTING_KEYS
     }
     return ConfigDocument(
         storages=storage_docs,
@@ -445,6 +498,9 @@ def preview_config_import(
                     requirements.append("秘密を含むオプション")
                 if row.requires_url_reentry:
                     requirements.append("source URL")
+                policy = RetentionPolicy.from_json(row.retention_policy)
+                if policy.enabled:
+                    requirements.append("retention有効化dry-run")
                 if requirements:
                     note = " / ".join(requirements) + "要再入力"
             operations.append(ImportOperation(entity, row.name, action, note))
@@ -538,16 +594,16 @@ def apply_config_import(
                         row, exclude={"ref", "config", "requires_credentials"}
                     )
                     values["config_json"] = row.config
-                    if row.requires_credentials and (
-                        existing is None or existing.credentials_encrypted is None
-                    ):
+                    # import文書のmarkerは権限判定に使わず、資格情報は常に再入力する。
+                    values["credentials_encrypted"] = None
+                    if row.kind == StorageKind.REMOTE or row.requires_credentials:
                         values["enabled"] = False
                 elif isinstance(row, ProfileConfig):
                     excluded = {"ref", "postprocess_chain", "requires_secret_reentry"}
-                    if row.requires_secret_reentry and existing is not None:
-                        excluded.add("ytdlp_args")
                     values = _model_values(row, exclude=excluded)
                     values["postprocess_chain_json"] = row.postprocess_chain
+                    if row.requires_secret_reentry:
+                        values["ytdlp_args"] = None
                 else:
                     assert isinstance(row, PlaylistConfig)
                     excluded = {
@@ -565,15 +621,24 @@ def apply_config_import(
                         row,
                         exclude=excluded,
                     )
-                    values["retention_policy_json"] = row.retention_policy
+                    retention_policy = RetentionPolicy.from_json(row.retention_policy)
+                    values["retention_policy_json"] = (
+                        {**retention_policy.to_json(), "enabled": False}
+                        if retention_policy.enabled
+                        else retention_policy.to_json()
+                    )
                     if (
                         row.requires_cookie_reentry
-                        and (existing is None or existing.cookies_encrypted is None)
-                    ) or row.requires_secret_reentry or row.requires_url_reentry:
+                        or row.requires_secret_reentry
+                        or row.requires_url_reentry
+                        or retention_policy.enabled
+                    ):
                         values["paused"] = True
-                        values["cookie_enabled"] = False
-                    elif row.requires_cookie_reentry:
-                        values["cookie_enabled"] = True
+                    # Cookieもmarkerに関係なく別接続先へ持ち越さない。
+                    values["cookie_enabled"] = False
+                    values["cookies_encrypted"] = None
+                    if row.requires_secret_reentry:
+                        values["ytdlp_args"] = None
                 if operation.action == "overwrite":
                     assert existing is not None
                     for key, value in values.items():

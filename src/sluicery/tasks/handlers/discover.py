@@ -14,10 +14,11 @@ from sluicery.core.cookies import (
 )
 from sluicery.core.options import build_discover_args
 from sluicery.core.sync import SyncStats, apply_discovery, parse_discover_entries
-from sluicery.db.models import Playlist, RunStatus
+from sluicery.db.models import Playlist, Run, RunStatus
 from sluicery.db.repositories.run import RunRepository
 from sluicery.downloader.errors import Classification
 from sluicery.downloader.ytdlp import TimeoutPolicy, YtdlpRunner
+from sluicery.hooks import EventLogHook, Hook, emit_safely
 from sluicery.tasks.handlers.dummy import ProgressCallback
 from sluicery.tasks.queue import TaskOutcome, TaskResult
 
@@ -30,11 +31,13 @@ class DiscoverHandler:
         runner: YtdlpRunner,
         env_allow_exec: bool = False,
         cookie_runtime_dir: Path = COOKIE_RUNTIME_DIR,
+        hook: Hook | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._runner = runner
         self._env_allow_exec = env_allow_exec
         self._cookie_runtime_dir = cookie_runtime_dir
+        self._hook = hook or EventLogHook(session_factory)
 
     def cancel(self) -> None:
         self._runner.cancel()
@@ -108,6 +111,28 @@ class DiscoverHandler:
                 stats.to_dict(),
             ):
                 return TaskResult(TaskOutcome.FAILED, f"Run {run_id} が見つかりません")
+        if not dry_run and stats.new_items:
+            emit_safely(
+                self._hook,
+                "item_discovered",
+                {"playlist_id": playlist_id, "count": stats.new_items},
+            )
+        if not dry_run and stats.delisted_items:
+            emit_safely(
+                self._hook,
+                "item_delisted",
+                {"playlist_id": playlist_id, "count": stats.delisted_items},
+            )
+        emit_safely(
+            self._hook,
+            "run_finished",
+            {
+                "run_id": run_id,
+                "playlist_id": playlist_id,
+                "kind": "discover",
+                "status": RunStatus.SUCCEEDED.value,
+            },
+        )
         on_progress(
             {
                 "status": "empty" if stats.empty_result else "discovered",
@@ -130,7 +155,21 @@ class DiscoverHandler:
         if run_id is None:
             return
         with self._session_factory() as session:
-            RunRepository(session).finish(run_id, status, stats.to_dict())
+            run = session.get(Run, run_id)
+            if RunRepository(session).finish(run_id, status, stats.to_dict()):
+                emit_safely(
+                    self._hook,
+                    "run_failed" if status == RunStatus.FAILED else "run_finished",
+                    {
+                        "run_id": run_id,
+                        "playlist_id": run.playlist_id if run is not None else None,
+                        "kind": run.kind if run is not None else "discover",
+                        "status": status.value,
+                        "reason_code": "discover_failed"
+                        if status == RunStatus.FAILED
+                        else None,
+                    },
+                )
 
 
 def _run_id(payload: dict) -> int | None:

@@ -78,6 +78,7 @@ RUN pip install --no-deps -e .
 
 COPY alembic.ini ./
 COPY migrations ./migrations
+COPY config ./config
 
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

@@ -14,6 +14,7 @@ from sluicery.db.models import Playlist, Run, RunStatus, Task, TaskStatus
 from sluicery.db.repositories.playlist import PlaylistRepository
 from sluicery.db.repositories.run import RunRepository
 from sluicery.db.repositories.task import TaskRepository
+from sluicery.hooks import emit_safely, event_log_hook_for_session
 
 OpenSession = Callable[[], Session]
 _DISCOVER_TERMINAL = {
@@ -149,6 +150,16 @@ def _execute_discover(
         with open_session() as session:
             TaskRepository(session).request_cancel(task_id)
             RunRepository(session).finish(run_id, RunStatus.CANCELLED, {})
+            emit_safely(
+                event_log_hook_for_session(session),
+                "run_finished",
+                {
+                    "run_id": run_id,
+                    "playlist_id": playlist_id,
+                    "kind": "discover",
+                    "status": RunStatus.CANCELLED.value,
+                },
+            )
         raise
     with open_session() as session:
         loaded_run = session.get(Run, run_id)
@@ -160,6 +171,19 @@ def _execute_discover(
             )
             RunRepository(session).finish(loaded_run.id, status, loaded_run.stats_json or {})
             session.refresh(loaded_run)
+            emit_safely(
+                event_log_hook_for_session(session),
+                "run_failed" if status == RunStatus.FAILED else "run_finished",
+                {
+                    "run_id": loaded_run.id,
+                    "playlist_id": loaded_run.playlist_id,
+                    "kind": loaded_run.kind,
+                    "status": status.value,
+                    "reason_code": "discover_task_failed"
+                    if status == RunStatus.FAILED
+                    else None,
+                },
+            )
         session.expunge(loaded_run)
         return loaded_run
 

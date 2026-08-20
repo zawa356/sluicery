@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
@@ -30,7 +31,14 @@ from sluicery.db.models import (
     Target,
     TargetStatus,
 )
-from sluicery.storage.base import StorageAdapter
+from sluicery.hooks import EventLogHook, Hook, emit_safely
+from sluicery.storage.base import (
+    RemoteFile,
+    StorageAdapter,
+    StorageOperationError,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class RetentionPolicyError(ValueError):
@@ -102,6 +110,10 @@ class RetentionCandidate:
     filesize: int | None
     item_date: str | None
     artifact_updated_at: str
+    target_updated_at: str
+    storage_updated_at: str
+    storage_config_fingerprint: str
+    file_identity: RemoteFile | None = None
 
 
 @dataclass(frozen=True)
@@ -154,8 +166,9 @@ def build_retention_plan(
     *,
     max_delete_per_run: int,
     today: date | None = None,
+    adapter_factory: Callable[[Storage], StorageAdapter] | None = None,
 ) -> RetentionPlan:
-    """DB snapshotだけから候補を作る。Storage I/Oやファイル操作は行わない。"""
+    """候補snapshotを作る。execute用dry-runでは実ファイル識別情報も固定する。"""
     if session.get(Playlist, playlist_id) is None:
         raise LookupError("Playlistが見つかりません")
     if max_delete_per_run <= 0:
@@ -197,8 +210,43 @@ def build_retention_plan(
             and uploaded < cutoff
         )
 
-    candidates = tuple(
-        RetentionCandidate(
+    candidate_rows = [
+        (artifact, target, item)
+        for artifact, target, item in rows
+        if item.id in selected_item_ids and target.status == TargetStatus.DOWNLOADED
+    ]
+    blocked: list[str] = []
+    adapters: dict[int, StorageAdapter] = {}
+    candidates_list: list[RetentionCandidate] = []
+    for artifact, target, item in candidate_rows:
+        storage = session.get(Storage, artifact.storage_id)
+        if storage is None:
+            blocked.append(f"Artifact {artifact.id} のStorageが見つかりません")
+            continue
+        identity: RemoteFile | None = None
+        if adapter_factory is not None:
+            try:
+                adapter = adapters.get(storage.id)
+                if adapter is None:
+                    adapter = adapter_factory(storage)
+                    adapters[storage.id] = adapter
+                identity = adapter.inspect_file(artifact.relative_path)
+                if not identity.hashes and identity.file_id is None:
+                    raise StorageOperationError(
+                        "削除対象の強い識別情報を取得できません",
+                        reason_code="identity_unavailable",
+                    )
+                if artifact.filesize is not None and identity.size != artifact.filesize:
+                    raise StorageOperationError(
+                        "DB記録と実ファイルのsizeが一致しません",
+                        reason_code="size_mismatch",
+                    )
+            except (OSError, StorageOperationError, ValueError) as exc:
+                blocked.append(
+                    f"Artifact {artifact.id} の実体を安全に確認できません: {exc}"
+                )
+        candidates_list.append(
+            RetentionCandidate(
             artifact_id=artifact.id,
             target_id=target.id,
             storage_id=artifact.storage_id,
@@ -206,11 +254,13 @@ def build_retention_plan(
             filesize=artifact.filesize,
             item_date=item.upload_date,
             artifact_updated_at=artifact.updated_at.isoformat(),
+            target_updated_at=target.updated_at.isoformat(),
+            storage_updated_at=storage.updated_at.isoformat(),
+            storage_config_fingerprint=_storage_config_fingerprint(storage),
+            file_identity=identity,
         )
-        for artifact, target, item in rows
-        if item.id in selected_item_ids and target.status == TargetStatus.DOWNLOADED
-    )
-    blocked: list[str] = []
+        )
+    candidates = tuple(candidates_list)
     if len(candidates) > max_delete_per_run:
         blocked.append(
             f"削除候補{len(candidates)}件が1回の上限{max_delete_per_run}件を超えています"
@@ -218,6 +268,15 @@ def build_retention_plan(
     if total and len(candidates) * 2 > total:
         blocked.append("PlaylistのArtifactの過半数が削除候補になるため拒否しました")
     return RetentionPlan(playlist_id, policy, candidates, total, tuple(blocked))
+
+
+def _storage_config_fingerprint(storage: Storage) -> str:
+    portable = {
+        "kind": storage.kind.value,
+        "config": storage.config_json,
+    }
+    encoded = json.dumps(portable, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _plan_fingerprint(plan: RetentionPlan) -> str:
@@ -316,6 +375,78 @@ def _candidate_matches(artifact: Artifact, candidate: RetentionCandidate) -> boo
     )
 
 
+def _related_rows_match(
+    target: Target | None,
+    storage: Storage | None,
+    candidate: RetentionCandidate,
+) -> bool:
+    return (
+        target is not None
+        and target.status == TargetStatus.DOWNLOADED
+        and target.updated_at.isoformat() == candidate.target_updated_at
+        and storage is not None
+        and storage.updated_at.isoformat() == candidate.storage_updated_at
+        and _storage_config_fingerprint(storage) == candidate.storage_config_fingerprint
+    )
+
+
+def _write_audit(audit, payload: dict[str, object]) -> None:
+    audit.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    audit.flush()
+    os.fsync(audit.fileno())
+
+
+def _quarantine_path(relative_path: str) -> str:
+    path = Path(relative_path)
+    return (path.parent / f".sluicery-retention-{uuid4().hex}").as_posix()
+
+
+def assert_no_unfinished_retention_intents(data_dir: Path) -> None:
+    """二相auditの未完了intentを読み取り検出し、手動確認まで次回実行を止める。"""
+    log_dir = data_dir / "logs"
+    if not log_dir.is_dir():
+        return
+    for log_path in sorted(log_dir.glob("retention-*.log")):
+        try:
+            if log_path.stat().st_size > 1024 * 1024:
+                raise RetentionSafetyError(
+                    f"retention監査ログが上限を超えています。手動確認してください: {log_path.name}"
+                )
+            records = [
+                json.loads(line)
+                for line in log_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        except RetentionSafetyError:
+            raise
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Unreadable retention audit log", extra={"path": str(log_path)})
+            raise RetentionSafetyError(
+                f"retention監査ログを確認できません。手動確認してください: {log_path.name}"
+            ) from exc
+        completed = {
+            (row.get("artifact_id"), row.get("storage_id"), row.get("path"))
+            for row in records
+            if isinstance(row, dict) and row.get("event") == "deleted"
+        }
+        for intent in records:
+            if not isinstance(intent, dict) or intent.get("event") != "delete_intent":
+                continue
+            key = (
+                intent.get("artifact_id"),
+                intent.get("storage_id"),
+                intent.get("path"),
+            )
+            if key in completed:
+                continue
+            quarantine = intent.get("quarantine_path")
+            detail = quarantine if isinstance(quarantine, str) else log_path.name
+            raise RetentionSafetyError(
+                "未完了のretention削除意図があります。"
+                f"自動移動せず隔離物を保持しました。監査ログを手動確認してください: {detail}"
+            )
+
+
 def execute_retention(
     session_factory: sessionmaker[Session],
     plan: RetentionPlan,
@@ -325,6 +456,7 @@ def execute_retention(
     confirmation_token: str,
     confirmation_signer: RetentionConfirmationSigner,
     dryrun_ttl_sec: int,
+    hook: Hook | None = None,
 ) -> RetentionExecutionResult:
     """確認済みsnapshotを1件ずつ削除し、成功分を即時DBと監査logへ反映する。"""
     confirmation = confirmation_signer.load(
@@ -336,6 +468,10 @@ def execute_retention(
         raise RetentionSafetyError(reason)
     if not plan.candidates:
         raise RetentionSafetyError("削除候補がありません")
+    if any(candidate.file_identity is None for candidate in plan.candidates):
+        raise RetentionSafetyError(
+            "削除対象の実ファイル識別情報がありません。execute用dry-runを再実行してください"
+        )
 
     log_dir = data_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -349,7 +485,13 @@ def execute_retention(
             ) from exc
         for candidate in plan.candidates:
             artifact = session.get(Artifact, candidate.artifact_id)
-            if artifact is None or not _candidate_matches(artifact, candidate):
+            target = session.get(Target, candidate.target_id)
+            storage = session.get(Storage, candidate.storage_id)
+            if (
+                artifact is None
+                or not _candidate_matches(artifact, candidate)
+                or not _related_rows_match(target, storage, candidate)
+            ):
                 session.rollback()
                 raise RetentionSafetyError(
                     "dry-run後に削除対象が変化しました。再確認してください"
@@ -371,6 +513,17 @@ def execute_retention(
         session.add(run)
         session.commit()
         run_id = run.id
+    event_hook = hook or EventLogHook(session_factory)
+    emit_safely(
+        event_hook,
+        "run_started",
+        {
+            "run_id": run_id,
+            "playlist_id": plan.playlist_id,
+            "kind": "retention",
+            "trigger": RunTrigger.MANUAL.value,
+        },
+    )
 
     adapters: dict[int, StorageAdapter] = {}
     deleted_count = 0
@@ -380,39 +533,71 @@ def execute_retention(
             for candidate in plan.candidates:
                 storage = storages[candidate.storage_id]
                 assert storage is not None
+                with session_factory() as session:
+                    current_artifact = session.get(Artifact, candidate.artifact_id)
+                    current_target = session.get(Target, candidate.target_id)
+                    current_storage = session.get(Storage, candidate.storage_id)
+                    if (
+                        current_artifact is None
+                        or not _candidate_matches(current_artifact, candidate)
+                        or not _related_rows_match(
+                            current_target, current_storage, candidate
+                        )
+                    ):
+                        raise RetentionExecutionError(
+                            "削除直前に対象が変化しました。dry-runを再実行してください"
+                        )
                 adapter = adapters.get(candidate.storage_id)
                 if adapter is None:
                     adapter = adapter_factory(storage)
                     adapters[candidate.storage_id] = adapter
-                adapter.delete_file(candidate.relative_path)
-                deleted_at = datetime.now(UTC).isoformat()
-                audit.write(
-                    json.dumps(
-                        {
-                            "artifact_id": candidate.artifact_id,
-                            "storage_id": candidate.storage_id,
-                            "path": candidate.relative_path,
-                            "size": candidate.filesize,
-                            "deleted_at": deleted_at,
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    )
-                    + "\n"
+                quarantine_path = _quarantine_path(candidate.relative_path)
+                intent_at = datetime.now(UTC).isoformat()
+                assert candidate.file_identity is not None
+                _write_audit(
+                    audit,
+                    {
+                        "event": "delete_intent",
+                        "artifact_id": candidate.artifact_id,
+                        "storage_id": candidate.storage_id,
+                        "path": candidate.relative_path,
+                        "quarantine_path": quarantine_path,
+                        "size": candidate.filesize,
+                        "file_identity": asdict(candidate.file_identity),
+                        "storage_config_fingerprint": candidate.storage_config_fingerprint,
+                        "recorded_at": intent_at,
+                    },
                 )
-                audit.flush()
-                os.fsync(audit.fileno())
+                adapter.delete_file(
+                    candidate.relative_path,
+                    expected=candidate.file_identity,
+                    quarantine_rel=quarantine_path,
+                )
+                deleted_at = datetime.now(UTC).isoformat()
+                _write_audit(
+                    audit,
+                    {
+                        "event": "deleted",
+                        "artifact_id": candidate.artifact_id,
+                        "storage_id": candidate.storage_id,
+                        "path": candidate.relative_path,
+                        "size": candidate.filesize,
+                        "deleted_at": deleted_at,
+                    },
+                )
                 with session_factory() as session:
                     artifact = session.get(Artifact, candidate.artifact_id)
-                    if artifact is None or not _candidate_matches(artifact, candidate):
+                    target = session.get(Target, candidate.target_id)
+                    current_storage = session.get(Storage, candidate.storage_id)
+                    if (
+                        artifact is None
+                        or not _candidate_matches(artifact, candidate)
+                        or not _related_rows_match(target, current_storage, candidate)
+                    ):
                         raise RetentionExecutionError(
                             "ファイル削除後のDB反映前に対象が変化しました。監査ログを確認してください"
                         )
-                    target = session.get(Target, candidate.target_id)
-                    if target is None:
-                        raise RetentionExecutionError(
-                            "ファイル削除後にTargetが見つかりません。監査ログを確認してください"
-                        )
+                    assert target is not None
                     target.status = TargetStatus.IGNORED
                     target.last_error = None
                     session.delete(artifact)
@@ -431,6 +616,16 @@ def execute_retention(
                     "reason_code": "retention_failed",
                 }
                 session.commit()
+        emit_safely(
+            event_hook,
+            "run_failed",
+            {
+                "run_id": run_id,
+                "playlist_id": plan.playlist_id,
+                "kind": "retention",
+                "reason_code": "retention_failed",
+            },
+        )
         raise RetentionExecutionError(
             "retentionの途中で失敗しました。成功分は監査ログを確認してください"
         ) from exc
@@ -445,6 +640,16 @@ def execute_retention(
                 "deleted_bytes": deleted_bytes,
             }
             session.commit()
+    emit_safely(
+        event_hook,
+        "run_finished",
+        {
+            "run_id": run_id,
+            "playlist_id": plan.playlist_id,
+            "kind": "retention",
+            "status": RunStatus.SUCCEEDED.value,
+        },
+    )
     return RetentionExecutionResult(run_id, deleted_count, deleted_bytes, log_path)
 
 
@@ -461,5 +666,6 @@ __all__ = [
     "RetentionSafetyError",
     "build_retention_plan",
     "execute_retention",
+    "assert_no_unfinished_retention_intents",
     "save_retention_policy",
 ]

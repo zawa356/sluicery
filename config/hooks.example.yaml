@@ -1,0 +1,16 @@
+# 現バージョンで実装されている購読先は event_log だけです。
+version: 1
+subscriptions:
+  event_log:
+    enabled: true
+    events:
+      - target_downloaded
+      - run_failed
+
+# 将来の拡張例（現バージョンでは設定すると検証エラーになります）:
+#  jellyfin:
+#    enabled: false
+#    events: [artifact_published, artifact_missing]
+#  navidrome:
+#    enabled: false
+#    events: [artifact_published, artifact_missing]

@@ -18,7 +18,9 @@ from sluicery.storage.base import (
     CapacityState,
     ConnectionStage,
     MountStorageNotImplementedError,
+    RemoteFile,
     StageStatus,
+    StorageOperationError,
     StoragePathError,
     evaluate_capacity,
     validate_relative_path,
@@ -186,6 +188,23 @@ def test_local_delete_file_removes_only_exact_file(tmp_path: Path) -> None:
     assert neighbor.read_bytes() == b"neighbor"
 
 
+def test_local_delete_file_rejects_symlink_without_deleting_target(tmp_path: Path) -> None:
+    media_root = tmp_path / "media"
+    root = media_root / "library"
+    root.mkdir(parents=True)
+    target = root / "target.bin"
+    target.write_bytes(b"keep")
+    link = root / "link.bin"
+    link.symlink_to(target.name)
+    adapter = LocalStorageAdapter("library", media_root=media_root)
+
+    with pytest.raises(StorageOperationError, match="安全に確認"):
+        adapter.delete_file("link.bin")
+
+    assert link.is_symlink()
+    assert target.read_bytes() == b"keep"
+
+
 def test_remote_delete_file_uses_exact_deletefile_command() -> None:
     runner = ScriptedRunner([_result()])
     adapter = _remote_adapter(runner)
@@ -194,6 +213,153 @@ def test_remote_delete_file_uses_exact_deletefile_command() -> None:
 
     assert runner.calls[0][0][0] == "deletefile"
     assert runner.calls[0][0][1].endswith("/folder/target.bin")
+
+
+def test_remote_inspect_file_computes_strong_hash_when_backend_has_none() -> None:
+    digest = "a" * 64
+    runner = ScriptedRunner(
+        [
+            _result(
+                stdout=[
+                    json.dumps(
+                        {
+                            "Path": "target.bin",
+                            "Size": 7,
+                            "ModTime": "2026-08-20T00:00:00Z",
+                            "Hashes": {},
+                        }
+                    )
+                ]
+            ),
+            _result(stdout=[f"{digest}  target.bin"]),
+        ]
+    )
+
+    identity = _remote_adapter(runner).inspect_file("folder/target.bin")
+
+    assert identity.hashes == {"sha256": digest}
+    assert [call[0][0] for call in runner.calls] == ["lsjson", "hashsum"]
+
+
+def test_remote_inspect_file_refuses_when_strong_hash_is_unavailable() -> None:
+    runner = ScriptedRunner(
+        [
+            _result(stdout=[json.dumps({"Path": "target.bin", "Size": 7, "Hashes": {}})]),
+            _result(returncode=1),
+        ]
+    )
+
+    with pytest.raises(StorageOperationError, match="強いhash"):
+        _remote_adapter(runner).inspect_file("folder/target.bin")
+
+
+def test_remote_conditional_delete_quarantines_then_verifies() -> None:
+    digest = "a" * 64
+    runner = ScriptedRunner(
+        [
+            _result(returncode=1, stderr_tail="object not found"),
+            _result(),
+            _result(returncode=1, stderr_tail="object not found"),
+            _result(
+                stdout=[
+                    json.dumps(
+                        {
+                            "Path": ".sluicery-retention-test",
+                            "Size": 7,
+                            "ModTime": "2026-08-20T00:00:00Z",
+                            "Hashes": {"sha256": digest},
+                        }
+                    )
+                ]
+            ),
+            _result(),
+            _result(returncode=1, stderr_tail="object not found"),
+        ]
+    )
+    expected = RemoteFile(
+        "folder/target.bin",
+        7,
+        "2026-08-20T00:00:00Z",
+        {"sha256": digest},
+    )
+
+    _remote_adapter(runner).delete_file(
+        "folder/target.bin",
+        expected=expected,
+        quarantine_rel="folder/.sluicery-retention-test",
+    )
+
+    assert [call[0][0] for call in runner.calls] == [
+        "lsjson",
+        "moveto",
+        "lsjson",
+        "lsjson",
+        "deletefile",
+        "lsjson",
+    ]
+    assert runner.calls[-2][0][1].endswith("/folder/.sluicery-retention-test")
+
+
+def test_local_mismatch_never_overwrites_concurrently_created_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_root = tmp_path / "media"
+    root = media_root / "library"
+    root.mkdir(parents=True)
+    path = root / "target.bin"
+    path.write_bytes(b"original")
+    adapter = LocalStorageAdapter("library", media_root=media_root)
+    expected = adapter.inspect_file("target.bin")
+    path.unlink()
+    path.write_bytes(b"replacement")
+    original_inspect = adapter._inspect_path
+
+    def inspect_with_race(candidate: Path, rel: str) -> RemoteFile:
+        identity = original_inspect(candidate, rel)
+        path.write_bytes(b"concurrent")
+        return identity
+
+    monkeypatch.setattr(adapter, "_inspect_path", inspect_with_race)
+
+    with pytest.raises(StorageOperationError, match="quarantineに保持"):
+        adapter.delete_file(
+            "target.bin",
+            expected=expected,
+            quarantine_rel=".sluicery-retention-test",
+        )
+
+    assert path.read_bytes() == b"concurrent"
+    assert (root / ".sluicery-retention-test").read_bytes() == b"replacement"
+
+
+def test_local_delete_never_overwrites_concurrently_created_quarantine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_root = tmp_path / "media"
+    root = media_root / "library"
+    root.mkdir(parents=True)
+    path = root / "target.bin"
+    quarantine = root / ".sluicery-retention-test"
+    path.write_bytes(b"original")
+    adapter = LocalStorageAdapter("library", media_root=media_root)
+    expected = adapter.inspect_file("target.bin")
+    original_rename = local_module._rename_noreplace
+
+    def rename_with_race(src: Path, dest: Path) -> None:
+        quarantine.write_bytes(b"concurrent")
+        original_rename(src, dest)
+
+    monkeypatch.setattr(local_module, "_rename_noreplace", rename_with_race)
+
+    with pytest.raises(StorageOperationError, match="削除に失敗"):
+        adapter.delete_file(
+            "target.bin",
+            expected=expected,
+            quarantine_rel=".sluicery-retention-test",
+        )
+
+    assert path.read_bytes() == b"original"
+    assert quarantine.read_bytes() == b"concurrent"
 
 
 def test_local_publish_falls_back_to_copy_when_hardlink_is_cross_device(

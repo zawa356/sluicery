@@ -91,6 +91,13 @@ def test_failed_candidate_rolls_back_only_after_old_version_passes(
     assert switched == ["2026.02.01", "2026.01.01"]
     assert hook.events == [
         (
+            "ytdlp_rollback",
+            {
+                "version": "2026.01.01",
+                "previous_version": "2026.02.01",
+            },
+        ),
+        (
             "run_failed",
             {
                 "component": "ytdlp_update",

@@ -37,7 +37,11 @@ def engine(db_path: Path):
 
 @pytest.fixture
 def session_factory(engine):
-    return create_session_factory(engine)
+    factory = create_session_factory(engine)
+    yield factory
+    from sluicery.hooks import flush_pending_hooks
+
+    assert flush_pending_hooks()
 
 
 @pytest.fixture

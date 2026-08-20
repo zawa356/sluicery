@@ -39,6 +39,14 @@ class _Runner:
         return self.result
 
 
+class _Hook:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def emit(self, event_type: str, payload: dict) -> None:
+        self.events.append((event_type, payload))
+
+
 def _records(session_factory):
     with session_factory() as session:
         playlist = Playlist(
@@ -78,7 +86,10 @@ def test_discover_handler_runs_flat_playlist_and_records_stats(session_factory):
         )
     )
     progress = []
-    handler = DiscoverHandler(session_factory, runner=runner)  # type: ignore[arg-type]
+    hook = _Hook()
+    handler = DiscoverHandler(
+        session_factory, runner=runner, hook=hook  # type: ignore[arg-type]
+    )
 
     result = handler.run(
         {
@@ -108,6 +119,11 @@ def test_discover_handler_runs_flat_playlist_and_records_stats(session_factory):
             "empty_result": False,
         }
         assert session.scalar(select(func.count()).select_from(Item)) == 1
+    assert [event_type for event_type, _payload in hook.events] == [
+        "item_discovered",
+        "run_finished",
+    ]
+    assert url not in str(hook.events)
 
 
 def test_discover_handler_empty_result_is_success_without_delisting(session_factory):
@@ -153,7 +169,10 @@ def test_discover_handler_dry_run_does_not_create_item(session_factory):
             ],
         )
     )
-    handler = DiscoverHandler(session_factory, runner=runner)  # type: ignore[arg-type]
+    hook = _Hook()
+    handler = DiscoverHandler(
+        session_factory, runner=runner, hook=hook  # type: ignore[arg-type]
+    )
 
     result = handler.run(
         {
@@ -170,6 +189,7 @@ def test_discover_handler_dry_run_does_not_create_item(session_factory):
         run = session.get(Run, run_id)
         assert run is not None and run.stats_json is not None
         assert run.stats_json["new_items"] == 1
+    assert [event_type for event_type, _payload in hook.events] == ["run_finished"]
 
 
 def test_discover_error_records_empty_result_without_domain_changes(session_factory):
@@ -190,7 +210,10 @@ def test_discover_error_records_empty_result_without_domain_changes(session_fact
             stderr_tail="playlist unavailable",
         )
     )
-    handler = DiscoverHandler(session_factory, runner=runner)  # type: ignore[arg-type]
+    hook = _Hook()
+    handler = DiscoverHandler(
+        session_factory, runner=runner, hook=hook  # type: ignore[arg-type]
+    )
 
     result = handler.run(
         {"playlist_id": playlist_id, "_execution": {"run_id": run_id}}, lambda _: None
@@ -203,6 +226,7 @@ def test_discover_error_records_empty_result_without_domain_changes(session_fact
         assert item is not None and item.membership.value == "active"
         assert run is not None and run.status == RunStatus.FAILED
         assert run.stats_json is not None and run.stats_json["empty_result"] is True
+    assert [event_type for event_type, _payload in hook.events] == ["run_failed"]
 
 
 def test_discover_materializes_cookie_and_removes_it_after_runner(
