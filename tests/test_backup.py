@@ -293,6 +293,54 @@ def test_restore_rejects_manifest_tampering(tmp_path: Path) -> None:
         )
 
 
+def test_restore_checkpoint_failure_leaves_database_config_and_logs_unchanged(
+    tmp_path: Path, monkeypatch
+) -> None:
+    secret_key = Fernet.generate_key().decode()
+    source_db = tmp_path / "source.db"
+    _database(source_db, secret_key, "backup-state")
+    source_config = tmp_path / "source-config"
+    source_config.mkdir()
+    (source_config / "hooks.yaml").write_text("backup\n", encoding="utf-8")
+    source_logs = tmp_path / "source-logs"
+    source_logs.mkdir()
+    (source_logs / "run-1.log").write_text("backup-log\n", encoding="utf-8")
+    result = create_backup(
+        db_path=source_db,
+        config_dir=source_config,
+        log_dir=source_logs,
+        output_dir=tmp_path / "backups",
+        secret_key=secret_key,
+        include_logs=True,
+    )
+    target_db = tmp_path / "target.db"
+    _database(target_db, secret_key, "current-state")
+    target_config = tmp_path / "target-config"
+    target_config.mkdir()
+    (target_config / "current.yaml").write_text("current\n", encoding="utf-8")
+    target_logs = tmp_path / "target-logs"
+    target_logs.mkdir()
+    (target_logs / "current.log").write_text("current-log\n", encoding="utf-8")
+
+    def fail_checkpoint(_path: Path) -> None:
+        raise BackupError("synthetic checkpoint failure")
+
+    monkeypatch.setattr("sluicery.backup._checkpoint_existing_database", fail_checkpoint)
+    with pytest.raises(BackupError, match="checkpoint"):
+        restore_backup(
+            archive_path=result.archive_path,
+            db_path=target_db,
+            config_dir=target_config,
+            log_dir=target_logs,
+            secret_key=secret_key,
+        )
+
+    assert _marker(target_db) == "current-state"
+    assert (target_config / "current.yaml").read_text(encoding="utf-8") == "current\n"
+    assert not (target_config / "hooks.yaml").exists()
+    assert (target_logs / "current.log").read_text(encoding="utf-8") == "current-log\n"
+
+
 def test_makefile_requires_confirmation_backup_and_migration_check() -> None:
     makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(
         encoding="utf-8"
@@ -301,7 +349,8 @@ def test_makefile_requires_confirmation_backup_and_migration_check() -> None:
     assert 'read -p "restoreを続行しますか？ [y/N] "' in makefile
     assert "sluicery.cli db upgrade" in makefile
     assert "sluicery.cli db current" in makefile
-    assert "--allow-secret-key-mismatch" in makefile
+    assert "--allow-secret-key-mismatch" not in makefile
+    assert "ALLOW_SECRET_KEY_MISMATCH" not in makefile
     assert '-v "$(CONFIG_DIR):/restore/config"' in makefile
     assert 'docker rmi "$(TEST_IMAGE)"' in makefile
     assert "MEDIA_ROOT" not in "\n".join(

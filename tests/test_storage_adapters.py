@@ -390,6 +390,55 @@ def test_local_publish_falls_back_to_copy_when_hardlink_is_cross_device(
     assert (adapter.root / "folder/final.bin").read_bytes() == b"cross-device-content"
 
 
+def test_local_hardlink_rejects_source_replaced_after_identity_check(
+    tmp_path: Path,
+) -> None:
+    media_root = tmp_path / "media"
+    root = media_root / "library"
+    root.mkdir(parents=True)
+    source = root / "source.bin"
+    source.write_bytes(b"expected")
+    adapter = LocalStorageAdapter("library", media_root=media_root)
+    expected = adapter.inspect_file("source.bin")
+    source.unlink()
+    source.write_bytes(b"replaced")
+
+    assert not adapter.hardlink_from(
+        adapter, "source.bin", "destination.bin", expected=expected
+    )
+    assert not (root / "destination.bin").exists()
+    assert source.read_bytes() == b"replaced"
+
+
+def test_local_hardlink_never_removes_concurrently_replaced_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_root = tmp_path / "media"
+    root = media_root / "library"
+    root.mkdir(parents=True)
+    source = root / "source.bin"
+    destination = root / "destination.bin"
+    source.write_bytes(b"expected")
+    adapter = LocalStorageAdapter("library", media_root=media_root)
+    expected = adapter.inspect_file("source.bin")
+    original_link = local_module._link_open_file_noreplace
+
+    def replace_after_link(descriptor: int, dest: Path) -> None:
+        original_link(descriptor, dest)
+        dest.unlink()
+        dest.write_bytes(b"competitor")
+
+    monkeypatch.setattr(local_module, "_link_open_file_noreplace", replace_after_link)
+
+    with pytest.raises(StorageOperationError, match="差し替え"):
+        adapter.hardlink_from(
+            adapter, "source.bin", "destination.bin", expected=expected
+        )
+
+    assert destination.read_bytes() == b"competitor"
+    assert source.read_bytes() == b"expected"
+
+
 def test_local_publish_interruption_never_creates_final(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -351,6 +351,7 @@ def configure_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
     playlist_add.add_argument("--ytdlp-args")
     playlist_add.add_argument("--disable", action="store_true")
     playlist_add.add_argument("--paused", action="store_true")
+    playlist_add.add_argument("--dedup-hardlink", action="store_true")
     playlist_add.add_argument(
         "--missing-policy",
         choices=[item.value for item in MissingPolicy],
@@ -373,6 +374,12 @@ def configure_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
     )
     _add_enable_pair(playlist_edit)
     _add_bool_pair(playlist_edit, "paused", "--pause", "--resume")
+    _add_bool_pair(
+        playlist_edit,
+        "dedup_hardlink",
+        "--dedup-hardlink",
+        "--no-dedup-hardlink",
+    )
     playlist_remove = playlist_sub.add_parser("remove")
     playlist_remove.add_argument("playlist")
     remove_mode = playlist_remove.add_mutually_exclusive_group(required=True)
@@ -997,7 +1004,7 @@ def _playlist_command(args: argparse.Namespace, session: Session) -> int:
             ytdlp_args=args.ytdlp_args,
             paused=args.paused,
             missing_policy=MissingPolicy(args.missing_policy),
-            dedup_hardlink=False,
+            dedup_hardlink=args.dedup_hardlink,
         )
         print(f"Playlist を作成しました: id={playlist.id}")
         return 0
@@ -1027,6 +1034,7 @@ def _playlist_command(args: argparse.Namespace, session: Session) -> int:
                 ("enabled", playlist.enabled),
                 ("paused", playlist.paused),
                 ("missing_policy", playlist.missing_policy.value),
+                ("dedup_hardlink", playlist.dedup_hardlink),
                 ("ytdlp_args", _masked_args(playlist.ytdlp_args)),
                 (
                     "profiles",
@@ -1041,7 +1049,7 @@ def _playlist_command(args: argparse.Namespace, session: Session) -> int:
         return 0
     if command == "edit":
         updates: dict[str, Any] = {}
-        for name in ("name", "enabled", "paused"):
+        for name in ("name", "enabled", "paused", "dedup_hardlink"):
             value = getattr(args, name)
             if value is not None and value is not _MISSING:
                 updates[name] = value
@@ -1049,9 +1057,14 @@ def _playlist_command(args: argparse.Namespace, session: Session) -> int:
             updates["ytdlp_args"] = args.ytdlp_args
         if args.folder_name is not None:
             try:
-                updates["folder_name"] = sanitize_component(args.folder_name)
+                requested_folder_name = sanitize_component(args.folder_name)
             except NamingValidationError as exc:
                 raise CliValidationError(str(exc)) from exc
+            if requested_folder_name != playlist.folder_name:
+                raise CliValidationError(
+                    "既存Playlistのfolder_nameはplaylist editでは変更できません。"
+                    "Webの「フォルダも移動する」で対象件数を確認して実行してください"
+                )
         if args.url is not None:
             updates["url"] = _validate_url(args.url)
         if args.kind_hint is not None:

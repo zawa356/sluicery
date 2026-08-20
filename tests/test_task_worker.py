@@ -1,16 +1,31 @@
 from __future__ import annotations
 
+import json
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from sluicery.db.models import Run, RunStatus, RunTrigger, TaskStatus, TaskType, WorkerClass
+from sluicery.db.models import (
+    Run,
+    RunStatus,
+    RunTrigger,
+    Task,
+    TaskStatus,
+    TaskType,
+    WorkerClass,
+)
 from sluicery.db.repositories.task import TaskRepository
 from sluicery.tasks.handlers.dummy import DUMMY_HANDLER_FACTORIES
 from sluicery.tasks.queue import TaskOutcome, TaskResult
-from sluicery.tasks.worker import StaleTaskReaper, Worker, WorkerConfig, make_worker_id
+from sluicery.tasks.worker import (
+    StaleTaskReaper,
+    Worker,
+    WorkerConfig,
+    cleanup_expired_run_logs,
+    make_worker_id,
+)
 
 NOW = datetime(2026, 8, 12, 0, 0, tzinfo=UTC)
 
@@ -21,6 +36,40 @@ class _Hook:
 
     def emit(self, event_type: str, payload: dict) -> None:
         self.events.append((event_type, payload))
+
+
+class _ParallelProbeHandler:
+    def __init__(
+        self,
+        started: threading.Barrier,
+        release: threading.Event,
+        active: list[int],
+        maximum: list[int],
+        lock: threading.Lock,
+    ) -> None:
+        self._started = started
+        self._release = release
+        self._active = active
+        self._maximum = maximum
+        self._lock = lock
+
+    @property
+    def log_paths(self) -> tuple[Path, ...]:
+        return ()
+
+    def cancel(self) -> None:
+        self._release.set()
+
+    def run(self, payload: dict, on_progress) -> TaskResult:
+        del payload, on_progress
+        with self._lock:
+            self._active[0] += 1
+            self._maximum[0] = max(self._maximum[0], self._active[0])
+        self._started.wait(timeout=3)
+        self._release.wait(timeout=3)
+        with self._lock:
+            self._active[0] -= 1
+        return TaskResult(TaskOutcome.SUCCEEDED)
 
 
 def _config(**overrides) -> WorkerConfig:
@@ -56,6 +105,138 @@ def _enqueue(session_factory, task_type: TaskType, **overrides) -> int:
         }
         values.update(overrides)
         return TaskRepository(session).create(**values).id
+
+
+def test_log_retention_deletes_only_expired_finished_run_log(
+    session_factory, tmp_path: Path
+) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    with session_factory() as session:
+        old = Run(
+            trigger=RunTrigger.MANUAL,
+            kind="download",
+            status=RunStatus.SUCCEEDED,
+            finished_at=NOW - timedelta(days=31),
+        )
+        recent = Run(
+            trigger=RunTrigger.MANUAL,
+            kind="download",
+            status=RunStatus.SUCCEEDED,
+            finished_at=NOW - timedelta(days=1),
+        )
+        session.add_all([old, recent])
+        session.flush()
+        old_path = log_dir / f"run-{old.id}.log"
+        recent_path = log_dir / f"run-{recent.id}.log"
+        old_path.write_text("old\n", encoding="utf-8")
+        recent_path.write_text("recent\n", encoding="utf-8")
+        old.log_path = str(old_path)
+        recent.log_path = str(recent_path)
+        retention = Run(
+            trigger=RunTrigger.MANUAL,
+            kind="retention",
+            status=RunStatus.SUCCEEDED,
+            finished_at=NOW - timedelta(days=31),
+        )
+        unfinished = Run(
+            trigger=RunTrigger.MANUAL,
+            kind="retention",
+            status=RunStatus.FAILED,
+            finished_at=NOW - timedelta(days=31),
+        )
+        active_run = Run(
+            trigger=RunTrigger.MANUAL,
+            kind="download",
+            status=RunStatus.FAILED,
+            finished_at=NOW - timedelta(days=31),
+        )
+        session.add_all([retention, unfinished, active_run])
+        session.flush()
+        retention_path = log_dir / f"retention-{'a' * 32}.log"
+        unfinished_path = log_dir / f"retention-{'b' * 32}.log"
+        intent = {"event": "delete_intent", "artifact_id": 1, "path": "a.mkv"}
+        deleted = {"event": "deleted", "artifact_id": 1, "path": "a.mkv"}
+        retention_path.write_text(
+            json.dumps(intent) + "\n" + json.dumps(deleted) + "\n",
+            encoding="utf-8",
+        )
+        unfinished_path.write_text(json.dumps(intent) + "\n", encoding="utf-8")
+        retention.log_path = str(retention_path)
+        unfinished.log_path = str(unfinished_path)
+        active_path = log_dir / f"run-{active_run.id}.log"
+        active_path.write_text("still active\n", encoding="utf-8")
+        active_run.log_path = str(active_path)
+        session.add(
+            Task(
+                type=TaskType.DOWNLOAD,
+                target_ref_type="target",
+                target_ref_id=999,
+                worker_class=WorkerClass.NETWORK,
+                status=TaskStatus.RUNNING,
+                run_id=active_run.id,
+            )
+        )
+        session.commit()
+        old_id = old.id
+        recent_id = recent.id
+
+    assert cleanup_expired_run_logs(
+        session_factory, log_dir, retention_days=30, now=NOW
+    ) == 2
+    assert not old_path.exists()
+    assert not retention_path.exists()
+    assert unfinished_path.exists()
+    assert active_path.exists()
+    assert recent_path.exists()
+    with session_factory() as session:
+        assert session.get(Run, old_id).log_path is None
+        assert session.get(Run, recent_id).log_path == str(recent_path)
+
+
+def test_network_worker_runs_downloads_in_parallel_when_configured(
+    session_factory,
+) -> None:
+    first_id = _enqueue(session_factory, TaskType.DOWNLOAD)
+    second_id = _enqueue(session_factory, TaskType.DOWNLOAD, target_ref_id=2)
+    started = threading.Barrier(3)
+    release = threading.Event()
+    active = [0]
+    maximum = [0]
+    lock = threading.Lock()
+
+    def factory() -> _ParallelProbeHandler:
+        return _ParallelProbeHandler(started, release, active, maximum, lock)
+
+    worker = Worker(
+        session_factory,
+        WorkerClass.NETWORK,
+        _config(item_concurrency=2),
+        handler_factories={TaskType.DOWNLOAD.value: factory},
+        hook=_Hook(),
+    )
+    thread = threading.Thread(
+        target=worker.run,
+        kwargs={"install_signal_handlers": False},
+        daemon=True,
+    )
+    thread.start()
+    started.wait(timeout=3)
+    assert maximum[0] == 2
+    release.set()
+    for _index in range(100):
+        with session_factory() as session:
+            states = {
+                session.get(Task, first_id).status,
+                session.get(Task, second_id).status,
+            }
+        if states == {TaskStatus.SUCCEEDED}:
+            break
+        threading.Event().wait(0.01)
+    worker.request_shutdown()
+    thread.join(timeout=3)
+    assert not thread.is_alive()
+    assert states == {TaskStatus.SUCCEEDED}
 
 
 def test_stale_terminal_discover_finishes_its_run(session_factory) -> None:

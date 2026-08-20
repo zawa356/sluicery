@@ -120,6 +120,40 @@ def test_internal_setting_cannot_be_changed_from_web(base_env, session_factory) 
     assert response.status_code == 404
 
 
+def test_item_concurrency_two_or_more_requires_explicit_warning_confirmation(
+    base_env, session_factory
+) -> None:
+    client = _client(base_env, session_factory)
+    page = client.get("/settings")
+    assert "配信元へのアクセスが集中" in page.text
+
+    refused = client.post(
+        "/settings/update",
+        data={
+            "csrf_token": _csrf(page),
+            "key": "download.item_concurrency",
+            "value": "2",
+        },
+    )
+    assert refused.status_code == 422
+    with session_factory() as db:
+        assert core_settings.get(db, "download.item_concurrency") == 1
+
+    accepted = client.post(
+        "/settings/update",
+        data={
+            "csrf_token": _csrf(refused),
+            "key": "download.item_concurrency",
+            "value": "2",
+            "confirm_high_concurrency": "yes",
+        },
+        follow_redirects=False,
+    )
+    assert accepted.status_code == 303
+    with session_factory() as db:
+        assert core_settings.get(db, "download.item_concurrency") == 2
+
+
 def test_invalid_download_window_is_rejected_from_web(base_env, session_factory) -> None:
     client = _client(base_env, session_factory)
     page = client.get("/settings")

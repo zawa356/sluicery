@@ -234,6 +234,8 @@ def validate_override(key: str, value: Any) -> Any:
         "format.probe_min_interval_sec",
         "retention.max_delete_per_run",
         "retention.dryrun_ttl_sec",
+        "download.item_concurrency",
+        "log.retention_days",
     } and casted <= 0:
         raise ValueError("秒数・件数の設定は1以上にしてください")
     return casted

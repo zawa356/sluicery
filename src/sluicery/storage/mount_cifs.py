@@ -20,6 +20,7 @@ from sluicery.storage.base import (
     PublishResult,
     RemoteFile,
     StageStatus,
+    StorageAdapter,
     StorageOperationError,
     StoragePathError,
     validate_relative_path,
@@ -447,6 +448,22 @@ class MountStorageAdapter:
     def inspect_file(self, rel: str) -> RemoteFile:
         self._ensure_mounted()
         return self._delegate.inspect_file(rel)
+
+    def hardlink_from(
+        self,
+        source_adapter: StorageAdapter,
+        src_rel: str,
+        dest_rel: str,
+        *,
+        expected: RemoteFile,
+    ) -> bool:
+        self._ensure_mounted()
+        if not isinstance(source_adapter, MountStorageAdapter):
+            return False
+        source_adapter._ensure_mounted()
+        return self._delegate.hardlink_from(
+            source_adapter._delegate, src_rel, dest_rel, expected=expected
+        )
 
     def move(self, src_rel: str, dest_rel: str) -> None:
         self._ensure_mounted()

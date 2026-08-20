@@ -91,3 +91,24 @@ def test_claim_next_respects_worker_class(session_factory) -> None:
     task = TaskRepository(session2).claim_next(WorkerClass.NETWORK)
     assert task is None
     session2.close()
+
+
+def test_claim_next_applies_global_download_item_concurrency(session_factory) -> None:
+    first_id = _make_queued_task(session_factory, target_ref_id=1)
+    second_id = _make_queued_task(session_factory, target_ref_id=2)
+    with session_factory() as session:
+        first = TaskRepository(session).claim_next(
+            WorkerClass.NETWORK, item_concurrency=1
+        )
+        assert first is not None and first.id == first_id
+    with session_factory() as session:
+        assert (
+            TaskRepository(session).claim_next(
+                WorkerClass.NETWORK, item_concurrency=1
+            )
+            is None
+        )
+        second = TaskRepository(session).claim_next(
+            WorkerClass.NETWORK, item_concurrency=2
+        )
+        assert second is not None and second.id == second_id

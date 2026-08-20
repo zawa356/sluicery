@@ -147,7 +147,9 @@ Web UIの整合性レポートでは、missing TargetとStorage内の未追跡�
 Playlist名と保存フォルダ名は独立しています。通常のPlaylist編集で名前を変えても既存ファイルは
 移動しません。実ファイルも変更する場合だけ、詳細画面の「フォルダも移動する」で対象件数と移動先を
 previewし、確認後に明示実行します。remote / mountを含む大量移動は途中で失敗しうるため、成功分を
-1件ずつDBへ反映し、残りを再実行できる設計です。
+1件ずつDBへ反映します。物理move前の永続intentにより、move後・DB反映前の停止も安全に再実行できます。
+Playlistの重複hardlinkは既定無効で、明示有効時だけ同一source ID・Profile・filesystemの既存Artifactを再利用し、
+成立しなければ通常copyへ戻ります。
 
 Profile編集画面のフォーマット検査では、任意のURLに対する利用可能format、現在のselectorで
 選ばれるformat、推定サイズを確認できます。検査は外部アクセスを伴い、既定では全Profile共通で

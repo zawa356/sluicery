@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import re
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+import sluicery.core.folder_move as folder_move
 from sluicery.config import Settings
 from sluicery.core.folder_move import (
     FolderMoveConfirmationSigner,
@@ -26,6 +28,7 @@ from sluicery.db.models import (
     ProfileKind,
     Run,
     RunStatus,
+    RunTrigger,
     Storage,
     StorageKind,
     Target,
@@ -156,6 +159,7 @@ def test_folder_move_preview_is_read_only_and_execute_moves_each_artifact(
         confirmation_token=token,
         confirmation_signer=signer,
         confirmation_ttl_sec=300,
+        data_dir=env_data_dirs["DATA_DIR"],
         hook=hook,
     )
 
@@ -200,6 +204,7 @@ def test_folder_move_failure_commits_progress_and_can_be_retried(
             confirmation_token=signer.issue(first_plan),
             confirmation_signer=signer,
             confirmation_ttl_sec=300,
+            data_dir=env_data_dirs["DATA_DIR"],
             hook=_RecordingHook(),
         )
 
@@ -222,11 +227,136 @@ def test_folder_move_failure_commits_progress_and_can_be_retried(
         confirmation_token=signer.issue(retry_plan),
         confirmation_signer=signer,
         confirmation_ttl_sec=300,
+        data_dir=env_data_dirs["DATA_DIR"],
         hook=_RecordingHook(),
     )
     assert result.moved_count == 1
     with session_factory() as db:
         assert db.get(Playlist, playlist_id).folder_name == "new-folder"
+
+
+def test_folder_move_recovers_crash_after_physical_move_before_database_commit(
+    session_factory, env_data_dirs, secret_key
+) -> None:
+    playlist_id, adapter = _graph(session_factory, env_data_dirs["MEDIA_ROOT"])
+    first_plan = _plan(session_factory, playlist_id, adapter)
+    first = first_plan.candidates[0]
+    with session_factory() as db:
+        interrupted = Run(
+            trigger=RunTrigger.MANUAL,
+            kind="folder_move",
+            playlist_id=playlist_id,
+            status=RunStatus.RUNNING,
+            stats_json={
+                "moved_count": 0,
+                "total_count": first_plan.move_count,
+                "unaffected_count": 0,
+                "old_folder_name": first_plan.old_folder_name,
+                "new_folder_name": first_plan.new_folder_name,
+                "current_intent": asdict(first),
+            },
+        )
+        db.add(interrupted)
+        db.commit()
+        interrupted_id = interrupted.id
+    adapter.move(first.source_path, first.destination_path)
+
+    recovered_plan = _plan(session_factory, playlist_id, adapter)
+    assert not recovered_plan.blocked_reasons
+    assert recovered_plan.recovery_run_ids == (interrupted_id,)
+    assert recovered_plan.candidates[0].already_moved is True
+    signer = FolderMoveConfirmationSigner(secret_key)
+    result = execute_folder_move(
+        session_factory,
+        recovered_plan,
+        adapter_factory=lambda _storage, _settings: adapter,
+        confirmation_token=signer.issue(recovered_plan),
+        confirmation_signer=signer,
+        confirmation_ttl_sec=300,
+        data_dir=env_data_dirs["DATA_DIR"],
+        hook=_RecordingHook(),
+    )
+
+    assert result.moved_count == 2
+    with session_factory() as db:
+        assert db.get(Run, interrupted_id).status == RunStatus.FAILED
+        assert db.get(Playlist, playlist_id).folder_name == "new-folder"
+        assert list(db.scalars(select(Artifact.relative_path).order_by(Artifact.id))) == [
+            "new-folder/first.mkv",
+            "new-folder/second.mkv",
+        ]
+
+
+def test_folder_move_post_commit_journal_failure_never_rolls_back_success(
+    session_factory, env_data_dirs, secret_key, monkeypatch
+) -> None:
+    playlist_id, adapter = _graph(session_factory, env_data_dirs["MEDIA_ROOT"])
+    plan = _plan(session_factory, playlist_id, adapter)
+    signer = FolderMoveConfirmationSigner(secret_key)
+    original = folder_move._write_move_journal
+
+    def fail_after_commit(log_path, event, values) -> None:
+        if event in {"database_move_committed", "run_finished"}:
+            raise OSError("synthetic full disk")
+        original(log_path, event, values)
+
+    monkeypatch.setattr(folder_move, "_write_move_journal", fail_after_commit)
+    result = execute_folder_move(
+        session_factory,
+        plan,
+        adapter_factory=lambda _storage, _settings: adapter,
+        confirmation_token=signer.issue(plan),
+        confirmation_signer=signer,
+        confirmation_ttl_sec=300,
+        data_dir=env_data_dirs["DATA_DIR"],
+        hook=_RecordingHook(),
+    )
+
+    assert result.moved_count == 2
+    assert adapter.exists("new-folder/first.mkv")
+    assert not adapter.exists("old-folder/first.mkv")
+    with session_factory() as db:
+        assert db.get(Playlist, playlist_id).folder_name == "new-folder"
+        assert db.get(Run, result.run_id).status == RunStatus.SUCCEEDED
+
+
+def test_folder_move_journal_initialization_failure_finishes_run(
+    session_factory, env_data_dirs, secret_key, monkeypatch
+) -> None:
+    playlist_id, adapter = _graph(session_factory, env_data_dirs["MEDIA_ROOT"])
+    plan = _plan(session_factory, playlist_id, adapter)
+    signer = FolderMoveConfirmationSigner(secret_key)
+    hook = _RecordingHook()
+    original = folder_move._write_move_journal
+
+    def fail_journal(*args, **kwargs) -> None:
+        original(*args, **kwargs)
+        raise OSError("synthetic full disk")
+
+    monkeypatch.setattr(folder_move, "_write_move_journal", fail_journal)
+    with pytest.raises(FolderMoveExecutionError, match="初期化"):
+        execute_folder_move(
+            session_factory,
+            plan,
+            adapter_factory=lambda _storage, _settings: adapter,
+            confirmation_token=signer.issue(plan),
+            confirmation_signer=signer,
+            confirmation_ttl_sec=300,
+            data_dir=env_data_dirs["DATA_DIR"],
+            hook=hook,
+        )
+
+    with session_factory() as db:
+        run = db.scalar(
+            select(Run).where(Run.playlist_id == playlist_id).order_by(Run.id.desc())
+        )
+        assert run is not None
+        assert run.status == RunStatus.FAILED
+        assert run.finished_at is not None
+        assert run.log_path is not None
+        assert Path(run.log_path).is_file()
+    assert [event for event, _payload in hook.events] == ["run_started", "run_failed"]
+    assert adapter.exists("old-folder/first.mkv")
 
 
 def _hidden(response, name: str) -> str:

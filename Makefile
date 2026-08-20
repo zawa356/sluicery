@@ -4,7 +4,6 @@ COMPOSE := docker compose
 BACKUP_DIR ?= $(CURDIR)/backups
 CONFIG_DIR ?= $(CURDIR)/config
 INCLUDE_LOGS ?= 0
-ALLOW_SECRET_KEY_MISMATCH ?= 0
 TEST_IMAGE ?= sluicery:local-test
 
 # Dockerfile の runtime ステージと同じ digest を参照する（要件定義 §4.2、Phase 3.5 指示書 §0.3）。
@@ -56,8 +55,7 @@ restore:
 		-v "$(abspath $(FILE)):/restore/backup.tar.gz:ro" \
 		-v "$(CONFIG_DIR):/restore/config" \
 		app python3 -m sluicery.backup restore \
-			--archive /restore/backup.tar.gz --config /restore/config \
-			$(if $(filter 1 true yes,$(ALLOW_SECRET_KEY_MISMATCH)),--allow-secret-key-mismatch,); \
+			--archive /restore/backup.tar.gz --config /restore/config; \
 	$(COMPOSE) run --rm --no-deps app python3 -m sluicery.cli db upgrade; \
 	$(COMPOSE) run --rm --no-deps app python3 -m sluicery.cli db current; \
 	$(COMPOSE) up -d; \

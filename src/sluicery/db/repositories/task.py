@@ -4,8 +4,9 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, case, exists, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, true, update
 from sqlalchemy.orm import aliased
+from sqlalchemy.sql.elements import ColumnElement
 
 from sluicery.db.models import Task, TaskStatus, TaskType, WorkerClass
 from sluicery.db.repositories.base import BaseRepository
@@ -73,8 +74,11 @@ class TaskRepository(BaseRepository[Task]):
         *,
         worker_id: str = "unidentified-worker",
         now: datetime | None = None,
+        item_concurrency: int | None = None,
     ) -> Task | None:
         """実行可能な Task を単一の UPDATE ... RETURNING でclaimする。"""
+        if item_concurrency is not None and item_concurrency < 1:
+            raise ValueError("item_concurrencyは1以上にしてください")
         claimed_at = now or datetime.now(UTC)
         dependency = aliased(Task)
         dependency_succeeded = or_(
@@ -93,6 +97,21 @@ class TaskRepository(BaseRepository[Task]):
                 Task.blocked_until <= claimed_at,
             ),
         )
+        item_slot_available: ColumnElement[bool] = true()
+        if worker_class == WorkerClass.NETWORK and item_concurrency is not None:
+            running_download = aliased(Task)
+            running_download_count = (
+                select(func.count(running_download.id))
+                .where(
+                    running_download.type == TaskType.DOWNLOAD,
+                    running_download.status == TaskStatus.RUNNING,
+                )
+                .scalar_subquery()
+            )
+            item_slot_available = or_(
+                Task.type != TaskType.DOWNLOAD,
+                running_download_count < item_concurrency,
+            )
         candidate = (
             select(Task.id)
             .where(
@@ -101,6 +120,7 @@ class TaskRepository(BaseRepository[Task]):
                 Task.cancel_requested.is_(False),
                 time_eligible,
                 dependency_succeeded,
+                item_slot_available,
             )
             .order_by(Task.priority.desc(), Task.scheduled_at.asc(), Task.id.asc())
             .limit(1)

@@ -74,6 +74,10 @@ docker compose exec app python3 -m sluicery.cli ytdlp status
 Staging しきい値・ログ保持日数・discover/download/integrity/yt-dlp 更新の cron 式・ダウンロードの
 並列度やレート制限などの運用パラメータは `.env` ではなく DB の `setting` テーブル側で管理します
 （`sluicery settings list` / `set` / `unset`。`docs/基本設計.md` D-005）。
+`download.item_concurrency`は全network workerのDOWNLOAD claim上限で、既定1です。2以上は配信元への
+アクセス集中警告をWebで確認して保存し、worker再起動後に反映します。`log.retention_days`（既定30）は
+終了済みRunに紐づく既知logへ適用されます。retention監査logは全`delete_intent`が
+`deleted`で閉じたものだけ期限後に削除し、未完了intentを含む監査log、未知file、symlinkは削除しません。
 
 ## 3. Staging 容量の見積もり方
 
@@ -125,6 +129,11 @@ Playlist名の変更だけでは`folder_name`や保存済みファイルを変�
 Playlist詳細の専用画面で新しいフォルダ名を入力し、対象ファイル数と警告をpreviewしてから明示実行する。
 実行中は同じPlaylistの同期と直列化し、移動先の既存fileを上書きしない。1件ごとにArtifact pathとRun進捗を
 commitするため、remote / SMB接続が途中で失敗しても成功分を維持したまま残りを再実行できる。
+通常編集、CLI edit、config overwriteは既存`folder_name`を直接変更しない。物理move前の永続intentにより、
+move後・DB反映前のprocess停止やremote応答不明も、移動先の強いidentityが一致する場合だけ回収する。
+
+Playlistの`dedup_hardlink`は既定無効。明示有効時だけ、同一source ID・Profileの既存Artifactが
+同一filesystemにあればhardlinkを作る。異なるfilesystem、remote、非対応時は通常copyへfallbackし、Run logへ記録する。
 
 ## 5. バックアップとリストア
 
@@ -156,11 +165,12 @@ restoreは次の順で行う。
 3. app / network worker / compute workerを停止する
 4. path traversal、link / device、member数・展開size、鍵で認証したmanifest HMAC、全fileのsize / SHA-256、SQLite
    `quick_check`、SECRET_KEY指紋を、書込み前に検証する
-5. configをbackupと同じ内容へ復元し、DBをatomic replaceする。archiveにlogがあれば上書き・追加する
-6. Alembicをheadへ適用し、current=headを確認して3serviceを起動する
+5. 現DBのWAL checkpointを確認する。失敗時はconfig / log / DBを変更せず停止する
+6. configをbackupと同じ内容へ復元し、DBをatomic replaceする。archiveにlogがあれば上書き・追加する
+7. Alembicをheadへ適用し、current=headを確認して3serviceを起動する
 
-指紋不一致は既定で中止する。災害復旧等で資格情報が復号不能になることを承知のうえ続行する場合だけ、
-`make restore ... ALLOW_SECRET_KEY_MISMATCH=1`を明示する。通常運用では使用しない。restore失敗時も
+指紋不一致は常に中止する。archive作成時と同じ`SECRET_KEY`がなければmanifest HMACを認証できないため、
+認証を省略するoverrideはない。restore失敗時も
 Makefileのtrapがservice再起動を試みるため、終了出力と`docker compose ps`を必ず確認する。
 
 2026-08-21に、別Compose project・別volume・別port・別configを使う隔離環境で、backup時点へのDB/config

@@ -20,6 +20,7 @@ from sluicery.storage.base import (
     PublishResult,
     RemoteFile,
     StageStatus,
+    StorageAdapter,
     StorageOperationError,
     StoragePathError,
     validate_relative_path,
@@ -28,6 +29,7 @@ from sluicery.storage.errors import StorageClassification
 
 MEDIA_MOUNT_ROOT = Path("/mnt/media")
 _AT_FDCWD = -100
+_AT_SYMLINK_FOLLOW = 0x400
 _RENAME_NOREPLACE = 1
 _HARDLINK_FALLBACK_ERRNOS = {
     errno.EACCES,
@@ -49,6 +51,16 @@ def _classification_for_os_error(exc: OSError) -> StorageClassification:
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_descriptor(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    duplicated = os.dup(descriptor)
+    with os.fdopen(duplicated, "rb") as source:
+        source.seek(0)
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
@@ -89,6 +101,34 @@ def _rename_noreplace(src: Path, dest: Path) -> None:
             _AT_FDCWD,
             os.fsencode(dest),
             _RENAME_NOREPLACE,
+        )
+        == 0
+    ):
+        return
+    error_number = ctypes.get_errno()
+    raise OSError(error_number, os.strerror(error_number), str(dest))
+
+
+def _link_open_file_noreplace(descriptor: int, dest: Path) -> None:
+    """開いたfileそのものをlinkし、検査後のsource path差替えを受けない。"""
+    libc = ctypes.CDLL(None, use_errno=True)
+    linkat = libc.linkat
+    linkat.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+    ]
+    linkat.restype = ctypes.c_int
+    source = f"/proc/self/fd/{descriptor}"
+    if (
+        linkat(
+            _AT_FDCWD,
+            os.fsencode(source),
+            _AT_FDCWD,
+            os.fsencode(dest),
+            _AT_SYMLINK_FOLLOW,
         )
         == 0
     ):
@@ -396,6 +436,68 @@ class LocalStorageAdapter:
                 classification=_classification_for_os_error(exc),
                 reason_code="move_failed",
             ) from exc
+
+    def hardlink_from(
+        self,
+        source_adapter: StorageAdapter,
+        src_rel: str,
+        dest_rel: str,
+        *,
+        expected: RemoteFile,
+    ) -> bool:
+        """同一filesystem内だけno-replace hardlinkを作り、非対応ならFalseを返す。"""
+        if not isinstance(source_adapter, LocalStorageAdapter):
+            return False
+        source = source_adapter._no_follow_path(src_rel)
+        destination_candidate = self._path(dest_rel)
+        destination_candidate.parent.mkdir(parents=True, exist_ok=True)
+        destination = self._no_follow_path(dest_rel)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            source_stat = os.fstat(descriptor)
+            if not stat.S_ISREG(source_stat.st_mode):
+                return False
+            source_file_id = f"{source_stat.st_dev}:{source_stat.st_ino}"
+            if (
+                expected.file_id is None
+                or expected.file_id != source_file_id
+                or expected.size != source_stat.st_size
+                or "sha256" not in expected.hashes
+                or expected.hashes["sha256"] != _sha256_descriptor(descriptor)
+            ):
+                return False
+            _link_open_file_noreplace(descriptor, destination)
+            destination_stat = os.lstat(destination)
+            destination_file_id = f"{destination_stat.st_dev}:{destination_stat.st_ino}"
+            if destination_file_id != expected.file_id:
+                raise StorageOperationError(
+                    "hardlink作成直後に移動先が差し替えられました。対象を確認してください",
+                    reason_code="hardlink_destination_changed",
+                )
+            return True
+        except FileExistsError as exc:
+            raise StorageOperationError(
+                "hardlink移動先が既に存在します", reason_code="destination_exists"
+            ) from exc
+        except OSError as exc:
+            unsupported = {
+                errno.EXDEV,
+                errno.EPERM,
+                errno.ENOENT,
+                getattr(errno, "EOPNOTSUPP", errno.EPERM),
+                getattr(errno, "ENOTSUP", errno.EPERM),
+            }
+            if exc.errno in unsupported:
+                return False
+            raise StorageOperationError(
+                "local Storageでhardlinkを作成できません",
+                classification=_classification_for_os_error(exc),
+                reason_code="hardlink_failed",
+            ) from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     def _no_follow_path(self, rel: str) -> Path:
         normalized = validate_relative_path(rel)

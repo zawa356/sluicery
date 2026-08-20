@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from sluicery.db.models import (
+    Artifact,
+    ArtifactRole,
     Item,
     LayoutStrategy,
     Playlist,
@@ -23,6 +25,7 @@ from sluicery.db.models import (
 )
 from sluicery.storage.base import PublishResult, RemoteFile
 from sluicery.storage.errors import StorageClassification
+from sluicery.storage.local import LocalStorageAdapter
 from sluicery.tasks.handlers.publish import PublishHandler
 from sluicery.tasks.queue import TaskOutcome
 
@@ -208,3 +211,120 @@ def test_publish_recovery_moves_blocked_target_back_to_processing(
     assert result.outcome == TaskOutcome.SUCCEEDED
     with session_factory() as session:
         assert session.get(Target, target_id).status == TargetStatus.PROCESSING
+
+
+@pytest.mark.parametrize(
+    ("existing_bytes", "expects_hardlink"),
+    [(b"same-media", True), (b"other-data", False)],
+)
+def test_publish_dedup_uses_strong_hash_before_local_hardlink(
+    session_factory, tmp_path: Path, existing_bytes: bytes, expects_hardlink: bool
+) -> None:
+    media_root = tmp_path / "media"
+    existing_path = media_root / "out" / "first" / "media.mkv"
+    existing_path.parent.mkdir(parents=True)
+    existing_path.write_bytes(existing_bytes)
+    staging = tmp_path / "staging"
+    staged_path = staging / "work" / "second" / "media.mkv"
+    staged_path.parent.mkdir(parents=True)
+    staged_path.write_bytes(b"same-media")
+    with session_factory() as session:
+        storage = Storage(name="s", kind=StorageKind.LOCAL, config_json={"path": "out"})
+        profile = Profile(name="p", kind=ProfileKind.VIDEO, layout_strategy=LayoutStrategy.FLAT)
+        first_playlist = Playlist(
+            name="first",
+            folder_name="first",
+            url="https://example.com/first",
+            kind_hint=PlaylistKindHint.VIDEO,
+        )
+        second_playlist = Playlist(
+            name="second",
+            folder_name="second",
+            url="https://example.com/second",
+            kind_hint=PlaylistKindHint.VIDEO,
+            dedup_hardlink=True,
+        )
+        session.add_all([storage, profile, first_playlist, second_playlist])
+        session.flush()
+        first_assignment = PlaylistProfile(
+            playlist_id=first_playlist.id, profile_id=profile.id, storage_id=storage.id
+        )
+        second_assignment = PlaylistProfile(
+            playlist_id=second_playlist.id, profile_id=profile.id, storage_id=storage.id
+        )
+        session.add_all([first_assignment, second_assignment])
+        session.flush()
+        first_item = Item(
+            playlist_id=first_playlist.id,
+            source_id="shared-source",
+            source_url="https://example.com/item",
+        )
+        second_item = Item(
+            playlist_id=second_playlist.id,
+            source_id="shared-source",
+            source_url="https://example.com/item",
+        )
+        session.add_all([first_item, second_item])
+        session.flush()
+        first_target = Target(
+            item_id=first_item.id,
+            playlist_profile_id=first_assignment.id,
+            status=TargetStatus.DOWNLOADED,
+        )
+        second_target = Target(
+            item_id=second_item.id,
+            playlist_profile_id=second_assignment.id,
+            status=TargetStatus.PROCESSING,
+        )
+        session.add_all([first_target, second_target])
+        session.flush()
+        session.add(
+            Artifact(
+                target_id=first_target.id,
+                role=ArtifactRole.SOURCE,
+                storage_id=storage.id,
+                relative_path="first/media.mkv",
+                filesize=existing_path.stat().st_size,
+            )
+        )
+        postprocess = Task(
+            type=TaskType.POSTPROCESS,
+            target_ref_type="target",
+            target_ref_id=second_target.id,
+            payload_json={"file_path": str(staged_path)},
+            worker_class=WorkerClass.COMPUTE,
+            status=TaskStatus.SUCCEEDED,
+        )
+        session.add(postprocess)
+        session.flush()
+        publish = Task(
+            type=TaskType.PUBLISH,
+            target_ref_type="target",
+            target_ref_id=second_target.id,
+            payload_json={"target_id": second_target.id, "work_id": "work"},
+            worker_class=WorkerClass.NETWORK,
+            status=TaskStatus.RUNNING,
+            depends_on_task_id=postprocess.id,
+        )
+        session.add(publish)
+        session.commit()
+        target_id = second_target.id
+        task_id = publish.id
+
+    adapter = LocalStorageAdapter("out", media_root=media_root)
+    handler = PublishHandler(
+        session_factory,
+        staging_dir=staging,
+        adapter_factory=lambda _storage, _settings: adapter,
+    )
+    result = handler.run(
+        {"target_id": target_id, "work_id": "work", "_execution": {"task_id": task_id}},
+        lambda _: None,
+    )
+
+    linked_path = media_root / "out" / "second" / "media.mkv"
+    assert result.outcome == TaskOutcome.SUCCEEDED
+    assert result.payload_update.get("publish_hardlinked", False) is expects_hardlink
+    assert (existing_path.stat().st_ino == linked_path.stat().st_ino) is expects_hardlink
+    assert linked_path.read_bytes() == b"same-media"
+    assert handler.log_paths

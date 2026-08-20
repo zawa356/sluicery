@@ -110,7 +110,6 @@ def test_minimal_crud_attach_preview_and_safe_remove(
         assert profile.embed_metadata is None
     finally:
         session.close()
-
     assert cli.main(["playlist", "detach-profile", "一覧", "video"]) == 0
     assert cli.main(["profile", "remove", "video"]) == 0
     assert cli.main(["storage", "remove", "media"]) == 0
@@ -124,6 +123,44 @@ def test_minimal_crud_attach_preview_and_safe_remove(
         assert playlist.paused is True
     finally:
         session.close()
+
+
+def test_cli_playlist_edit_rejects_existing_folder_name_change(
+    monkeypatch, session_factory, base_env, capsys
+) -> None:
+    _patch_sessions(monkeypatch, session_factory)
+    assert (
+        cli.main(
+            [
+                "playlist",
+                "add",
+                "--name",
+                "move-only",
+                "--folder-name",
+                "old-folder",
+                "--url",
+                "https://example.com/list",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert (
+        cli.main(
+            [
+                "playlist",
+                "edit",
+                "move-only",
+                "--folder-name",
+                "new-folder",
+            ]
+        )
+        == 1
+    )
+    assert "フォルダも移動する" in capsys.readouterr().err
+    with session_factory() as session:
+        playlist = session.scalar(select(Playlist).where(Playlist.name == "move-only"))
+        assert playlist is not None and playlist.folder_name == "old-folder"
 
 
 def test_incomplete_remote_storage_and_invalid_custom_profile_are_rejected(

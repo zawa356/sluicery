@@ -16,6 +16,7 @@
 <label>download cron<input name="download_cron" placeholder="グローバル既定を使用" value="{{ values.get('download_cron', playlist.download_cron if playlist and playlist.download_cron else '') }}"></label></div>
 <label class="checkbox-label"><input type="checkbox" name="enabled" value="yes"{% if values.get('enabled', playlist.enabled if playlist else true) in [true, 'yes', 'on'] %} checked{% endif %}>有効</label>
 <label class="checkbox-label"><input type="checkbox" name="paused" value="yes"{% if values.get('paused', playlist.paused if playlist else false) in [true, 'yes', 'on'] %} checked{% endif %}>一時停止</label>
+<label class="checkbox-label"><input type="checkbox" name="dedup_hardlink" value="yes"{% if values.get('dedup_hardlink', playlist.dedup_hardlink if playlist else false) in [true, 'yes', 'on'] %} checked{% endif %}>同一source ID・Profileの既存Artifactを同一Storage内でhardlink化（不可能な場合は通常copy）</label>
 <button type="submit">保存</button>
 </form>
 {% endblock %}
