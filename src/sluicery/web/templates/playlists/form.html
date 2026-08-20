@@ -6,7 +6,8 @@
 <form method="post" class="stacked-form panel">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 <label>名前<input name="name" required value="{{ values.get('name', playlist.name if playlist else '') }}"></label>
-<label>フォルダ名<input name="folder_name" required value="{{ values.get('folder_name', playlist.folder_name if playlist else '') }}"></label>
+<label>フォルダ名<input name="folder_name" required value="{{ values.get('folder_name', playlist.folder_name if playlist else '') }}"{% if playlist %} readonly{% endif %}></label>
+{% if playlist %}<p class="muted">既存フォルダはこの画面では移動しません。変更は「フォルダも移動する」から対象件数を確認して実行してください。</p>{% endif %}
 <label>URL<input type="url" name="url" required value="{{ values.get('url', playlist.url if playlist else '') }}"></label>
 <label>種別<select name="kind_hint">{% for kind in kinds %}<option value="{{ kind }}"{% if values.get('kind_hint', playlist.kind_hint.value if playlist else 'video') == kind %} selected{% endif %}>{{ kind }}</option>{% endfor %}</select></label>
 <label>missing時の動作<select name="missing_policy">{% for policy in missing_policies %}<option value="{{ policy }}"{% if values.get('missing_policy', playlist.missing_policy.value if playlist else 'leave') == policy %} selected{% endif %}>{{ {'leave': '放置（既定）', 'redownload': '再取得', 'ignore': '無視'}[policy] }}</option>{% endfor %}</select></label>

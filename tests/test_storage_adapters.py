@@ -634,6 +634,8 @@ def test_remote_exists_list_move_and_free_space() -> None:
             ),
             not_found,
             _result(),
+            not_found,
+            _result(),
             _result(stdout=[json.dumps({"free": 12345})]),
         ]
     )
@@ -643,6 +645,7 @@ def test_remote_exists_list_move_and_free_space() -> None:
     assert files[0].relative_path == "folder/file.bin"
     assert files[0].size == 7
     adapter.move("source.bin", "destination.bin")
+    assert runner.calls[3][0][-1] == "--ignore-existing"
     assert adapter.free_space() == 12345
 
 

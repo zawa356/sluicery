@@ -47,6 +47,15 @@ from sluicery.core.cookies import (
     save_playlist_cookie,
     set_playlist_cookie_enabled,
 )
+from sluicery.core.folder_move import (
+    FolderMoveConfirmationError,
+    FolderMoveConfirmationSigner,
+    FolderMoveExecutionError,
+    FolderMovePlan,
+    FolderMovePlanError,
+    build_folder_move_plan,
+    execute_folder_move,
+)
 from sluicery.core.format_probe import (
     FormatProbeLimiter,
     FormatProbeRateLimited,
@@ -297,6 +306,8 @@ def create_app(
     app.state.format_probe_limiter = format_probe_limiter
     retention_signer = RetentionConfirmationSigner(settings.SECRET_KEY)
     app.state.retention_signer = retention_signer
+    folder_move_signer = FolderMoveConfirmationSigner(settings.SECRET_KEY)
+    app.state.folder_move_signer = folder_move_signer
     config_import_signer = ConfigImportSigner(settings.SECRET_KEY)
     app.state.config_import_signer = config_import_signer
     event_hook = hook or EventLogHook(session_factory)
@@ -631,10 +642,158 @@ def create_app(
                     error=str(exc),
                     status_code=422,
                 )
+            # 既存folder_nameの変更は、件数確認と実体移動を伴う専用画面だけで行う。
+            values["folder_name"] = playlist.folder_name
             PlaylistRepository(db).update(playlist, **values)
         if scheduler_service is not None:
             scheduler_service.reconcile()
         auth.add_flash(request.state.auth, "success", "Playlistを更新しました")
+        return RedirectResponse(f"/playlists/{playlist_id}", status_code=303)
+
+    def folder_move_page_response(
+        request: Request,
+        playlist_id: int,
+        *,
+        plan: FolderMovePlan | None = None,
+        confirmation_token: str | None = None,
+        new_folder_name: str = "",
+        error: str | None = None,
+        status_code: int = 200,
+    ) -> Response:
+        with session_factory() as db:
+            playlist = db.get(Playlist, playlist_id)
+            if playlist is None:
+                raise HTTPException(status_code=404)
+            ttl_sec = OperationalSettings(db).retention_dryrun_ttl_sec
+        return templates.TemplateResponse(
+            request,
+            "playlists/move_folder.html",
+            context(
+                request,
+                active_nav="playlists",
+                playlist=playlist,
+                plan=plan,
+                confirmation_token=confirmation_token,
+                new_folder_name=new_folder_name,
+                ttl_sec=ttl_sec,
+                error=error,
+            ),
+            status_code=status_code,
+        )
+
+    def folder_move_adapter_factory(storage: Storage):
+        with session_factory() as db:
+            return create_storage_adapter(storage, OperationalSettings(db))
+
+    def build_folder_move_plan_for_web(
+        playlist_id: int,
+        new_folder_name: str,
+    ) -> FolderMovePlan:
+        with session_factory() as db:
+            return build_folder_move_plan(
+                db,
+                playlist_id,
+                new_folder_name,
+                adapter_factory=folder_move_adapter_factory,
+            )
+
+    @app.get("/playlists/{playlist_id}/move-folder")
+    def playlist_move_folder_page(request: Request, playlist_id: int) -> Response:
+        return folder_move_page_response(request, playlist_id)
+
+    @app.post("/playlists/{playlist_id}/move-folder/preview")
+    async def playlist_move_folder_preview(
+        request: Request,
+        playlist_id: int,
+    ) -> Response:
+        form = await request.form()
+        new_folder_name = str(form.get("new_folder_name", ""))
+        try:
+            plan = await run_in_threadpool(
+                build_folder_move_plan_for_web,
+                playlist_id,
+                new_folder_name,
+            )
+            token = folder_move_signer.issue(plan) if plan.movable else None
+            return folder_move_page_response(
+                request,
+                playlist_id,
+                plan=plan,
+                confirmation_token=token,
+                new_folder_name=new_folder_name,
+            )
+        except (FolderMovePlanError, LookupError) as exc:
+            return folder_move_page_response(
+                request,
+                playlist_id,
+                new_folder_name=new_folder_name,
+                error=str(exc),
+                status_code=422,
+            )
+
+    @app.post("/playlists/{playlist_id}/move-folder/execute")
+    async def playlist_move_folder_execute(
+        request: Request,
+        playlist_id: int,
+    ) -> Response:
+        form = await request.form()
+        new_folder_name = str(form.get("new_folder_name", ""))
+        if form.get("confirmed") != "yes":
+            return folder_move_page_response(
+                request,
+                playlist_id,
+                new_folder_name=new_folder_name,
+                error="移動対象と警告を確認するチェックが必要です",
+                status_code=422,
+            )
+        try:
+            with session_factory() as db:
+                ttl_sec = OperationalSettings(db).retention_dryrun_ttl_sec
+            confirmation = folder_move_signer.load(
+                str(form.get("confirmation_token", "")),
+                ttl_sec=ttl_sec,
+            )
+            if (
+                confirmation.playlist_id != playlist_id
+                or confirmation.new_folder_name != new_folder_name
+            ):
+                raise FolderMoveConfirmationError(
+                    "確認したPlaylistまたはフォルダ名と一致しません"
+                )
+            plan = await run_in_threadpool(
+                build_folder_move_plan_for_web,
+                playlist_id,
+                new_folder_name,
+            )
+            folder_move_signer.verify_plan(confirmation, plan)
+            result = await run_in_threadpool(
+                execute_folder_move,
+                session_factory,
+                plan,
+                adapter_factory=create_storage_adapter,
+                confirmation_token=str(form.get("confirmation_token", "")),
+                confirmation_signer=folder_move_signer,
+                confirmation_ttl_sec=ttl_sec,
+                hook=event_hook,
+            )
+        except (
+            FolderMoveConfirmationError,
+            FolderMoveExecutionError,
+            FolderMovePlanError,
+            LookupError,
+        ) as exc:
+            return folder_move_page_response(
+                request,
+                playlist_id,
+                new_folder_name=new_folder_name,
+                error=str(exc),
+                status_code=422,
+            )
+        auth.add_flash(
+            request.state.auth,
+            "success",
+            f"フォルダ移動 Run {result.run_id}: {result.moved_count}件を移動しました",
+        )
         return RedirectResponse(f"/playlists/{playlist_id}", status_code=303)
 
     @app.get("/playlists/{playlist_id}")

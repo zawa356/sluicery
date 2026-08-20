@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}フォルダ移動 — {{ playlist.name }} — sluicery{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>フォルダも移動する</h1><p class="muted">{{ playlist.name }} / 現在: {{ playlist.folder_name }}</p></div><a class="button button-secondary" href="/playlists/{{ playlist.id }}">戻る</a></div>
+{% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+
+<section class="panel section-block">
+<h2>移動先の確認</h2>
+<p>Playlist名の編集だけではフォルダを移動しません。実ファイルを移動する場合だけ、ここで新しいフォルダ名を指定してください。</p>
+<form method="post" action="/playlists/{{ playlist.id }}/move-folder/preview" class="stacked-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<label>新しいフォルダ名<input name="new_folder_name" required value="{{ new_folder_name }}"></label>
+<button>対象ファイル数を確認</button>
+</form>
+</section>
+
+{% if plan %}
+<section class="panel section-block">
+<h2>移動プレビュー</h2>
+<p><strong>移動対象 {{ plan.move_count }}件</strong> / テンプレート非依存・手動配置のため移動しないArtifact {{ plan.unaffected_count }}件</p>
+<p><code>{{ plan.old_folder_name }}</code> → <code>{{ plan.new_folder_name }}</code></p>
+{% if plan.remote_count %}<div class="flash flash-error" role="alert">SMB / remote / mount Storageを含む {{ plan.remote_count }}件の移動です。大量ファイルの移動は通信断や接続先の状態により途中で失敗しえます。成功分は1件ずつDBへ反映され、残りは同じ操作を再実行できます。</div>{% endif %}
+{% if plan.blocked_reasons %}<div class="flash flash-error" role="alert"><strong>安全確認に失敗したため実行できません。</strong><ul>{% for reason in plan.blocked_reasons %}<li>{{ reason }}</li>{% endfor %}</ul></div>{% endif %}
+{% if confirmation_token %}
+<form method="post" action="/playlists/{{ playlist.id }}/move-folder/execute" class="stacked-form" onsubmit="return confirm('表示された対象ファイルを移動し、folder_nameを変更します。実行しますか？')">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<input type="hidden" name="confirmation_token" value="{{ confirmation_token }}">
+<input type="hidden" name="new_folder_name" value="{{ plan.new_folder_name }}">
+<label class="checkbox-label"><input type="checkbox" name="confirmed" value="yes" required>対象件数、移動先、失敗時の途中反映を確認しました</label>
+<button>フォルダを移動</button>
+</form>
+<p class="muted">確認結果の有効期限は {{ ttl_sec }} 秒です。</p>
+{% endif %}
+</section>
+{% endif %}
+{% endblock %}
