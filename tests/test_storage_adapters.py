@@ -17,7 +17,6 @@ from sluicery.storage import remote_rclone as remote_module
 from sluicery.storage.base import (
     CapacityState,
     ConnectionStage,
-    MountStorageNotImplementedError,
     RemoteFile,
     StageStatus,
     StorageOperationError,
@@ -27,6 +26,12 @@ from sluicery.storage.base import (
 )
 from sluicery.storage.errors import StorageClassification
 from sluicery.storage.local import LocalStorageAdapter
+from sluicery.storage.mount_cifs import (
+    MountCommandResult,
+    MountStorageAdapter,
+    MountStorageConfig,
+    mount_storage_available,
+)
 from sluicery.storage.rclone import RcloneRunResult
 from sluicery.storage.remote_rclone import RcloneStorageAdapter, remote_name_for_storage
 
@@ -677,13 +682,231 @@ def test_capacity_none_skips_blocking() -> None:
     assert not result.should_block
 
 
-def test_mount_factory_is_explicitly_unimplemented() -> None:
+def test_mount_factory_requires_privileged_overlay() -> None:
     storage = Storage(
         id=1,
         name="future-mount",
         kind=StorageKind.MOUNT,
         enabled=True,
-        config_json={},
+        config_json={
+            "protocol": "nfs",
+            "host": "nas.invalid",
+            "share": "/export",
+            "path": "library",
+            "port": 2049,
+        },
     )
-    with pytest.raises(MountStorageNotImplementedError, match="Phase 19"):
-        create_storage_adapter(storage, None)  # type: ignore[arg-type]
+    class _Settings:
+        storage_test_timeout_sec = 30
+
+    with pytest.raises(StorageOperationError, match="compose.privileged.yaml"):
+        create_storage_adapter(
+            storage,
+            _Settings(),  # type: ignore[arg-type]
+            mount_available=False,
+        )
+
+
+class _MountRunner:
+    def __init__(
+        self, source: str, filesystem: str, *, mounted_subpath: str = ""
+    ) -> None:
+        self.source = source
+        self.filesystem = filesystem
+        self.mounted = False
+        self.calls: list[list[str]] = []
+        self.credentials_path: Path | None = None
+        self.credentials_content = ""
+        self.mounted_subpath = mounted_subpath
+
+    def run(
+        self,
+        args,
+        *,
+        timeout_sec: float,
+        sensitive_values=(),
+    ) -> MountCommandResult:
+        call = list(args)
+        self.calls.append(call)
+        assert timeout_sec > 0
+        if call[0] == "findmnt":
+            if not self.mounted:
+                return MountCommandResult(1)
+            return MountCommandResult(0, f"{self.source} {self.filesystem}\n")
+        assert call[:3] in (["mount", "-t", "cifs"], ["mount", "-t", "nfs"])
+        if call[2] == "cifs":
+            options = call[call.index("-o") + 1].split(",")
+            credentials = next(item for item in options if item.startswith("credentials="))
+            self.credentials_path = Path(credentials.split("=", 1)[1])
+            self.credentials_content = self.credentials_path.read_text(encoding="utf-8")
+            assert not any(value in " ".join(call) for value in sensitive_values)
+        (Path(call[4]) / self.mounted_subpath).mkdir(parents=True, exist_ok=True)
+        self.mounted = True
+        return MountCommandResult(0)
+
+
+def test_mount_availability_requires_overlay_sentinel_and_both_caps(tmp_path: Path) -> None:
+    status = tmp_path / "status"
+    required = (1 << 2) | (1 << 21)
+    status.write_text(f"CapEff:\t{required:x}\n", encoding="utf-8")
+
+    assert not mount_storage_available(env={}, status_path=status)
+    assert not mount_storage_available(
+        env={"SLUICERY_PRIVILEGED_MOUNT": "enabled-by-compose-overlay"},
+        status_path=tmp_path / "missing",
+    )
+    assert mount_storage_available(
+        env={"SLUICERY_PRIVILEGED_MOUNT": "enabled-by-compose-overlay"},
+        status_path=status,
+    )
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        (
+            {
+                "protocol": "cifs",
+                "host": "nas.invalid",
+                "share": "../share",
+                "path": "",
+                "port": 445,
+            },
+            "単一の共有名",
+        ),
+        (
+            {
+                "protocol": "nfs",
+                "host": "nas.invalid",
+                "share": "relative/export",
+                "path": "",
+                "port": 2049,
+            },
+            "絶対path",
+        ),
+        (
+            {
+                "protocol": "nfs",
+                "host": "nas.invalid",
+                "share": "/export",
+                "path": "../escape",
+                "port": 2049,
+            },
+            "mount path",
+        ),
+        (
+            {
+                "protocol": "cifs",
+                "host": "nas.invalid",
+                "share": "shared media",
+                "path": "",
+                "port": 445,
+            },
+            "share",
+        ),
+    ],
+)
+def test_mount_config_rejects_unsafe_values(config: dict, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        MountStorageConfig.parse(config)
+
+
+def test_cifs_mount_uses_tmpfs_credentials_and_delegates_local_operations(
+    tmp_path: Path,
+) -> None:
+    runner = _MountRunner("//nas.invalid/media", "cifs", mounted_subpath="library")
+    mount_root = tmp_path / "mounts"
+    run_dir = tmp_path / "run"
+    adapter = MountStorageAdapter(
+        7,
+        {
+            "protocol": "cifs",
+            "host": "nas.invalid",
+            "share": "media",
+            "path": "library",
+            "port": 445,
+        },
+        {"user": "operator", "password": "unit-secret", "domain": "UNIT"},
+        available=True,
+        runner=runner,
+        mount_root=mount_root,
+        run_dir=run_dir,
+    )
+
+    result = adapter.test_connection()
+
+    assert result.ok
+    assert runner.credentials_content == (
+        "username=operator\npassword=unit-secret\ndomain=UNIT\n"
+    )
+    assert runner.credentials_path is not None
+    assert not runner.credentials_path.exists()
+    assert "unit-secret" not in " ".join(
+        argument for call in runner.calls for argument in call
+    )
+    assert adapter.mountpoint == mount_root / "storage-7"
+
+
+def test_mount_refuses_existing_mount_for_another_source(tmp_path: Path) -> None:
+    runner = _MountRunner("other.invalid:/export", "nfs4")
+    runner.mounted = True
+    adapter = MountStorageAdapter(
+        2,
+        {
+            "protocol": "nfs",
+            "host": "nas.invalid",
+            "share": "/export",
+            "path": "",
+            "port": 2049,
+        },
+        None,
+        available=True,
+        runner=runner,
+        mount_root=tmp_path / "mounts",
+        run_dir=tmp_path / "run",
+    )
+
+    with pytest.raises(StorageOperationError, match="別の接続先"):
+        adapter.exists("file.bin")
+
+
+def test_mount_failure_is_classified_without_exposing_command_output(
+    tmp_path: Path,
+) -> None:
+    class FailingMountRunner(_MountRunner):
+        def run(self, args, *, timeout_sec: float, sensitive_values=()):
+            call = list(args)
+            if call[0] == "mount":
+                return MountCommandResult(
+                    32,
+                    stderr="mount error: NT_STATUS_LOGON_FAILURE; password=unit-secret",
+                )
+            return super().run(
+                args,
+                timeout_sec=timeout_sec,
+                sensitive_values=sensitive_values,
+            )
+
+    adapter = MountStorageAdapter(
+        9,
+        {
+            "protocol": "cifs",
+            "host": "nas.invalid",
+            "share": "media",
+            "path": "",
+            "port": 445,
+        },
+        {"user": "operator", "password": "unit-secret"},
+        available=True,
+        runner=FailingMountRunner("//nas.invalid/media", "cifs"),
+        mount_root=tmp_path / "mounts",
+        run_dir=tmp_path / "run",
+    )
+
+    result = adapter.test_connection()
+
+    assert not result.ok
+    assert result.stages[1].status == StageStatus.FAILED
+    assert result.stages[1].classification == StorageClassification.AUTH_FAILED
+    assert "unit-secret" not in " ".join(stage.message for stage in result.stages)
+    assert not list((tmp_path / "run").glob("mount-credentials-*"))

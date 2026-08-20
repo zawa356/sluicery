@@ -31,6 +31,7 @@ from sluicery.db.models import (
     StorageKind,
 )
 from sluicery.storage.base import StoragePathError, validate_relative_path
+from sluicery.storage.mount_cifs import MountStorageConfig
 
 MAX_CONFIG_BYTES = 1024 * 1024
 IMPORT_CONFIRMATION_TTL_SEC = 1800
@@ -39,7 +40,7 @@ Action = Literal["create", "overwrite", "skip"]
 _STORAGE_CONFIG_FIELDS: dict[StorageKind, frozenset[str]] = {
     StorageKind.LOCAL: frozenset({"path"}),
     StorageKind.REMOTE: frozenset({"protocol", "host", "share", "path", "port"}),
-    StorageKind.MOUNT: frozenset({"path"}),
+    StorageKind.MOUNT: frozenset({"protocol", "host", "share", "path", "port"}),
 }
 _EXPORTABLE_SETTING_KEYS = frozenset(core_settings.CODE_DEFAULTS) - {
     "ytdlp.smoketest_url"
@@ -70,8 +71,11 @@ def _validate_storage_config(
         return
     if not isinstance(config, dict) or set(config) != _STORAGE_CONFIG_FIELDS[kind]:
         raise ValueError("Storage configの項目が不正です")
-    if kind in {StorageKind.LOCAL, StorageKind.MOUNT}:
+    if kind == StorageKind.LOCAL:
         _plain_portable_text(config["path"])
+        return
+    if kind == StorageKind.MOUNT:
+        MountStorageConfig.parse(config)
         return
     if config["protocol"] != "smb":
         raise ValueError("remote protocolはsmbだけです")
@@ -330,7 +334,7 @@ def export_config(session: Session) -> ConfigDocument:
                 config=cleaned,
                 requires_credentials=(
                     storage_row.credentials_encrypted is not None
-                    or storage_row.kind == StorageKind.REMOTE
+                    or storage_row.kind in {StorageKind.REMOTE, StorageKind.MOUNT}
                     or omitted
                 ),
             )
@@ -596,7 +600,10 @@ def apply_config_import(
                     values["config_json"] = row.config
                     # import文書のmarkerは権限判定に使わず、資格情報は常に再入力する。
                     values["credentials_encrypted"] = None
-                    if row.kind == StorageKind.REMOTE or row.requires_credentials:
+                    if (
+                        row.kind in {StorageKind.REMOTE, StorageKind.MOUNT}
+                        or row.requires_credentials
+                    ):
                         values["enabled"] = False
                 elif isinstance(row, ProfileConfig):
                     excluded = {"ref", "postprocess_chain", "requires_secret_reentry"}

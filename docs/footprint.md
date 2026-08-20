@@ -20,6 +20,7 @@ shutdown猶予より長くしている。
 
 - `sluicery:local`：`Dockerfile` の `runtime` ステージからローカルビルド。ベースは `python:3.12-slim`（digest 固定）。
 - ビルド時に外部から取得するもの：rclone（バージョン固定 + checksum 検証）、ffmpeg/ffprobe 静的ビルド（checksum 検証）、Deno（バージョン固定 + checksum 検証）
+- runtimeのOS package：通常運用にも必要な`util-linux`等に加え、オプトインmount用の`cifs-utils` / `nfs-common`を含む。通常Composeではcapabilityが無いため、補助コマンドが存在してもkernel mountは利用できない
 - `sluicery:local-test`：`make test` / `make lint` 実行時に `Dockerfile` の `test` ステージ（`runtime` + dev 依存 + `tests/`）からビルドされる。`docker compose` の管理下ではないが、`make purge` の削除対象に含まれる（存在すれば削除、無ければ何もしない）
 - `.dockerignore`：ビルドコンテキストから `.git` / `docs/` / `data/` 等を除外する。Dockerfile は個別 `COPY` のみを使うためイメージの中身には影響せず、送信量を減らす目的のみ
 
@@ -49,11 +50,20 @@ shutdown猶予より長くしている。
 |---|---|---|
 | `${MEDIA_ROOT}`（既定 `/mnt/media`） | `/mnt/media`（全サービス） | `local` kind の Storage が書き込む最終保存先。ホストに存在しない場合、Docker が **root 所有で**ディレクトリを自動作成する（要事前作成を推奨） |
 
+`compose.privileged.yaml`を明示指定した場合だけ、次のbind mountが追加される。
+
+| ホスト側 | コンテナ側 | 用途 |
+|---|---|---|
+| `${MOUNT_ROOT}`（既定 `/mnt/sluicery-mounts`） | `/mnt/sluicery-mounts`（app / worker-network） | CIFS / NFS kernel mountpoint。`rshared`で伝播するためホスト側もshared mountである必要がある。worker-computeには追加しない |
+
+同overlayはapp / worker-networkへ`SYS_ADMIN`、`DAC_READ_SEARCH`、`apparmor:unconfined`を追加し、
+コンテナ隔離を大幅に弱める。既定Composeにはcapability、sentinel、追加bind mountのいずれも存在しない。
+
 ## tmpfs
 
 | マウント先 | 用途 |
 |---|---|
-| `/run/sluicery` | rclone 設定ファイル・Cookie の実行時展開先（平文をディスクに残さないため、要件定義 §6.5, §9.7） |
+| `/run/sluicery` | rclone 設定ファイル・Cookie・CIFS credentials fileの実行時展開先（平文をディスクに残さないため、要件定義 §6.5, §9.7） |
 
 ## ポート
 

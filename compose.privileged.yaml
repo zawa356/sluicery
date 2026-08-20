@@ -1,0 +1,33 @@
+# 明示指定時だけkernel mountを許可する非推奨overlay。
+# 使用例: docker compose -f compose.yaml -f compose.privileged.yaml up -d
+# MOUNT_ROOTは事前に作成し、PUID/PGIDから書き込める所有者へ設定すること。
+services:
+  app:
+    cap_add:
+      - SYS_ADMIN
+      - DAC_READ_SEARCH
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      SLUICERY_PRIVILEGED_MOUNT: enabled-by-compose-overlay
+    volumes:
+      - type: bind
+        source: ${MOUNT_ROOT:-/mnt/sluicery-mounts}
+        target: /mnt/sluicery-mounts
+        bind:
+          propagation: rshared
+
+  worker-network:
+    cap_add:
+      - SYS_ADMIN
+      - DAC_READ_SEARCH
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      SLUICERY_PRIVILEGED_MOUNT: enabled-by-compose-overlay
+    volumes:
+      - type: bind
+        source: ${MOUNT_ROOT:-/mnt/sluicery-mounts}
+        target: /mnt/sluicery-mounts
+        bind:
+          propagation: rshared

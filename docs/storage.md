@@ -3,8 +3,9 @@
 sluicery は最終保存先を `Storage` として抽象化する（要件定義 §6）。UI から複数の Storage を登録でき、
 Playlist × Profile の組ごとにどの Storage のどの subpath に書き込むかを指定する。
 
-現バージョンで選択できる kind は `local` と `remote` の2種類。両方とも `StorageAdapter` の
-接続テスト、publish、存在確認、再帰一覧、移動、空き容量取得を実装済み。
+現バージョンの kind は `local`、`remote`、オプトインの`mount`。3種とも`StorageAdapter`の
+接続テスト、publish、存在確認、再帰一覧、移動、空き容量取得を実装済み。ただし`mount`は
+通常構成では利用不可で、実CIFS / NFS環境では未検証。
 
 ## local
 
@@ -36,7 +37,21 @@ SHA-256）を検証し、同一ディレクトリ内で rename する。local �
 `compose.privileged.yaml` で `privileged` 系の cap を明示的に有効化した場合にのみ選択できる。
 `mount -t cifs` / `mount -t nfs` をコンテナ内で実行し、カーネルマウントされたパスへ直接書き込む。
 
-**未実装（実装順序 #19 で追加予定）。** 実装後も既定では無効。
+Phase 19で実装済み。ただし、**外部検証VMへ接続できないため、実CIFS / NFSサーバーを使った
+mount・読書き・再接続は未検証**。ローカルDockerでは、通常Composeで利用不可になること、
+補助コマンドの存在、非root UIDへの必要capability継承、設定検証、認証失敗を含むエラー処理までを
+確認した。検証していない実mountを検証済みとは扱わない。
+
+有効化は通常の`compose.yaml`へ権限を追加せず、次のように別overlayを明示する。
+
+```bash
+MOUNT_ROOT=/host/path/to/shared-mount-root \
+  docker compose -f compose.yaml -f compose.privileged.yaml up -d
+```
+
+`MOUNT_ROOT`は事前に作成し、`PUID` / `PGID`から書込み可能にする。さらにbind propagationのため、
+ホスト側の親mountが`shared`でなければDockerがコンテナ作成を拒否する。この条件を満たせない環境では
+`mount`を使わず、既定・推奨の`remote`を使う。
 
 有効化に必要な compose 設定：
 
@@ -48,10 +63,20 @@ security_opt:
   - apparmor:unconfined
 ```
 
+overlayが権限を付けるのは、管理・接続試験・retentionを担う`app`と、publishを担う
+`worker-network`だけ。`worker-compute`には付与しない。アプリは固定sentinelと実効capabilityの
+両方を確認し、片方でも無ければWeb UIの選択肢を隠し、CLI / factoryも明示エラーにする。
+
+CIFS資格情報は暗号化DBから実行時だけ`/run/sluicery`のmode 600一時ファイルへ展開し、
+コマンドラインへ値を載せず、mount試行直後に削除する。NFSは資格情報を保存しない。既存mountpointが
+別source / filesystemを指す場合、symlinkの場合、未mountで非空の場合は安全側に停止する。
+adapterは自動`umount`を行わず、同じ接続先の既存mountを再利用する。
+
 トレードオフ：
 
 - `SYS_ADMIN` は実質 root 相当の権限であり、コンテナの隔離を大幅に弱める
 - コンテナが強制終了されると、ホスト側にマウント残骸が残ることがある（ホスト側で `umount` が必要）
+- bind propagationにより、コンテナ内mountがホスト側にも見える。終了前後のmount状態を運用者が管理する
 - ホストのディストリビューションや AppArmor 設定によっては追加の調整が必要になる場合がある
 
 有効化しない限り、この kind は UI の選択肢に一切表示されない。

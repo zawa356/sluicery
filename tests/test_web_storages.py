@@ -244,3 +244,51 @@ def test_referenced_storage_cannot_be_deleted(base_env, session_factory) -> None
     assert response.status_code == 303
     with session_factory() as db:
         assert db.get(Storage, storage_id) is not None
+
+
+def test_mount_kind_is_hidden_without_privileged_overlay(
+    base_env, session_factory
+) -> None:
+    client = _client(base_env, session_factory)
+
+    page = client.get("/storages/new")
+
+    assert 'value="mount"' not in page.text
+
+
+def test_mount_kind_is_selectable_only_when_runtime_capabilities_are_available(
+    base_env, session_factory, monkeypatch
+) -> None:
+    monkeypatch.setattr("sluicery.web.app.mount_storage_available", lambda: True)
+    client = _client(base_env, session_factory)
+    page = client.get("/storages/new")
+    assert 'value="mount"' in page.text
+    response = client.post(
+        "/storages/new",
+        data={
+            "csrf_token": _csrf(page),
+            "name": "Kernel NFS",
+            "kind": "mount",
+            "enabled": "yes",
+            "mount_protocol": "nfs",
+            "mount_host": "nas.invalid",
+            "mount_share": "/exports/media",
+            "mount_path": "library",
+            "mount_port": "2049",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    with session_factory() as db:
+        storage = db.scalar(select(Storage).where(Storage.name == "Kernel NFS"))
+        assert storage is not None
+        assert storage.kind == StorageKind.MOUNT
+        assert storage.config_json == {
+            "protocol": "nfs",
+            "host": "nas.invalid",
+            "share": "/exports/media",
+            "path": "library",
+            "port": 2049,
+        }
+        assert storage.credentials_encrypted is None

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from sluicery.core.settings import OperationalSettings
 from sluicery.db.models import Storage, StorageKind
-from sluicery.storage.base import (
-    MountStorageNotImplementedError,
-    StorageAdapter,
-)
+from sluicery.storage.base import StorageAdapter
 from sluicery.storage.local import LocalStorageAdapter
+from sluicery.storage.mount_cifs import (
+    MOUNT_ROOT,
+    MOUNT_RUN_DIR,
+    MountCommandRunner,
+    MountStorageAdapter,
+    mount_storage_available,
+)
 from sluicery.storage.rclone import RcloneRunner
 from sluicery.storage.remote_rclone import RcloneStorageAdapter
 
@@ -18,6 +22,8 @@ def create_storage_adapter(
     settings: OperationalSettings,
     *,
     rclone_runner: RcloneRunner | None = None,
+    mount_runner: MountCommandRunner | None = None,
+    mount_available: bool | None = None,
 ) -> StorageAdapter:
     config = storage.config_json or {}
     if storage.kind == StorageKind.LOCAL:
@@ -37,8 +43,19 @@ def create_storage_adapter(
             retries=settings.storage_rclone_retries,
         )
     if storage.kind == StorageKind.MOUNT:
-        raise MountStorageNotImplementedError(
-            "mount Storage は未実装です（Phase 19 で実装予定）"
+        return MountStorageAdapter(
+            storage.id,
+            config,
+            storage.credentials_encrypted,
+            available=(
+                mount_storage_available()
+                if mount_available is None
+                else mount_available
+            ),
+            runner=mount_runner,
+            mount_root=MOUNT_ROOT,
+            run_dir=MOUNT_RUN_DIR,
+            timeout_sec=settings.storage_test_timeout_sec,
         )
     raise ValueError(f"未対応の Storage kind です: {storage.kind}")
 

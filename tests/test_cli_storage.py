@@ -239,3 +239,44 @@ def test_local_cli_rejects_media_root_escape(
         == 1
     )
     assert "/mnt/media" in capsys.readouterr().err
+
+
+def test_mount_cli_requires_overlay_and_accepts_nfs_when_available(
+    monkeypatch, session_factory, base_env, capsys
+) -> None:
+    _patch_sessions(monkeypatch, session_factory)
+    args = [
+        "storage",
+        "add",
+        "--kind",
+        "mount",
+        "--name",
+        "kernel-nfs",
+        "--protocol",
+        "nfs",
+        "--host",
+        "nas.invalid",
+        "--share",
+        "/exports/media",
+        "--path",
+        "library",
+    ]
+    monkeypatch.setattr(cli_crud, "mount_storage_available", lambda: False)
+    assert cli.main(args) == 1
+    assert "compose.privileged.yaml" in capsys.readouterr().err
+
+    monkeypatch.setattr(cli_crud, "mount_storage_available", lambda: True)
+    assert cli.main(args) == 0
+    capsys.readouterr()
+    with session_factory() as session:
+        storage = session.scalar(select(Storage).where(Storage.name == "kernel-nfs"))
+        assert storage is not None
+        assert storage.kind.value == "mount"
+        assert storage.enabled is True
+        assert storage.config_json == {
+            "protocol": "nfs",
+            "host": "nas.invalid",
+            "share": "/exports/media",
+            "path": "library",
+            "port": 2049,
+        }
