@@ -121,21 +121,40 @@ CLIで設定やPlaylistを変更した場合も60秒以内にjobstoreへ反映�
 
 ## 5. バックアップとリストア
 
-> **未実装:** バックアップ / リストアは要件定義 §20 の Phase 20 で実装予定です。
-> 以下は完成後の予定インターフェースであり、現時点では実行できません。
-
 ```bash
 make backup
-# → backups/sluicery-<timestamp>.tar.gz
+# → backups/sluicery-<UTC timestamp>-<random>.tar.gz
+
+# logも含める場合
+make backup INCLUDE_LOGS=1
 ```
 
 **`backups/` 配下のアーカイブには Storage の認証情報が暗号化された形で含まれます**
 （`docs/legal.md`）。`.gitignore` で除外済みですが、保管場所・共有範囲には注意してください。
-`SECRET_KEY` とセットで漏洩すると復号可能です。
+archiveはmode 600、directoryはmode 700で作成する。SQLiteは稼働中でもbackup APIで一貫したsnapshotを
+取得し、configを必ず、`INCLUDE_LOGS=1`の場合だけ`/data/logs`を含める。メディア本体、Staging、
+yt-dlp venv、`.env`、`SECRET_KEY`は含めない。
+
+`SECRET_KEY`はarchiveとは別の安全な場所へ必ず保管する。同じ鍵とarchiveが同時に漏れるとDB内の
+資格情報を復号できる一方、鍵を紛失すると復元後も資格情報を復号できない。
 
 ```bash
 make restore FILE=backups/sluicery-<timestamp>.tar.gz
 ```
+
+restoreは次の順で行う。
+
+1. 上書き対象とメディア非操作を表示し、`y`の明示確認を求める
+2. 現在のDB / configを`pre-restore` archiveへ自動backupする
+3. app / network worker / compute workerを停止する
+4. path traversal、link / device、member数・展開size、鍵で認証したmanifest HMAC、全fileのsize / SHA-256、SQLite
+   `quick_check`、SECRET_KEY指紋を、書込み前に検証する
+5. configをbackupと同じ内容へ復元し、DBをatomic replaceする。archiveにlogがあれば上書き・追加する
+6. Alembicをheadへ適用し、current=headを確認して3serviceを起動する
+
+指紋不一致は既定で中止する。災害復旧等で資格情報が復号不能になることを承知のうえ続行する場合だけ、
+`make restore ... ALLOW_SECRET_KEY_MISMATCH=1`を明示する。通常運用では使用しない。restore失敗時も
+Makefileのtrapがservice再起動を試みるため、終了出力と`docker compose ps`を必ず確認する。
 
 ## 6. アンインストール
 

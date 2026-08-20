@@ -99,4 +99,4 @@ COPY requirements-dev.lock ./
 RUN pip install --require-hashes -r requirements-dev.lock
 
 COPY tests ./tests
-COPY compose.yaml compose.privileged.yaml Dockerfile ./
+COPY compose.yaml compose.privileged.yaml Dockerfile Makefile ./

@@ -1,5 +1,19 @@
 # トラブルシューティング
 
+## restoreが`SECRET_KEY指紋が現在の鍵と一致しません`で停止する
+
+backup作成時と同じ`SECRET_KEY`を`.env`へ戻してから再実行する。鍵はarchiveへ意図的に含めていない。
+元の鍵を紛失した場合、DB内のStorage資格情報とPlaylist Cookieは復号できない。復号不能を承知して
+DB・非秘密設定だけを救出する場合に限り`ALLOW_SECRET_KEY_MISMATCH=1`を明示し、復元後に全資格情報を
+再入力する。安易にこのguardを無効化しない。
+
+## restoreがarchive検証またはSQLite WAL checkpointで停止する
+
+archiveのpath / link / size / SHA-256 / SQLite整合性に問題がある場合、上書き前に停止する。別archiveを
+使用する。WAL checkpointエラーでは他のsluicery serviceやDBを開く外部processが残っていないか確認する。
+`make restore`は3serviceを停止してから書き換えるが、失敗時はtrapで再起動を試みるため、最後に
+`docker compose ps`と`docker compose logs`を確認する。
+
 実際に踏んだ問題のみを記載しています。想像で書いた項目はありません。VM 実機検証（Phase 3.5）で
 新たに踏んだ問題は、検証後にここへ追記します。
 

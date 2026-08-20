@@ -5,7 +5,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
-    image: sluicery:local
+    image: ${SLUICERY_IMAGE:-sluicery:local}
     restart: unless-stopped
     command: ["web"]
     env_file:
@@ -15,7 +15,7 @@ services:
     volumes:
       - data:/data
       - ${MEDIA_ROOT:-/mnt/media}:/mnt/media
-      - ./config:/app/config:ro
+      - ${CONFIG_DIR:-./config}:/app/config:ro
     tmpfs:
       - /run/sluicery:mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}
     healthcheck:
@@ -32,7 +32,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
-    image: sluicery:local
+    image: ${SLUICERY_IMAGE:-sluicery:local}
     restart: unless-stopped
     command: ["worker-network"]
     env_file:
@@ -40,7 +40,7 @@ services:
     volumes:
       - data:/data
       - ${MEDIA_ROOT:-/mnt/media}:/mnt/media
-      - ./config:/app/config:ro
+      - ${CONFIG_DIR:-./config}:/app/config:ro
     tmpfs:
       - /run/sluicery:mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}
     depends_on:
@@ -54,7 +54,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
-    image: sluicery:local
+    image: ${SLUICERY_IMAGE:-sluicery:local}
     restart: unless-stopped
     command: ["worker-compute"]
     env_file:
@@ -62,7 +62,7 @@ services:
     volumes:
       - data:/data
       - ${MEDIA_ROOT:-/mnt/media}:/mnt/media
-      - ./config:/app/config:ro
+      - ${CONFIG_DIR:-./config}:/app/config:ro
     tmpfs:
       - /run/sluicery:mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}
     depends_on:

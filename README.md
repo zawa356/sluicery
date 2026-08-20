@@ -110,8 +110,9 @@ docker compose exec --user "$(id -u):$(id -g)" app python3 -m sluicery.cli ytdlp
 `make lock` は不要です。
 
 `SECRET_KEY` を設定しない場合、明確なエラーメッセージを出して起動を拒否します。意図せず
-`SECRET_KEY` が変わった場合、起動時に警告が表示されます。バックアップ / リストアは Phase 20 で
-実装予定であり、現時点の `make backup` / `make restore` は実行できません。
+`SECRET_KEY` が変わった場合、起動時に警告が表示されます。`make backup`は鍵そのものを含めないため、
+archiveとは別の安全な場所へ同じ`SECRET_KEY`を保管してください。`make restore FILE=...`は鍵の指紋、
+archive全体、SQLite整合性を検査し、既存状態の自動backupと確認後に復元します。
 
 初回起動時に `.env` の `ADMIN_USERNAME` / `ADMIN_PASSWORD` から単一の管理者を作成します。
 `ADMIN_PASSWORD` が空ならランダムな初期パスワードを起動ログへ一度だけ表示します。パスワードは
@@ -182,8 +183,8 @@ payloadはイベント別allowlistで絞り、URL・Cookie・秘密値を保存�
 | `make lock` | `requirements.in` / `requirements-dev.in` から lock ファイルを再生成（依存を更新したときのみ） | 実装済み | — |
 | `make migrate` | DB マイグレーションを手動適用（`AUTO_MIGRATE=false` 運用時など） | 実装済み | `docker compose exec app python3 -m sluicery.cli db upgrade` |
 | `make revision MSG="..."` | autogenerate でマイグレーションリビジョンを生成 | 実装済み | `docker compose exec app python3 -m sluicery.cli db revision -m "..."` |
-| `make backup` | DB + 設定 + シークレットを単一アーカイブに書き出し | **未実装（Phase 20）** | — |
-| `make restore FILE=...` | バックアップから復元 | **未実装（Phase 20）** | — |
+| `make backup` | SQLite snapshot + config（暗号化済み資格情報はDB内）を単一archiveへ保存。`INCLUDE_LOGS=1`でlogも含める。SECRET_KEYは含めない | 実装済み | Makefile内の`python3 -m sluicery.backup create`呼出しを参照 |
+| `make restore FILE=...` | 自動事前backup・確認・全service停止後に検証済みarchiveを復元し、migration headを確認 | 実装済み | Makefile内の`python3 -m sluicery.backup restore`呼出しを参照 |
 | `make purge` | 削除対象を表示して確認した上でコンテナ・イメージ・volume を削除（bind mount 先の実体は削除しない） | 実装済み | `docker compose down --rmi local --volumes --remove-orphans` |
 
 yt-dlpの更新・直前版への安全な切替はCLIからも実行できます。どちらも実ダウンロード付きスモークテストを行います。

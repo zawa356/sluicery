@@ -71,6 +71,16 @@ shutdown猶予より長くしている。
 |---|---|
 | `${HTTP_PORT}`（既定 8080） | `app` の Web UI / REST API（コンテナ⇔ホスト直結、HTTPS 終端はしない） |
 
+## バックアップ
+
+`make backup`はホストの`BACKUP_DIR`（既定`./backups`）を一時appコンテナの`/backups`へbindし、
+mode 600の`sluicery-*.tar.gz`を作る。`backups/`はGitとDocker build contextの対象外。通常Composeの
+常設bindではないが、backup / restore実行中だけ明示的に追加される。restore時は指定archiveをread-only、
+`CONFIG_DIR`（既定`./config`）をread-writeで一時コンテナへbindする。
+
+archive対象はSQLite DB、config、任意logだけで、`${MEDIA_ROOT}`、`/data/staging`、`/data/ytdlp`、
+`.env`、`SECRET_KEY`を含めない。restoreはメディアbind mountの内容を列挙・変更しない。
+
 ## `make purge` で削除されるもの／されないもの
 
 削除される：`app` / `worker-network` / `worker-compute` コンテナ、ローカルビルドイメージ `sluicery:local`、`sluicery:local-test`（存在する場合）、named volume `data`、compose ネットワーク。
