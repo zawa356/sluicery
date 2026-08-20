@@ -549,9 +549,28 @@ class RcloneStorageAdapter:
         destination = validate_relative_path(dest_rel)
         if self.exists(destination):
             raise StorageOperationError("移動先が既に存在します", reason_code="destination_exists")
-        result = self._run(["moveto", self._remote_path(source), self._remote_path(destination)])
+        result = self._run(
+            [
+                "moveto",
+                self._remote_path(source),
+                self._remote_path(destination),
+                "--ignore-existing",
+            ]
+        )
         if result.returncode != 0:
             self._raise_result(result, "remote Storage 内の移動に失敗しました")
+        # --ignore-existing で競合時の上書きを拒否したうえで、実際にsourceが
+        # 消えdestinationだけが残った場合に限り成功とする。
+        if self.exists(source):
+            raise StorageOperationError(
+                "移動先が競合したため移動元を保持しました",
+                reason_code="destination_exists",
+            )
+        if not self.exists(destination):
+            raise StorageOperationError(
+                "remote Storage の移動結果を確認できません",
+                reason_code="move_verification_failed",
+            )
 
     def delete_file(
         self,

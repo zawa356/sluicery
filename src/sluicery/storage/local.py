@@ -360,15 +360,36 @@ class LocalStorageAdapter:
             ) from exc
 
     def move(self, src_rel: str, dest_rel: str) -> None:
-        src = self._path(src_rel)
-        dest = self._path(dest_rel)
-        if not src.exists():
+        # directory entry 自体を扱い、symlink の解決先や同時作成された移動先を
+        # 上書きしない。folder move と retention の復旧で共通の境界にする。
+        src = self._no_follow_path(src_rel)
+        destination_candidate = self._path(dest_rel)
+        try:
+            destination_candidate.parent.mkdir(parents=True, exist_ok=True)
+            dest = self._no_follow_path(dest_rel)
+        except OSError as exc:
+            raise StorageOperationError(
+                "local Storage の移動先を準備できません",
+                classification=_classification_for_os_error(exc),
+                reason_code="move_failed",
+            ) from exc
+        if not os.path.lexists(src):
             raise StorageOperationError("移動元が存在しません", reason_code="source_not_found")
-        if dest.exists():
+        try:
+            if not stat.S_ISREG(os.lstat(src).st_mode):
+                raise StorageOperationError(
+                    "移動元は通常ファイルではありません", reason_code="not_a_file"
+                )
+        except OSError as exc:
+            raise StorageOperationError(
+                "移動元を安全に確認できません",
+                classification=_classification_for_os_error(exc),
+                reason_code="unsafe_file",
+            ) from exc
+        if os.path.lexists(dest):
             raise StorageOperationError("移動先が既に存在します", reason_code="destination_exists")
         try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            os.rename(src, dest)
+            _rename_noreplace(src, dest)
         except OSError as exc:
             raise StorageOperationError(
                 "local Storage 内の移動に失敗しました",
