@@ -4,7 +4,7 @@
 > セッション開始時に最初に読み、セッション終了時に必ず更新してください。
 
 最終更新: 2026-08-21
-対応コミット: Phase 19実装作業中（Phase 18 checkpoint `bea410b`から継続）
+対応コミット: Phase 20バックアップ / リストア実装作業中（Phase 19 `b60d7da`から継続）
 
 ## プロジェクト概要
 
@@ -26,10 +26,16 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 - [x] 17. 設定エクスポート / インポート
 - [x] 18. フック機構と12イベント発火点
 - [x] 19. privileged mount / GPU整合確認
-- [ ] 20. バックアップ、仕上げ
+- [x] 20前半. バックアップ / リストア
+- [ ] 20後半. 受け入れ条件、全体レビュー、最終整備
 
 ## 直近の作業
 
+- `make backup` / `make restore`を実装した。SQLite backup API、config、任意logをmanifestと全file SHA-256付きarchiveへ保存し、SECRET_KEY自体、メディア、Staging、yt-dlp venvは含めない（D-061）
+- restoreは上書き確認、現状態のpre-restore backup、3service停止、archive path / type / size / hash、SQLite quick_check、SECRET_KEY指紋の検証後に復元し、migration head確認後に再起動する。指紋不一致は既定で拒否する
+- 実DBの読み取りbackupは3対象file・6,533,934 bytesで、archive内SECRET_KEY実値一致0。隔離restoreはStorage 3、Profile 7、Playlist 8、割当19、quick_check=ok、revision=headを確認した
+- 別Compose project / volume / port / configで`make restore`をend-to-end検証した。改変前DBへ復元、余分なconfig除去、自動pre-restore backup、3service再起動とapp healthyを確認し、現行projectは変更していない
+- backup manifestをSECRET_KEY由来HMACで認証し、改変archiveを拒否する。最終test imageで全494テスト、Ruff、mypy 87 source filesが成功した
 - Phase 19の既定無効`compose.privileged.yaml`とCIFS / NFS kernel mount adapterを実装した。app / worker-networkだけへ必要な2 capabilityを付け、fixed sentinelと実効capabilityが揃う場合だけUI / CLI / factoryを有効にする（D-060）
 - CIFS資格情報は`/run/sluicery`のmode 600一時ファイルだけに展開し、argvへ載せず直後に削除する。接続先競合、symlink、非空mountpoint、危険な設定値は拒否し、mount後の全操作はlocal adapterへ委譲する
 - ローカルDockerで通常Composeの無効化、補助コマンド、非root UIDへのcapability継承、エラー分類を確認した。WSL2のbind元がprivate mountでoverlay Composeを開始できず、外部VMにも接続できないため実CIFS / NFS mountは未検証。全486テスト、Ruff、mypy 86 source filesは成功した
@@ -69,8 +75,8 @@ sluiceryはyt-dlpを用いた自己ホスト型のプレイリスト同期サー
 
 ## 次にやること
 
-1. Phase 20の`make backup` / `make restore`を実装し、安全な隔離環境で検証する
-2. 要件定義§19の受け入れ条件確認、公開前監査、レビュー④を実施する
+1. Phase 20 feature commitを確定し、隔離cloneでpurge → clean rebuildを検証する
+2. 要件定義§19の受け入れ条件26項目、公開前監査、レビュー④を実施する
 3. `checkpoint/step-18`以降もpushせず、最終履歴監査とユーザー承認を待つ
 
 ## 未解決・保留

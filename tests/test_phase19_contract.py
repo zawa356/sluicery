@@ -17,6 +17,7 @@ def test_privileged_overlay_is_separate_and_explicit() -> None:
         assert "cap_add" not in base_service
         assert "security_opt" not in base_service
         assert "SLUICERY_PRIVILEGED_MOUNT" not in base_service.get("environment", {})
+        assert base_service["image"] == "${SLUICERY_IMAGE:-sluicery:local}"
 
     for name in ("app", "worker-network"):
         service = overlay["services"][name]
