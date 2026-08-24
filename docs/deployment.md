@@ -41,7 +41,7 @@ chown $(id -u):$(id -g) /path/to/media
 README の Quick Start と同じ手順です。
 
 ```bash
-git clone <repo> sluicery
+git clone https://github.com/zawa356/sluicery.git sluicery
 cd sluicery
 cp .env.example .env
 $EDITOR .env
