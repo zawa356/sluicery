@@ -8,7 +8,7 @@ yt-dlp を用いた自己ホスト向けのプレイリスト同期サーバー�
 `make` を前提にせず、`docker compose` 直で動かせる最短手順です。詳細は後続セクションを参照してください。
 
 ```bash
-git clone <repo> sluicery
+git clone https://github.com/zawa356/sluicery.git sluicery
 cd sluicery
 cp .env.example .env
 
@@ -307,6 +307,7 @@ Phase 7までの暫定実装であり、通常の同期処理には使用しま�
 
 | ファイル | 内容 |
 |---|---|
+| [Wiki](https://github.com/zawa356/sluicery/wiki) | 導入ガイド・運用レシピ・FAQ |
 | [AISTATE.md](AISTATE.md) | セッション間の引き継ぎ用（開発者・AI 向け） |
 | [docs/要件定義.md](docs/要件定義.md) | 何を作るか |
 | [docs/基本設計.md](docs/基本設計.md) | どう作るか、設計判断の記録 |
